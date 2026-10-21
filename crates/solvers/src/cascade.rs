@@ -540,7 +540,10 @@ impl SeparationModel for StageCascade {
         // the start, so the profile and its K-values are only ever evaluated
         // once per iteration — the bubble-point bisections dominate the cost of
         // this solve, and doing them twice per pass would double a tick.
-        let mut k = stage_k_values_profile(slate, thermo, &stage_t, pass.pressure)?;
+        // One pressure on every stage: the trays' pressure drops are the
+        // heat-balance cascade's (M73.2), and this model declares none.
+        let pressures = vec![pass.pressure; plan.stages];
+        let mut k = stage_k_values_profile(slate, thermo, &stage_t, &pressures)?;
 
         while iterations < self.max_iterations {
             iterations += 1;
@@ -556,7 +559,7 @@ impl SeparationModel for StageCascade {
             liquid = next;
 
             // Bubble point per stage, at the NEW liquid composition.
-            let next_t = bubble_profile(slate, thermo, &liquid, pass.pressure)?;
+            let next_t = bubble_profile(slate, thermo, &liquid, &pressures)?;
             temperature_change = stage_t
                 .iter()
                 .zip(&next_t)
@@ -566,7 +569,7 @@ impl SeparationModel for StageCascade {
 
             // The draws as they now stand, and the per-component residual that
             // fork 4 makes a gate rather than a diagnostic.
-            k = stage_k_values_profile(slate, thermo, &stage_t, pass.pressure)?;
+            k = stage_k_values_profile(slate, thermo, &stage_t, &pressures)?;
             draws = plan.draw_states(&liquid, &k, slate)?;
             residual = plan.component_residual(&draws, pass.feed, slate) * feed_flow;
 
@@ -685,6 +688,7 @@ impl SeparationModel for StageCascade {
                 free_water: Vec::new(),
                 reflux_ratio: None,
                 cut_back: Vec::new(),
+                tray_drops: Vec::new(),
             }),
             condenser_duty: Some(condenser_duty),
             reboiler_duty: Some(reboiler_duty),
@@ -1637,21 +1641,24 @@ pub(crate) fn mixture_molar_cp(slate: &Slate, fractions: &[f64]) -> f64 {
         .sum()
 }
 
-/// Every stage's bubble temperature [K] at its liquid composition.
+/// Every stage's bubble temperature [K] at its liquid composition, each at its
+/// own stage's pressure (`pressures`, one per stage; M73.2, docs/DESIGN.md
+/// §78.9 — the column's one pressure on every stage of a column without trays).
 pub(crate) fn bubble_profile(
     slate: &Slate,
     thermo: &dyn ThermoModel,
     liquid: &[Vec<f64>],
-    pressure: Pascal,
+    pressures: &[Pascal],
 ) -> Result<Vec<f64>, SimError> {
+    check_stage_pressures(pressures, liquid.len())?;
     let mut temperatures = Vec::with_capacity(liquid.len());
-    for (j, x) in liquid.iter().enumerate() {
+    for (j, (x, pressure)) in liquid.iter().zip(pressures).enumerate() {
         temperatures.push(
             bubble_temperature_unnormalized(
                 slate,
                 thermo,
                 x,
-                pressure,
+                *pressure,
                 &format!("stage {} of {}", j + 1, liquid.len()),
             )?
             .value(),
@@ -1660,18 +1667,33 @@ pub(crate) fn bubble_profile(
     Ok(temperatures)
 }
 
-/// Every component's K at every stage of a temperature profile.
+/// Every component's K at every stage of a temperature profile, each stage at
+/// its own pressure (`pressures`, one per stage, as `bubble_profile`'s).
 pub(crate) fn stage_k_values_profile(
     slate: &Slate,
     thermo: &dyn ThermoModel,
     stage_t: &[f64],
-    pressure: Pascal,
+    pressures: &[Pascal],
 ) -> Result<Vec<Vec<f64>>, SimError> {
+    check_stage_pressures(pressures, stage_t.len())?;
     let mut k = Vec::with_capacity(stage_t.len());
-    for (j, t) in stage_t.iter().enumerate() {
-        k.push(stage_k_values(slate, thermo, Kelvin(*t), pressure, j + 1)?);
+    for (j, (t, pressure)) in stage_t.iter().zip(pressures).enumerate() {
+        k.push(stage_k_values(slate, thermo, Kelvin(*t), *pressure, j + 1)?);
     }
     Ok(k)
+}
+
+/// One pressure per stage, or an `Err` naming the mismatch — never a profile
+/// cut short by a `zip`.
+fn check_stage_pressures(pressures: &[Pascal], stages: usize) -> Result<(), SimError> {
+    if pressures.len() == stages {
+        Ok(())
+    } else {
+        Err(SimError::Numerical(format!(
+            "internal: {} stage pressures for a column of {stages} stages",
+            pressures.len()
+        )))
+    }
 }
 
 /// Every component's K at one stage, guarded.

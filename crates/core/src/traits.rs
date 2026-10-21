@@ -708,6 +708,12 @@ pub struct CascadeProfile {
     /// tick rather than failing its plain solve first. A hint like the rest of
     /// this struct.
     pub cut_back: Vec<usize>,
+    /// Each tray's pressure drop as this iterate fed it back [Pa] (M73.2,
+    /// docs/DESIGN.md §78.9), top tray first, or empty from a column without
+    /// trays. The next solve's first guess at its stages' pressures — re-solved
+    /// until the drops settle, so a hint like the rest of this struct: a wrong
+    /// one costs solves, not the answer.
+    pub tray_drops: Vec<Pascal>,
 }
 
 /// The outcome of one column pass: every draw's split, plus the column's two
@@ -809,12 +815,23 @@ pub struct Separation {
 }
 
 /// How one sieve tray ran this pass (M73.1, docs/DESIGN.md §78.3, §78.4.1):
-/// what its loads come to against its geometry. A READING — nothing in the
-/// column's solve is driven by it.
+/// what its loads come to against its geometry. Its readings drive nothing;
+/// its pressure drop, capped at jet flood, is what each stage below it solves
+/// at (M73.2, §78.9) — `fed_back_drop`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TrayHydraulics {
     /// The tray's stage, one-based from the top.
     pub stage: u32,
+    /// The pressure its stage solved at [Pa] (M73.2): the column's declared
+    /// pressure on the top tray, each tray below higher by the `fed_back_drop`
+    /// of the tray above it.
+    pub pressure: Pascal,
+    /// The drop the stage below solved across this tray [Pa] (M73.2): its
+    /// `pressure_drop` up to jet flood, past it the drop at exactly 100 % of
+    /// flood — the user's decision (§78.8), the correlation meaning nothing
+    /// there. The stage below's `pressure` is this one's plus this, to within
+    /// the re-solve's tolerance (`HeatBalanceCascade`'s `DROP_TOLERANCE`).
+    pub fed_back_drop: Pascal,
     /// The vapour's velocity through the net area over its velocity at jet
     /// flood [-] (Fair's chart): past one the tray floods.
     pub flood_fraction: f64,
@@ -822,7 +839,9 @@ pub struct TrayHydraulics {
     /// point [-] (Eduljee): under one the tray weeps.
     pub weep_margin: f64,
     /// The vapour's pressure drop across the tray [Pa]: dry plate, the liquid
-    /// on it, and the residual head.
+    /// on it, and the residual head — the correlation's reading, past flood
+    /// too, so past flood the drops do not add up to the stages' pressures
+    /// (`fed_back_drop` does).
     pub pressure_drop: Pascal,
     /// The clear liquid backed up in its downcomer over the most it holds,
     /// half the tray spacing plus the weir [-]: past one the tray floods.
@@ -841,6 +860,23 @@ impl TrayHydraulics {
     /// The one definition the snapshot's list of weeping trays is made from.
     pub fn weeping(&self) -> bool {
         self.weep_margin < 1.0
+    }
+}
+
+impl Separation {
+    /// The pressure stage `stage` (one-based from the top) solved at [Pa] on a
+    /// column that declares its trays (M73.2, docs/DESIGN.md §78.9): a tray's
+    /// own, and the reboiler's the last tray's plus the drop fed back across
+    /// it. `None` on a column without trays — every stage at the column's one
+    /// pressure — and for a stage the column does not have (0, the condenser,
+    /// is the column's declared pressure).
+    pub fn stage_pressure(&self, stage: u32) -> Option<Pascal> {
+        let index = usize::try_from(stage).ok()?.checked_sub(1)?;
+        if let Some(tray) = self.trays.get(index) {
+            return Some(tray.pressure);
+        }
+        let last = self.trays.last().filter(|_| index == self.trays.len())?;
+        Some(Pascal(last.pressure.value() + last.fed_back_drop.value()))
     }
 }
 
@@ -917,7 +953,9 @@ pub struct ColumnPass<'a> {
     /// Ramp width across each cut point [K] (`NodeKind::Column::smearing`).
     pub smearing: Kelvin,
     /// The column's pinned operating pressure [Pa]. Ignored by the splitter,
-    /// load-bearing for a cascade's K-values.
+    /// load-bearing for a cascade's K-values. On a column that declares its
+    /// trays, the top stage's and the condenser's; each stage below solves
+    /// higher by the trays above it (M73.2, docs/DESIGN.md §78.9).
     pub pressure: Pascal,
     /// The feed composition resolved by this tick's sweep — never a holdup:
     /// a holdup mixes to one composition and separates nothing (DESIGN §5).

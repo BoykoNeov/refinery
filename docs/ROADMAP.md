@@ -10925,3 +10925,21 @@ screen, or stops its reflux key at 4.5–5.0 against 0.5–15. No engine code
 changed. **Decided (2026-10-21), the user: capped** — past jet flood the drop
 fed back is the tray's at 100 % of flood, the column runs on, the trays still
 read flooded. Next: M73.2, the solved mode built with the capped drop.
+
+### M73.2 — **DONE** 2026-10-21: each stage at its own pressure, the drop capped past flood
+
+Built (DESIGN §78.9) as §78.1 and the user's decision on M73.2.0's probe
+said: on a column that declares its trays, each stage solves at the column's
+pressure plus the drops across the trays above it, re-solved within the tick
+until the drops settle (0.5 Pa), each warm from the last, the last tick's
+drops the first guess; past jet flood the drop fed back is the tray's at 100 %
+of flood, the trays still reading flooded. The feed flashes at its stage's
+pressure; the condenser and the column node stay at the declared one. Draw
+and loop lines start at their stage's pressure, and a loop arrives against its
+return stage's — decided while building, the other end of §78.1's boundary.
+Each tray now publishes the pressure it ran at. On M73.1's fixture: the bottom
+5.49 K hotter, every product within 0.16 points, the feed's flash share 0.6615
+→ 0.6532 (the probe's 5.5 K, 0.663 → 0.654); at a reflux of 15 the column runs
+on, its pressure span held at 156 mbar where the raw drops add up to 373.
+Mutations: sixteen, thirteen caught, three argued equivalent. Every shipped plant byte-identical, 68 of 68 on both fidelities.
+Next: M73.3, the plant (its multipass layout settled first, C21).

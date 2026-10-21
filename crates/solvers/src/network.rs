@@ -4636,6 +4636,14 @@ impl LineMarch {
 /// stopped pump stops its loop) — pinned at that flow and reported in
 /// `loop_delivered`. A loop that delivers its setpoint is pinned at its stored
 /// flow, as a draw line is.
+///
+/// **On a column that declares its trays** (M73.2, docs/DESIGN.md §78.1,
+/// §78.9) each line starts at its own stage's pressure, and a loop arrives
+/// against its return stage's — the pressures the column's previous
+/// separation solved its stages at (`Separation::stage_pressure`), a tick
+/// late as the drawn liquid is. Every other line, the distillate's at the
+/// condenser, and every line before the column's first separation, starts at
+/// the column's declared pressure, as before.
 pub fn march_draw_lines(
     graph: &PlantGraph,
     slate: &Slate,
@@ -4643,7 +4651,7 @@ pub fn march_draw_lines(
     flash: LineFlash<'_>,
 ) -> Result<DrawLinePins, SimError> {
     let mut pins = DrawLinePins::default();
-    let march = |column: NodeId, line: &[EdgeId], mass_flow: f64| {
+    let march = |column: NodeId, line: &[EdgeId], ends: LineEnds, mass_flow: f64| {
         march_line(
             graph,
             slate,
@@ -4651,6 +4659,7 @@ pub fn march_draw_lines(
             flash,
             column,
             line,
+            ends,
             mass_flow,
         )
     };
@@ -4658,9 +4667,17 @@ pub fn march_draw_lines(
         pins.pressure.extend(marched.pressure);
         pins.pump_two_phase.extend(marched.pump_two_phase);
     };
-    for (column, _, line) in graph.draw_lines() {
+    for (column, index, line) in graph.draw_lines() {
         let mass_flow = graph.pipe(line[0]).stream.mass_flow.value().max(0.0);
-        let marched = march(column, line, mass_flow)?;
+        let stage = match &graph.node(column).kind {
+            NodeKind::Column { draws, .. } => draws.get(index).and_then(|draw| draw.stage),
+            _ => None,
+        };
+        let ends = LineEnds {
+            start: line_stage_pressure(graph, previous_states, column, stage)?,
+            store: None,
+        };
+        let marched = march(column, line, ends, mass_flow)?;
         if !marched.reaches() {
             let (store, store_pressure) = marched.store;
             return Err(SimError::Numerical(format!(
@@ -4687,14 +4704,25 @@ pub fn march_draw_lines(
         else {
             continue;
         };
-        let set = spec.loops[index].flow.value();
+        let declared = &spec.loops[index];
+        let set = declared.flow.value();
+        let ends = LineEnds {
+            start: line_stage_pressure(graph, previous_states, column, Some(declared.draw_stage))?,
+            store: Some(line_stage_pressure(
+                graph,
+                previous_states,
+                column,
+                Some(declared.return_stage),
+            )?),
+        };
+        let march = |line: &[EdgeId], mass_flow: f64| march(column, line, ends, mass_flow);
         let stored = graph.pipe(line[0]).stream.mass_flow.value().max(0.0);
-        let marched = march(column, line, stored)?;
+        let marched = march(line, stored)?;
         if stored == set && marched.reaches() {
             pin(&mut pins, marched);
             continue;
         }
-        let at_set = march(column, line, set)?;
+        let at_set = march(line, set)?;
         if at_set.reaches() {
             // It delivers its setpoint: pinned where it ran, as a draw line
             // is, unless that flow (above a new, lower setpoint) falls short.
@@ -4702,14 +4730,14 @@ pub fn march_draw_lines(
             continue;
         }
         // Short: the most it delivers, `lo` arriving at the column at least.
-        let at_zero = march(column, line, 0.0)?;
+        let at_zero = march(line, 0.0)?;
         let (delivered, marched) = if !at_zero.reaches() {
             (0.0, at_zero)
         } else {
             let (mut lo, mut hi) = ((0.0, at_zero), set);
             for _ in 0..LOOP_DELIVERY_BISECTIONS {
                 let mid = 0.5 * (lo.0 + hi);
-                let at_mid = march(column, line, mid)?;
+                let at_mid = march(line, mid)?;
                 if at_mid.reaches() {
                     lo = (mid, at_mid);
                 } else {
@@ -4724,8 +4752,43 @@ pub fn march_draw_lines(
     Ok(pins)
 }
 
+/// Where a line marches from, and the pressure it must arrive at where that
+/// is not its store's own (`fixed_pressure`) — a loop's return stage [Pa].
+#[derive(Debug, Clone, Copy)]
+struct LineEnds {
+    start: f64,
+    store: Option<f64>,
+}
+
+/// The pressure stage `stage` of `column` solved at on its previous
+/// separation [Pa] (M73.2, docs/DESIGN.md §78.1): on a column that declares
+/// its trays, a stage's own; the column's declared pressure on any other, at
+/// the condenser (stage 0), and before the column's first separation.
+fn line_stage_pressure(
+    graph: &PlantGraph,
+    previous_states: &NodeStates,
+    column: NodeId,
+    stage: Option<u32>,
+) -> Result<f64, SimError> {
+    let NodeKind::Column { pressure, .. } = &graph.node(column).kind else {
+        return Err(SimError::Numerical(format!(
+            "internal: a draw line starts at '{}', which is no column",
+            graph.node(column).name
+        )));
+    };
+    Ok(stage
+        .and_then(|stage| {
+            previous_states
+                .column_separation
+                .get(&column)?
+                .stage_pressure(stage)
+        })
+        .map_or(pressure.value(), |stage_pressure| stage_pressure.value()))
+}
+
 /// One draw or loop line marched from its column at `mass_flow` [kg/s]
-/// (`march_draw_lines`).
+/// (`march_draw_lines`), from `ends.start`.
+#[allow(clippy::too_many_arguments)]
 fn march_line(
     graph: &PlantGraph,
     slate: &Slate,
@@ -4733,21 +4796,16 @@ fn march_line(
     flash: LineFlash<'_>,
     column: NodeId,
     line: &[EdgeId],
+    ends: LineEnds,
     mass_flow: f64,
 ) -> Result<LineMarch, SimError> {
-    let NodeKind::Column { pressure, .. } = &graph.node(column).kind else {
-        return Err(SimError::Numerical(format!(
-            "internal: a draw line starts at '{}', which is no column",
-            graph.node(column).name
-        )));
-    };
     let mut marched = LineMarch {
         arrival: f64::NAN,
         store: (column, f64::NAN),
         pressure: Vec::with_capacity(line.len()),
         pump_two_phase: Vec::new(),
     };
-    let mut here = pressure.value();
+    let mut here = ends.start;
     for (k, &eid) in line.iter().enumerate() {
         let (src, tgt) = graph.endpoints(eid);
         let pipe = graph.pipe(eid);
@@ -4813,13 +4871,16 @@ fn march_line(
             here = next;
             continue;
         }
-        let store = fixed_pressure(graph.node(tgt), slate).ok_or_else(|| {
-            SimError::Numerical(format!(
-                "internal: the draw line of column '{}' ends at '{}', which pins no pressure",
-                graph.node(column).name,
-                graph.node(tgt).name
-            ))
-        })?;
+        let store = match ends.store {
+            Some(store) => store,
+            None => fixed_pressure(graph.node(tgt), slate).ok_or_else(|| {
+                SimError::Numerical(format!(
+                    "internal: the draw line of column '{}' ends at '{}', which pins no pressure",
+                    graph.node(column).name,
+                    graph.node(tgt).name
+                ))
+            })?,
+        };
         marched.arrival = next;
         marched.store = (tgt, store);
     }

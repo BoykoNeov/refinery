@@ -30015,3 +30015,113 @@ pressure (the network side); tray sizes chosen at the fed-back pressures
 which would halt the screen or stop its reflux key at 4.5–5.0 against decision
 4. M73.2 builds the solved mode (re-solved within the pass, the last tick's
 drops its first guess) with the capped drop.
+
+### 78.9 Each stage at its own pressure, built (M73.2)
+
+As §78.1 and §78.8 decided: the solved mode, the drop capped past jet flood.
+One boundary decided while building (below, the loop's return).
+
+- **The re-solve** (`HeatBalanceCascade::fractionate`): on a column that
+  declares its trays, solve; read the drop each tray feeds back; solve again
+  with each stage at them, warm from the last solve (its `seed`, and its
+  `earlier_pass` for a column that has one), until no drop moves by
+  `DROP_TOLERANCE` (0.5 Pa, the probe's); refused by name after
+  `MAX_DROP_SOLVES` (25; the probe measured 9 at most). The first guess is the
+  drops the profile it starts from was solved at (`CascadeProfile::
+  tray_drops`, a hint, filtered by length), or none. The old body is
+  `fractionate_at(…, drops)`, so every re-solve recomputes the feed's seed,
+  its flash share and the energy scale. **A column without trays skips the
+  loop** and solves once, every stage at the column's one pressure — every
+  shipped plant byte-identical by construction, not by arithmetic.
+- **The pressures**: `P_1` the column's declared pressure, `P_{j+1} = P_j +
+  ΔP_j`, `ΔP_j` tray `j`'s fed-back drop (`stage_pressures`). Read at every
+  stage site: the K-values of the fixed point, of Newton
+  (`ColumnEquations::stage_pressures`), of the warm start and after the
+  solve; the bubble profile and the wet one (`oil_bubble_profile`, the oil's
+  partial pressure of the stage's own); the feed's seed and flash, dry and wet,
+  at the feed stage's; each tray's vapour density at the stage below's. At
+  the column's: the condenser (`StageState::pressure`, Newton's condenser),
+  and the passes that solve no stages (an idle column, a flooded pass-through,
+  a water-only or oil-free inflow). `StageCascade` passes its one pressure on
+  every stage (it declares no trays). `cascade::bubble_profile` and
+  `stage_k_values_profile` take one pressure per stage and refuse a mismatch.
+- **The cap** (`trays::capped_drop`): up to jet flood a tray's own drop, to the
+  bit; past it the drop with its vapour cut by bisection (60 steps) to exactly
+  100 % of jet flood, the liquid as it is. Bisection holds because the flood
+  fraction rises with the vapour: `d ln C_sb/d ln G ≤ 0.842/e ≈ 0.31` at any
+  flow parameter, so `d ln(flood fraction)/d ln G ≥ 0.69`.
+- **The snapshot**: each `TrayOperation` gains `pressure_pa`, the pressure its
+  stage solved at; `pressure_drop_pa` stays the correlation's reading, so past
+  flood the drops add up to more than the pressures rise (said on both
+  fields). In core: `TrayHydraulics::pressure` and `::fed_back_drop`,
+  `Separation::stage_pressure(stage)` (a tray's own, the reboiler's the last
+  tray's plus its fed-back drop, `None` without trays and at the condenser).
+- **The lines** (`network::march_draw_lines`, both flow fidelities): a draw
+  line and a loop line start at their own stage's pressure — the column's
+  previous separation's, a tick late as the drawn liquid already is
+  (`line_stage_pressure`); the distillate's at the condenser, every line of a
+  column without trays, and every line before a column's first separation, at
+  the column's declared pressure, as before. **Decided while building: a
+  loop arrives against its RETURN stage's pressure**, not the column's — §78.1
+  named only where lines start; a loop arriving at the top's pressure would be
+  handed its return tray's height over the top for free (40–110 mbar on the
+  loop plant). The network's column node keeps its declared pressure, so the
+  feed's and the steam's lines still arrive at the top's (§78.1: the feed
+  flashes at its stage's inside the column; the steam enters the stage's
+  balance as before — no shipped or planned plant has trays and steam).
+
+**Measured** (M73.1's fixture, the loop plant with five sections, 300 ticks
+from cold, both flow solvers to 1e-11): the last tray 111.8 mbar over the
+top (the reboiler 122 mbar); the bottom +5.49 K, the top +0.03 K (the probe
++5.5 / +0.03); the feed's flash share 0.6615 → 0.6532 (the probe 0.663 →
+0.654); every product's every cut within 0.0016 of its mass fraction. At a
+reflux of 15, walked from 4: every tray floods, the last tray 155.7 mbar over
+the top against 373 mbar of raw drops, the lists the raw readings'. The
+solver's own 13-tray column (Trouton K-values): 122.3 mbar to the reboiler;
+`|Σ K(T_j, P_j)·x_j − 1|` 4.1e-7 at each stage's pressure and 6.8e-2 at the
+top's; from cold, its settled profile, that profile with no drops and with
+every drop 200 mbar, one column to 0.61 Pa and 3.0e-4 K.
+
+**Gates**: `crates/scenarios/tests/tray_pressure.rs` — the drop moves the
+column by the numbers above on both solvers, the column node still at
+1.8 bar; past flood the column runs on capped, its lists the raw readings'; a
+loop line's pump and cooler where a hand march from its draw tray's pressure
+puts them (1e-9); a short loop arriving at its return tray's pressure (1e-9);
+a draw line's pump from its tray's pressure (the boiling crude unit with two
+sections inline: kerosene 1e-9, the residue from the reboiler's 1e-6 —
+measured 3.4e-8, its drawn temperature the reboiler's to the bit and the
+0.011 Pa left untraced, against 1.5 kPa had it started at the last tray
+without its drop). `heat_balance::newton_tests` — each stage at its own
+pressure (the chain, the reboiler's, the summation both ways, the flash share
+at the feed stage's to the bit); the answer not hanging on the drops it starts
+from; past flood the flooded trays feeding back less than they read and every
+other exactly what it reads. `heat_balance::loop_tests` — with trays the
+fixed point and Newton on one column (1.1e-3 K and 0.05 Pa apart; 7.1e-3 K
+without trays, their own tolerances), 3.58 K off the column without — on
+Trouton's K-values: the module's constant-alpha ones do not read the pressure,
+so on them the trays move nothing at all. `trays::tests`
+— the cap (the reading to the bit below flood; at flood to 1e-9 above it,
+whatever the vapour); a tray's vapour read at the stage below's pressure.
+M73.1's `the_trays_move_nothing_else_*` removed: the trays now move the
+column, by design.
+
+**Not gated**: a wet or steamed column with trays — its sites are converted
+(the wet bubble profile, the wet feed's flash; Newton's water K through the
+same per-stage row), none is tested, and no plant has one; M73.3's plant is
+dry.
+
+**Mutations**: sixteen, thirteen caught — Newton's K, the fixed point's K and
+its bubble profile, the feed's flash, each at the top's pressure; the drops
+chained in the wrong order; the column settled after one solve; the raw drop
+fed back; the cap only far past flood; a tray's vapour at its own stage's
+pressure; the reboiler without the drop across the last tray; the lines
+started at the column's pressure; a loop arriving at the column's; the
+snapshot's tray pressure. Three argued equivalent: the warm start's K at the
+top's (it only sets the draws Newton starts from), the K after the solve at
+the top's (every K here is Raoult's, `∝ 1/P`: the trays normalize `y = K·x`,
+and the distillate's is the top stage's own; it would move a wet column's
+effective K, which is not gated, above), and the feed's seed at the top's (the
+cold start's temperature, Newton's residual scale and the flash's bracket —
+the flash share lands to the bit either way).
+
+**Every shipped plant byte-identical** on both fidelities (68 of 68).

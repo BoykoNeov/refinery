@@ -201,12 +201,11 @@ fn perrys_example_9_runs_at_its_percent_of_flood() {
             liquid_density: KgPerM3(841.0),
             surface_tension: NewtonPerMeter(0.025),
         },
-    )
-    .reading(1);
+    );
+    let flood_fraction = reading.net_velocity.value() / reading.flood_velocity.value();
     let perry = 0.0756 / 0.0993;
     assert!(
-        (reading.flood_fraction / perry - 1.0).abs() < 0.02,
-        "{} against Perry's {perry}",
-        reading.flood_fraction
+        (flood_fraction / perry - 1.0).abs() < 0.02,
+        "{flood_fraction} against Perry's {perry}"
     );
 }

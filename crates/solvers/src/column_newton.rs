@@ -103,7 +103,12 @@ pub(crate) struct ColumnEquations<'a> {
     pub(crate) spec: &'a CascadeSpec,
     pub(crate) slate: &'a Slate,
     pub(crate) thermo: &'a dyn ThermoModel,
+    /// The column's pressure [Pa]: the condenser's.
     pub(crate) pressure: Pascal,
+    /// Each stage's pressure [Pa], top first, which its K-values read (M73.2,
+    /// docs/DESIGN.md §78.9) — `pressure` on every stage of a column without
+    /// trays.
+    pub(crate) stage_pressures: &'a [Pascal],
     pub(crate) feed: &'a MoleFractions,
     /// The same feed as MASS fractions — the basis I7's per-component residual
     /// is taken in.
@@ -320,12 +325,17 @@ impl ColumnEquations<'_> {
                 .map_err(|_| outside("a water vapour rate left the physical region"))?;
         }
 
+        if self.stage_pressures.len() != n {
+            return Err(outside("the stage pressures do not match the stages"));
+        }
         let mut k = Vec::with_capacity(n);
         let mut water_k = Vec::new();
         for (j, t) in temperatures.iter().enumerate() {
             let mut row = Vec::with_capacity(slate.len());
             for c in 0..slate.len() {
-                let value = self.thermo.k_value(slate, c, Kelvin(*t), self.pressure)?;
+                let value = self
+                    .thermo
+                    .k_value(slate, c, Kelvin(*t), self.stage_pressures[j])?;
                 if !value.is_finite() || value <= 0.0 {
                     return Err(outside("a K-value left the physical region"));
                 }

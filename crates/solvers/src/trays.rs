@@ -3,10 +3,12 @@
 //! tray runs to flooding and to weeping, its pressure drop and its downcomer's
 //! backup.
 //!
-//! **A reading, not a model of the column.** Nothing here feeds back into the
-//! stage balances: the column still solves at its one pressure, and a tray past
+//! **The pressure drop feeds back; nothing else does** (M73.2, §78.9): each
+//! stage solves at the column's pressure plus the drops across the trays above
+//! it, each drop capped at its value at 100 % of jet flood ([`capped_drop`],
+//! the user's decision, §78.8). The readings are reported raw, and a tray past
 //! flood still separates as an equilibrium stage (§78.5 defers how the products
-//! worsen). Computed once per converged pass, on columns with trays only.
+//! worsen). Computed once per converged solve, on columns with trays only.
 //!
 //! Every correlation was checked against a published source before it was
 //! written (§78.4.1), and the set reproduces a published worked example — NPTEL,
@@ -205,10 +207,14 @@ pub struct SieveTray {
 }
 
 impl SieveTray {
-    /// What the snapshot reports of it, at `stage` (one-based from the top).
-    pub fn reading(&self, stage: u32) -> TrayHydraulics {
+    /// What the snapshot reports of it, at `stage` (one-based from the top),
+    /// whose stage solved at `pressure` and the stage below `fed_back_drop`
+    /// higher [Pa].
+    pub fn reading(&self, stage: u32, pressure: Pascal, fed_back_drop: Pascal) -> TrayHydraulics {
         TrayHydraulics {
             stage,
+            pressure,
+            fed_back_drop,
             flood_fraction: self.net_velocity.value() / self.flood_velocity.value(),
             weep_margin: self.hole_velocity.value() / self.weep_velocity.value(),
             pressure_drop: self.pressure_drop,
@@ -292,6 +298,50 @@ pub fn sieve_tray(geometry: &TrayGeometry, load: &TrayLoad) -> SieveTray {
     }
 }
 
+/// Bisection steps on a flooded tray's vapour in [`capped_drop`]: 2^-60 of its
+/// load, under an `f64`'s spacing at it.
+const CAP_BISECTIONS: u32 = 60;
+
+/// The pressure drop a tray feeds back to the stage below it [Pa] (M73.2,
+/// docs/DESIGN.md §78.8–§78.9): its own up to jet flood; past it, the drop
+/// with its vapour cut to where the tray stands at exactly 100 % of flood, the
+/// liquid as it is — a game value, the user's decision: the correlations mean
+/// nothing past flood, and the column runs on. Not a plain scaling of the
+/// drop: the flow parameter moves with the vapour. The cut is found by
+/// bisection, which holds because the flood fraction rises with the vapour —
+/// the net velocity in proportion, the flood velocity slower: `C_sb` grows
+/// with the vapour by at most `0.842/e ≈ 0.31` of its own share
+/// (`d ln C_sb/d ln G ≤ 1.463·0.842·u·e^(−1.463u) ≤ 0.842/e` at any flow
+/// parameter `u`), so `d ln(flood fraction)/d ln G ≥ 0.69`.
+pub fn capped_drop(geometry: &TrayGeometry, load: &TrayLoad) -> Pascal {
+    let at = |share: f64| {
+        let cut = TrayLoad {
+            vapour: KgPerSec(load.vapour.value() * share),
+            ..*load
+        };
+        let tray = sieve_tray(geometry, &cut);
+        (
+            tray.net_velocity.value() / tray.flood_velocity.value(),
+            tray.pressure_drop,
+        )
+    };
+    let (flood, drop) = at(1.0);
+    if flood <= 1.0 {
+        return drop;
+    }
+    // `low` at or under flood, `high` past it.
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..CAP_BISECTIONS {
+        let middle = 0.5 * (low + high);
+        if at(middle).0 > 1.0 {
+            high = middle;
+        } else {
+            low = middle;
+        }
+    }
+    at(low).1
+}
+
 /// The liquid's density at the tray [kg/m³] — a game value (§78.4.1): each
 /// condensed cut its declared (15 °C) density less `DENSITY_SLOPE` per kelvin
 /// above, floored, mixed by volume (ideal mixing, as `Composition` mixes).
@@ -349,14 +399,15 @@ fn section_of(trays: &[TraySection], stage: u32) -> Option<&TraySection> {
 /// A converged column's loads on its trays, and each tray's hydraulics (§78.3).
 /// Tray `j` (zero-based, every stage but the reboiler) carries the vapour
 /// rising from stage `j + 1` — its oil at `y = K·x` and its water vapour, an
-/// ideal gas at that stage's temperature and the column's pressure — and the
-/// liquid leaving stage `j`: down, drawn and into a loop, its oil and its free
-/// water.
+/// ideal gas at that stage's temperature and pressure (M73.2) — and the liquid
+/// leaving stage `j`: down, drawn and into a loop, its oil and its free water.
+/// `pressures` is the one each stage solved at; each reading carries its
+/// stage's, and the drop it feeds back ([`capped_drop`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn column_trays(
     slate: &Slate,
     spec: &CascadeSpec,
-    pressure: Pascal,
+    pressures: &[Pascal],
     temperatures: &[f64],
     liquid: &[Vec<f64>],
     k: &[Vec<f64>],
@@ -369,6 +420,12 @@ pub(crate) fn column_trays(
         .map_or(0.0, |index| slate.get(index).molar_mass.value());
     let molar_mass = |c: usize| slate.get(c).molar_mass.value();
     let stages = temperatures.len();
+    if pressures.len() != stages {
+        return Err(SimError::Numerical(format!(
+            "internal: tray hydraulics read {} stage pressures for {stages} stages",
+            pressures.len()
+        )));
+    }
     let mut out = Vec::with_capacity(stages.saturating_sub(1));
     for j in 0..stages.saturating_sub(1) {
         let stage = j as u32 + 1;
@@ -395,8 +452,9 @@ pub(crate) fn column_trays(
         } else {
             oil_molar_mass
         };
-        // Ideal gas: ρV = P·M̄/(R·T).
-        let vapour_density = pressure.value() * mean_molar_mass / (R_GAS * temperatures[below]);
+        // Ideal gas at the stage below's pressure: ρV = P·M̄/(R·T).
+        let vapour_density =
+            pressures[below].value() * mean_molar_mass / (R_GAS * temperatures[below]);
         // The liquid leaving the tray, its oil and its free water.
         let liquid_molar_mass: f64 = liquid[j]
             .iter()
@@ -418,10 +476,16 @@ pub(crate) fn column_trays(
                 "tray hydraulics: tray {stage}'s vapour has density {vapour_density} kg/m³."
             )));
         }
-        let reading = sieve_tray(&TrayGeometry::of(section), &load).reading(stage);
+        let geometry = TrayGeometry::of(section);
+        let reading = sieve_tray(&geometry, &load).reading(
+            stage,
+            pressures[j],
+            capped_drop(&geometry, &load),
+        );
         let finite = reading.flood_fraction.is_finite()
             && reading.weep_margin.is_finite()
             && reading.pressure_drop.is_finite()
+            && reading.fed_back_drop.is_finite()
             && reading.downcomer_backup.is_finite();
         if !finite {
             return Err(SimError::Scenario(format!(
@@ -631,11 +695,131 @@ mod tests {
         assert!(four.flood_velocity.value() > one.flood_velocity.value());
     }
 
+    /// **Up to jet flood a tray feeds back its own drop, past it the drop at
+    /// exactly 100 % of flood** (M73.2, §78.8): below flood the cap is the
+    /// reading to the bit; above, the vapour it was cut to stands at flood to
+    /// 1e-12, its drop under the raw one, and the same whatever the vapour
+    /// past flood was.
+    #[test]
+    fn a_flooded_trays_drop_is_capped_at_flood() {
+        let geometry = TrayGeometry::of(&section(4));
+        let flood = |vapour: f64| {
+            let tray = sieve_tray(&geometry, &load(vapour, 120.0));
+            tray.net_velocity.value() / tray.flood_velocity.value()
+        };
+        assert!(flood(60.0) < 1.0 && flood(200.0) > 1.0);
+        let below = load(60.0, 120.0);
+        assert_eq!(
+            capped_drop(&geometry, &below),
+            sieve_tray(&geometry, &below).pressure_drop
+        );
+        // The vapour at exactly flood, by a bisection of its own.
+        let (mut low, mut high) = (60.0, 200.0);
+        for _ in 0..200 {
+            let middle = 0.5 * (low + high);
+            if flood(middle) > 1.0 {
+                high = middle;
+            } else {
+                low = middle;
+            }
+        }
+        assert!((flood(low) - 1.0).abs() < 1e-12);
+        let at_flood = sieve_tray(&geometry, &load(low, 120.0))
+            .pressure_drop
+            .value();
+        for vapour in [200.0, 400.0] {
+            let past = load(vapour, 120.0);
+            let capped = capped_drop(&geometry, &past).value();
+            assert!(
+                (capped / at_flood - 1.0).abs() < 1e-9,
+                "{capped} against {at_flood}"
+            );
+            assert!(capped < sieve_tray(&geometry, &past).pressure_drop.value());
+        }
+    }
+
+    /// **A tray reads its vapour at the pressure of the stage it rises from**
+    /// (M73.2, §78.1): the readings with the stage below at `P₂` are the
+    /// readings with both stages at `P₂`, but for the tray's own pressure, and
+    /// not the readings with both at the top's.
+    #[test]
+    fn a_trays_vapour_is_read_at_the_stage_below() {
+        use refinery_core::components::PseudoComponent;
+        use refinery_core::units::{JPerKgK, Kelvin, KgPerMol};
+        let slate = Slate::new(
+            [("light", 420.0, 0.12, 760.0), ("heavy", 520.0, 0.20, 840.0)]
+                .iter()
+                .map(|(name, tb, molar_mass, density)| PseudoComponent {
+                    name: (*name).into(),
+                    tb: Kelvin(*tb),
+                    molar_mass: KgPerMol(*molar_mass),
+                    density: Some(KgPerM3(*density)),
+                    cp: JPerKgK(2100.0),
+                    cp_shape: None,
+                    phase: Phase::Liquid,
+                    dh_vap: None,
+                    cp_vapour: None,
+                    free_water: false,
+                })
+                .collect(),
+        )
+        .unwrap();
+        let spec = CascadeSpec {
+            stages: 2,
+            feed_stage: 1,
+            reflux_ratio: 2.0,
+            pumparounds: Vec::new(),
+            steam: None,
+            reboiler_duty: None,
+            loops: Vec::new(),
+            trays: vec![section(1)],
+        };
+        let flows = Flows {
+            liquid_in: vec![300.0, 300.0],
+            liquid_down: vec![300.0, 0.0],
+            liquid_drawn: vec![0.0, 100.0],
+            vapour: vec![400.0, 400.0],
+            reflux: 300.0,
+            circulation_in: vec![0.0, 0.0],
+            circulation_out: vec![0.0, 0.0],
+        };
+        let trays = |top: f64, below: f64| {
+            column_trays(
+                &slate,
+                &spec,
+                &[Pascal(top), Pascal(below)],
+                &[480.0, 500.0],
+                &[vec![0.6, 0.4], vec![0.3, 0.7]],
+                &[vec![1.4, 0.7], vec![1.6, 0.8]],
+                &flows,
+                &[],
+                &[],
+            )
+            .unwrap()[0]
+        };
+        let (top, below) = (1.8e5, 2.0e5);
+        let read = trays(top, below);
+        assert_eq!(read.pressure, Pascal(top));
+        let both_below = trays(below, below);
+        assert_eq!(
+            TrayHydraulics {
+                pressure: Pascal(top),
+                ..both_below
+            },
+            read
+        );
+        assert_ne!(trays(top, top).pressure_drop, read.pressure_drop);
+    }
+
     #[test]
     fn a_tray_with_no_vapour_reads_finite_numbers() {
         let geometry = TrayGeometry::of(&section(4));
         for (vapour, liquid) in [(0.0, 50.0), (0.0, 0.0), (40.0, 0.0)] {
-            let reading = sieve_tray(&geometry, &load(vapour, liquid)).reading(3);
+            let reading = sieve_tray(&geometry, &load(vapour, liquid)).reading(
+                3,
+                Pascal(1.8e5),
+                capped_drop(&geometry, &load(vapour, liquid)),
+            );
             assert!(reading.flood_fraction.is_finite(), "{reading:?}");
             assert!(reading.weep_margin.is_finite(), "{reading:?}");
             assert!(reading.pressure_drop.is_finite(), "{reading:?}");

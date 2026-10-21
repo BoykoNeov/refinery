@@ -751,10 +751,8 @@ pub struct ColumnOperation {
     pub loops: Vec<LoopOperation>,
     /// Each tray's hydraulics, top tray first, one per stage above the
     /// reboiler (M73.1, docs/DESIGN.md §78.3). Only on a column that declares
-    /// its trays; absent, and not serialized, elsewhere.
-    ///
-    /// **No tray pressure yet**: every stage still solves at the column's one
-    /// pressure, so the drop is published and the pressure is not (§78.3).
+    /// its trays; absent, and not serialized, elsewhere. Each stage solves at
+    /// its tray's `pressure_pa` (M73.2, §78.9).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trays: Vec<TrayOperation>,
     /// The trays flooding, by stage (one-based from the top): past jet flood
@@ -774,13 +772,20 @@ pub struct ColumnOperation {
 pub struct TrayOperation {
     /// The tray's stage, one-based from the top.
     pub stage: u32,
+    /// The pressure its stage solved at [Pa] (M73.2, docs/DESIGN.md §78.9):
+    /// the column's declared pressure on the top tray, each below higher by
+    /// the drop across the tray above — that drop capped at 100 % of jet
+    /// flood, so past flood these pressures rise slower than the published
+    /// `pressure_drop_pa` add up.
+    pub pressure_pa: f64,
     /// The vapour's velocity over its velocity at jet flood [-]; past one
     /// the tray floods.
     pub flood_fraction: f64,
     /// The holes' vapour velocity over the weep point's [-]; under one the
     /// tray weeps.
     pub weep_margin: f64,
-    /// The pressure drop across the tray [Pa].
+    /// The pressure drop across the tray [Pa], as the correlation reads it —
+    /// past jet flood too.
     pub pressure_drop_pa: f64,
     /// The downcomer's clear-liquid backup over its limit [-]; past one the
     /// tray floods.

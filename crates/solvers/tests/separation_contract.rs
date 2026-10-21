@@ -295,6 +295,7 @@ impl SeparationModel for Recorder {
                 free_water: Vec::new(),
                 reflux_ratio: None,
                 cut_back: Vec::new(),
+                tray_drops: Vec::new(),
             }),
             draws: vec![half.clone(), half],
             condenser_duty: None,

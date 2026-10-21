@@ -803,6 +803,7 @@ fn a_seed_of_the_wrong_shape_is_ignored_and_the_answer_is_the_cold_one() {
         free_water: Vec::new(),
         reflux_ratio: None,
         cut_back: Vec::new(),
+        tray_drops: Vec::new(),
     };
     let wrong_slate = CascadeProfile {
         temperatures: good.temperatures.clone(),
@@ -811,6 +812,7 @@ fn a_seed_of_the_wrong_shape_is_ignored_and_the_answer_is_the_cold_one() {
         free_water: Vec::new(),
         reflux_ratio: None,
         cut_back: Vec::new(),
+        tray_drops: Vec::new(),
     };
 
     for (name, seed) in [("too short", &too_short), ("wrong slate", &wrong_slate)] {

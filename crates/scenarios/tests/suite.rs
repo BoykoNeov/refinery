@@ -193,6 +193,8 @@ mod temperature_control_reference;
 mod temperature_heating_demo;
 #[path = "tray_hydraulics.rs"]
 mod tray_hydraulics;
+#[path = "tray_pressure.rs"]
+mod tray_pressure;
 #[path = "trip_demo.rs"]
 mod trip_demo;
 #[path = "trip_reference.rs"]

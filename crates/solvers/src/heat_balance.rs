@@ -21,7 +21,10 @@
 //!
 //! It reads only liquid `cp` and `Δh_vap`, the two properties `column_duties`
 //! already reads, so DESIGN §5 fork 1's verdict holds: no vapour density, and
-//! nothing two-phase on the plant graph.
+//! nothing two-phase on the plant graph — on every column but one that
+//! declares its trays (M73, docs/DESIGN.md §78.1), whose trays read the
+//! vapour's density and whose stages each solve at their own pressure, the
+//! drops across the trays above fed back (M73.2, §78.9, `fractionate`).
 
 use refinery_core::components::{Composition, Slate};
 use refinery_core::energy::T_REF;
@@ -138,6 +141,45 @@ const PUMPAROUND_HALVINGS: u32 = 4;
 /// corpus at 6.55 % (the stripped crude unit's gas-oil tray), so at 5 % every
 /// shipped plant is what it was to the bit, and at 10 % that one moves.
 const CUT_BACK_LIQUID_OF_FEED: f64 = 0.05;
+
+/// The most any tray's pressure drop may move between a column's last two
+/// solves and count as settled [Pa] (M73.2, docs/DESIGN.md §78.9).
+///
+/// **A convergence aid, measured, not physics**: M73.2.0's probe (§78.8
+/// findings 4–5) landed within 0.11 Pa a tray and 0.0003 K at the bottom from
+/// no drops and from the settled ones at this tolerance; each re-solve cuts
+/// the drops' error 10–15 times.
+const DROP_TOLERANCE: Pascal = Pascal(0.5);
+
+/// Solves a column with trays may take for its drops to settle before it
+/// refuses (M73.2). **A convergence aid**: the probe measured 9 from cold, 3–5
+/// on a tick a key moves and one on a steady tick, over the loop plant's
+/// whole reflux range (§78.8 finding 5).
+const MAX_DROP_SOLVES: u32 = 25;
+
+/// Each stage's pressure [Pa], top first: the column's at the top, each stage
+/// below higher by the drop across the tray above it, `P_{j+1} = P_j + ΔP_j`
+/// (M73.2, docs/DESIGN.md §78.1). `drops` empty: every stage at the column's
+/// one pressure; otherwise one per tray, every stage but the reboiler.
+fn stage_pressures(top: Pascal, stages: usize, drops: &[Pascal]) -> Result<Vec<Pascal>, SimError> {
+    if drops.is_empty() {
+        return Ok(vec![top; stages]);
+    }
+    if drops.len() + 1 != stages {
+        return Err(SimError::Numerical(format!(
+            "internal: {} tray pressure drops for a column of {stages} stages",
+            drops.len()
+        )));
+    }
+    let mut pressures = Vec::with_capacity(stages);
+    let mut here = top.value();
+    pressures.push(top);
+    for drop in drops {
+        here += drop.value();
+        pressures.push(Pascal(here));
+    }
+    Ok(pressures)
+}
 
 /// A cut-back draw is released once the share it would run at passes its
 /// declared one by this much [-], so a draw that sits ON the minimum is not
@@ -346,6 +388,11 @@ struct ColumnSetup<'a> {
     /// order ([`SHARP_SEED_ITERATIONS`]; the whole warm-up on the retry of a
     /// refused cold start, M72.4, docs/DESIGN.md §77.5).
     sharp_seed: u32,
+    /// Each stage's pressure [Pa], top first (M73.2, docs/DESIGN.md §78.9):
+    /// the column's one pressure on every stage of a column without trays.
+    /// Every stage's K-values and bubble point read their own; the condenser
+    /// the column's (`pass.pressure`).
+    pressures: Vec<Pascal>,
 }
 
 impl SeparationModel for HeatBalanceCascade {
@@ -434,11 +481,84 @@ impl HeatBalanceCascade {
     /// One pass of the heat-balance cascade: every draw's split and the duties,
     /// or a refusal that says why the column could not settle. `continuation`
     /// is `ColumnSetup::continuation`.
+    ///
+    /// **A column that declares its trays solves each stage at its own
+    /// pressure** (M73.2, docs/DESIGN.md §78.9): solved, the drops its trays
+    /// feed back read ([`crate::trays::capped_drop`]), solved again at them —
+    /// each re-solve warm from the last — until no drop moves by
+    /// [`DROP_TOLERANCE`]. The first guess is the drops the profile it starts
+    /// from was solved at, or none; a hint, so the answer does not hang on it
+    /// (§78.8 finding 4). Every other column solves once, at its one pressure,
+    /// as it always has.
     fn fractionate(
         &self,
         pass: &ColumnPass<'_>,
         thermo: &dyn ThermoModel,
         continuation: bool,
+    ) -> Result<Separation, SimError> {
+        let Some(spec) = pass.cascade.filter(|spec| !spec.trays.is_empty()) else {
+            return self.fractionate_at(pass, thermo, continuation, &[]);
+        };
+        let trays = (spec.stages as usize).saturating_sub(1);
+        // The drops the profile this solve starts from was solved at — the
+        // same profile `fractionate_at` warm-starts from.
+        let start = spec.reboiler_duty.and(pass.earlier_pass).or(pass.seed);
+        let mut drops = start
+            .map(|profile| profile.tray_drops.clone())
+            .filter(|drops| drops.len() == trays)
+            .unwrap_or_else(|| vec![Pascal(0.0); trays]);
+        let mut latest: Option<CascadeProfile> = None;
+        let mut change = f64::INFINITY;
+        for _ in 0..MAX_DROP_SOLVES {
+            // Each re-solve warm from the last one's profile — for a held
+            // column, which starts from its earlier pass, that too.
+            let at = ColumnPass {
+                seed: latest.as_ref().or(pass.seed),
+                earlier_pass: pass.earlier_pass.and(latest.as_ref()).or(pass.earlier_pass),
+                ..*pass
+            };
+            let mut separation = self.fractionate_at(&at, thermo, continuation, &drops)?;
+            // A pass that did not fractionate (an idle column) has no trays
+            // to read and nothing to re-solve.
+            if separation.trays.len() != trays {
+                return Ok(separation);
+            }
+            let fed: Vec<Pascal> = separation
+                .trays
+                .iter()
+                .map(|tray| tray.fed_back_drop)
+                .collect();
+            change = fed
+                .iter()
+                .zip(&drops)
+                .map(|(read, used)| (read.value() - used.value()).abs())
+                .fold(0.0, f64::max);
+            if change < DROP_TOLERANCE.value() {
+                if let Some(profile) = separation.profile.as_mut() {
+                    profile.tray_drops = fed;
+                }
+                return Ok(separation);
+            }
+            drops = fed;
+            latest = separation.profile;
+        }
+        Err(SimError::Numerical(format!(
+            "heat-balance cascade: the trays' pressure drops still moved {change:.3} Pa after \
+             {MAX_DROP_SOLVES} solves, each stage at the pressure the last one's trays fed \
+             back (docs/DESIGN.md §78.9).{}",
+            settings_sentence(spec)
+        )))
+    }
+
+    /// [`Self::fractionate`] once, each tray's stage below it `drops` higher
+    /// than the stage above (one per tray, top first; empty — every stage at
+    /// the column's one pressure — on a column without trays).
+    fn fractionate_at(
+        &self,
+        pass: &ColumnPass<'_>,
+        thermo: &dyn ThermoModel,
+        continuation: bool,
+        drops: &[Pascal],
     ) -> Result<Separation, SimError> {
         let slate = pass.slate;
         let spec = pass.cascade.ok_or_else(|| {
@@ -465,6 +585,7 @@ impl HeatBalanceCascade {
         // place in every answer.
         let (oil_draws, water_draw) = split_water_draw(pass.draws)?;
         let plan = CascadePlan::new(spec, &oil_draws, slate.len())?;
+        let pressures = stage_pressures(pass.pressure, plan.stages, drops)?;
         let water_draw = match water_draw {
             Some(at) => Some((
                 at,
@@ -599,28 +720,31 @@ impl HeatBalanceCascade {
             }
         };
         let feed = MoleFractions::from_mass(&feed_composition, slate)?;
+        // The feed flashes at its stage's pressure (M73.2, docs/DESIGN.md
+        // §78.1) — the column's one pressure on a column without trays.
+        let feed_pressure = pressures[plan.feed_stage];
         let seed = bubble_temperature_unnormalized(
             slate,
             thermo,
             feed.fractions(),
-            pass.pressure,
+            feed_pressure,
             "the feed",
         )?;
         let feed_vapour_fraction = match &water {
             None => {
-                adiabatic_flash_share(slate, thermo, &feed, pass.temperature, seed, pass.pressure)?
+                adiabatic_flash_share(slate, thermo, &feed, pass.temperature, seed, feed_pressure)?
             }
             // The whole feed's share, oil and water, by the free-water flash
             // from its own wet bubble point (§67.17 rule 11).
             Some(_) => {
-                let bubble = bubble_temperature(slate, thermo, &whole, pass.pressure, "the feed")?;
+                let bubble = bubble_temperature(slate, thermo, &whole, feed_pressure, "the feed")?;
                 adiabatic_flash_share(
                     slate,
                     thermo,
                     &whole,
                     pass.temperature,
                     bubble,
-                    pass.pressure,
+                    feed_pressure,
                 )?
             }
         };
@@ -669,6 +793,7 @@ impl HeatBalanceCascade {
             water,
             continuation,
             sharp_seed: SHARP_SEED_ITERATIONS,
+            pressures,
         };
 
         let profile = match self.method {
@@ -677,7 +802,7 @@ impl HeatBalanceCascade {
         };
         let plan = &setup.plan;
 
-        let mut k = stage_k_values_profile(slate, thermo, &profile.temperatures, pass.pressure)?;
+        let mut k = stage_k_values_profile(slate, thermo, &profile.temperatures, &setup.pressures)?;
         if setup.water.is_some() {
             k = effective_k(k, &profile.flows.vapour, &profile.water_vapour);
         }
@@ -779,7 +904,7 @@ impl HeatBalanceCascade {
             crate::trays::column_trays(
                 slate,
                 spec,
-                pass.pressure,
+                &setup.pressures,
                 &profile.temperatures,
                 &profile.liquid,
                 &k,
@@ -824,6 +949,8 @@ impl HeatBalanceCascade {
                 free_water: profile.free_water,
                 reflux_ratio: Some(profile.reflux_ratio),
                 cut_back: profile.cut_back,
+                // Filled by `fractionate` once the drops settle.
+                tray_drops: Vec::new(),
             }),
             condenser_duty: Some(condenser_duty),
             reboiler_duty: Some(reboiler_duty),
@@ -862,7 +989,7 @@ impl HeatBalanceCascade {
             None => None,
         };
         let k_at = |temperatures: &[f64], oil_vapour: &[f64]| -> Result<Vec<Vec<f64>>, SimError> {
-            let k = stage_k_values_profile(slate, thermo, temperatures, pass.pressure)?;
+            let k = stage_k_values_profile(slate, thermo, temperatures, &setup.pressures)?;
             Ok(match &dry_water {
                 None => k,
                 Some(water_vapour) => effective_k(k, oil_vapour, water_vapour),
@@ -955,10 +1082,15 @@ impl HeatBalanceCascade {
             liquid = next;
 
             let next_t = match &dry_water {
-                None => bubble_profile(slate, thermo, &liquid, pass.pressure)?,
-                Some(water_vapour) => {
-                    oil_bubble_profile(slate, thermo, &liquid, &flows.vapour, water_vapour, pass)?
-                }
+                None => bubble_profile(slate, thermo, &liquid, &setup.pressures)?,
+                Some(water_vapour) => oil_bubble_profile(
+                    slate,
+                    thermo,
+                    &liquid,
+                    &flows.vapour,
+                    water_vapour,
+                    &setup.pressures,
+                )?,
             };
             temperature_change = stage_t
                 .iter()
@@ -1100,6 +1232,7 @@ impl HeatBalanceCascade {
             slate,
             thermo: setup.thermo,
             pressure: pass.pressure,
+            stage_pressures: &setup.pressures,
             feed: &setup.feed,
             feed_composition: &setup.feed_composition,
             feed_mass: setup.feed_mass,
@@ -1215,7 +1348,7 @@ impl HeatBalanceCascade {
             .iter()
             .map(|t| t.value() + self.seed_offset.value())
             .collect();
-        let k = stage_k_values_profile(slate, setup.thermo, &temperatures, pass.pressure)?;
+        let k = stage_k_values_profile(slate, setup.thermo, &temperatures, &setup.pressures)?;
         let draws = plan.draw_states(&previous.liquid, &k, slate)?;
         // The last tick's wet stages start this one's wet set (§67.17
         // rule 6) — a hint: on a dry feed there is none.
@@ -1475,6 +1608,7 @@ impl HeatBalanceCascade {
             water: setup.water.clone(),
             continuation: setup.continuation,
             sharp_seed: setup.sharp_seed,
+            pressures: setup.pressures.clone(),
         };
         let base_equations = ColumnEquations {
             plan: &base_plan,
@@ -1577,6 +1711,7 @@ impl HeatBalanceCascade {
             water: setup.water.clone(),
             continuation: setup.continuation,
             sharp_seed: setup.sharp_seed,
+            pressures: setup.pressures.clone(),
         };
         let base_equations = ColumnEquations {
             plan: &base_plan,
@@ -3311,18 +3446,19 @@ fn effective_k(mut k: Vec<Vec<f64>>, oil_vapour: &[f64], water_vapour: &[f64]) -
 }
 
 /// Every stage's bubble point at the oil's partial pressure `P·V/(V + W)`
-/// (§67.17 rule 3) — the warm-up's stage temperatures on a wet feed.
+/// (§67.17 rule 3), `P` the stage's own (`pressures`, one per stage) — the
+/// warm-up's stage temperatures on a wet feed.
 fn oil_bubble_profile(
     slate: &Slate,
     thermo: &dyn ThermoModel,
     liquid: &[Vec<f64>],
     oil_vapour: &[f64],
     water_vapour: &[f64],
-    pass: &ColumnPass<'_>,
+    pressures: &[Pascal],
 ) -> Result<Vec<f64>, SimError> {
     let mut temperatures = Vec::with_capacity(liquid.len());
     for (j, x) in liquid.iter().enumerate() {
-        let pressure = pass.pressure.value() * oil_vapour[j] / (oil_vapour[j] + water_vapour[j]);
+        let pressure = pressures[j].value() * oil_vapour[j] / (oil_vapour[j] + water_vapour[j]);
         temperatures.push(
             bubble_temperature_unnormalized(
                 slate,
@@ -3628,7 +3764,8 @@ mod tests {
     ) -> f64 {
         let profile = separation.profile.as_ref().unwrap();
         let stage_t: Vec<f64> = profile.temperatures.iter().map(|t| t.value()).collect();
-        let k = stage_k_values_profile(slate, thermo, &stage_t, P_ATM).unwrap();
+        let k =
+            stage_k_values_profile(slate, thermo, &stage_t, &vec![P_ATM; stage_t.len()]).unwrap();
         let spec = spec(reflux_ratio);
         let plan = CascadePlan::new(&spec, &draws(), slate.len()).unwrap();
         let states = plan.draw_states(&profile.liquid, &k, slate).unwrap();
@@ -3932,7 +4069,8 @@ mod tests {
         // the floor — and one of them ON it, or the floor did not bind.
         let profile = hot.profile.as_ref().unwrap();
         let stage_t: Vec<f64> = profile.temperatures.iter().map(|t| t.value()).collect();
-        let k = stage_k_values_profile(&slate, &thermo, &stage_t, P_ATM).unwrap();
+        let k =
+            stage_k_values_profile(&slate, &thermo, &stage_t, &vec![P_ATM; stage_t.len()]).unwrap();
         let spec = spec(0.5);
         let plan = CascadePlan::new(&spec, &draws(), slate.len()).unwrap();
         let states = plan.draw_states(&profile.liquid, &k, &slate).unwrap();
@@ -4221,7 +4359,8 @@ mod pumparound_tests {
         let separation = separate(&HeatBalanceCascade::new(), &spec).unwrap();
         let profile = separation.profile.as_ref().unwrap();
         let stage_t: Vec<f64> = profile.temperatures.iter().map(|t| t.value()).collect();
-        let k = stage_k_values_profile(&slate, &thermo, &stage_t, P_ATM).unwrap();
+        let k =
+            stage_k_values_profile(&slate, &thermo, &stage_t, &vec![P_ATM; stage_t.len()]).unwrap();
         let plan = CascadePlan::new(&spec, &draws(), slate.len()).unwrap();
         let states = plan.draw_states(&profile.liquid, &k, &slate).unwrap();
         let feed = Composition::from_weights(&[0.3, 0.3, 0.4]).unwrap();
@@ -4312,8 +4451,8 @@ mod newton_tests {
     use super::*;
     use crate::{ConstantAlphaThermo, TroutonThermo};
     use refinery_core::components::{Phase, PseudoComponent};
-    use refinery_core::graph::{ColumnDraw, NodeId, Pumparound, PumparoundLoop};
-    use refinery_core::units::{JPerKgK, JPerMol, KgPerM3, KgPerMol, KgPerSec, P_ATM};
+    use refinery_core::graph::{ColumnDraw, NodeId, Pumparound, PumparoundLoop, TraySection};
+    use refinery_core::units::{JPerKgK, JPerMol, KgPerM3, KgPerMol, KgPerSec, Meter, P_ATM};
 
     /// The largest relative gap between two separations: every draw's mass
     /// fractions (absolute), both duties and the reflux they ran at.
@@ -4719,6 +4858,215 @@ mod newton_tests {
             );
             assert!((run.duty.value() / duty - 1.0).abs() < 2e-3, "{run:?}");
         }
+    }
+
+    /// The 13-tray column with its trays in M73.1's five sections
+    /// (`crates/scenarios/tests/tray_hydraulics.rs`: 6.1 / 7.4 / 8.3 / 8.8 /
+    /// 8.3 m, each loop's two stages in one), at `reflux_ratio`.
+    fn thirteen_trays_with_trays(reflux_ratio: f64) -> (CrudeUnit, CascadeSpec) {
+        let (unit, spec) = thirteen_trays();
+        let trays = [
+            (1, 2, 6.1),
+            (3, 5, 7.4),
+            (6, 8, 8.3),
+            (9, 10, 8.8),
+            (11, 12, 8.3),
+        ]
+        .iter()
+        .map(|(from, to, diameter)| TraySection {
+            from: *from,
+            to: *to,
+            diameter: Meter(*diameter),
+            spacing: Meter(0.61),
+            weir_height: Meter(0.05),
+            hole_diameter: Meter(0.005),
+            hole_area_share: 0.10,
+            downcomer_share: 0.12,
+            clearance: Meter(0.04),
+            passes: 4,
+        })
+        .collect();
+        (
+            unit,
+            CascadeSpec {
+                reflux_ratio,
+                trays,
+                ..spec
+            },
+        )
+    }
+
+    /// `|Σ K(T_j, P_j)·x_j − 1|` at its worst over the stages, each stage's
+    /// K at `pressure_at(j)` — the bubble point every stage solved to.
+    fn worst_summation(
+        unit: &CrudeUnit,
+        profile: &CascadeProfile,
+        pressure_at: impl Fn(usize) -> Pascal,
+    ) -> f64 {
+        let thermo = TroutonThermo::new();
+        let mut worst: f64 = 0.0;
+        for (j, (t, x)) in profile.temperatures.iter().zip(&profile.liquid).enumerate() {
+            let mut sum = 0.0;
+            for (c, xc) in x.iter().enumerate() {
+                sum += thermo.k_value(&unit.slate, c, *t, pressure_at(j)).unwrap() * xc;
+            }
+            worst = worst.max((sum - 1.0).abs());
+        }
+        worst
+    }
+
+    /// **Each stage solves at its own pressure** (M73.2, docs/DESIGN.md
+    /// §78.9): the top at the column's 1.8 bar, each stage below higher by the
+    /// drop fed back across the tray above it (to the re-solve's 0.5 Pa), the
+    /// reboiler the last tray's plus its drop; every stage at its bubble point
+    /// at ITS pressure and far off it at the top's (the probe's check, §78.8:
+    /// 8.4e-8 and 4.3e-2); the feed flashed at its stage's pressure, not the
+    /// top's.
+    #[test]
+    fn each_stage_solves_at_its_own_pressure() {
+        let (unit, spec) = thirteen_trays_with_trays(4.0);
+        let separation = unit
+            .separate(&HeatBalanceCascade::new(), &spec, None)
+            .unwrap();
+        let trays = &separation.trays;
+        assert_eq!(trays.len(), 12);
+        assert_eq!(trays[0].pressure, Pascal(1.8e5));
+        for pair in trays.windows(2) {
+            let rise = pair[1].pressure.value() - pair[0].pressure.value();
+            assert!(
+                (rise - pair[0].fed_back_drop.value()).abs() < DROP_TOLERANCE.value(),
+                "{pair:?}"
+            );
+            assert!(rise > 0.0, "{pair:?}");
+        }
+        let last = trays[11];
+        assert_eq!(
+            separation.stage_pressure(13),
+            Some(Pascal(last.pressure.value() + last.fed_back_drop.value()))
+        );
+        assert_eq!(separation.stage_pressure(14), None);
+        assert_eq!(separation.stage_pressure(0), None);
+        let pressures: Vec<Pascal> = (1..=13)
+            .map(|stage| separation.stage_pressure(stage).unwrap())
+            .collect();
+        let profile = separation.profile.as_ref().unwrap();
+        let at_stage = worst_summation(&unit, profile, |j| pressures[j]);
+        let at_top = worst_summation(&unit, profile, |_| Pascal(1.8e5));
+        // Measured 4.1e-7 and 6.8e-2; the column's span 122.3 mbar (the
+        // probe's 122.1 on the scenario's thermodynamics).
+        assert!(at_stage < 1e-6, "{at_stage}");
+        assert!(at_top > 4e-2, "{at_top}");
+        let span = pressures[12].value() - 1.8e5;
+        assert!((1.20e4..1.25e4).contains(&span), "{span} Pa");
+        // The feed's flash share, at its stage's pressure (stage 11).
+        let feed = MoleFractions::from_mass(&unit.feed, &unit.slate).unwrap();
+        let thermo = TroutonThermo::new();
+        let share_at = |pressure: Pascal| {
+            let bubble = bubble_temperature_unnormalized(
+                &unit.slate,
+                &thermo,
+                feed.fractions(),
+                pressure,
+                "the feed",
+            )
+            .unwrap();
+            adiabatic_flash_share(
+                &unit.slate,
+                &thermo,
+                &feed,
+                Kelvin(355.0 + 273.15),
+                bubble,
+                pressure,
+            )
+            .unwrap()
+        };
+        // Measured 0.6536 at the feed stage, 0.6619 at the top (the probe's
+        // 0.654 and 0.663).
+        let share = separation.feed_vapour_fraction.unwrap();
+        assert_eq!(share, share_at(pressures[10]));
+        assert!(share < share_at(Pascal(1.8e5)) - 5e-3, "{share}");
+    }
+
+    /// **The answer does not hang on the drops it starts from** (M73.2,
+    /// §78.8 finding 4, the seed contract of `ColumnPass::seed`): from cold,
+    /// from its own settled profile, from that profile with its drops taken
+    /// away and with every drop 200 mbar, the column lands on one answer —
+    /// within the re-solve's tolerance (the probe: 0.11 Pa a tray, 0.0003 K
+    /// at the bottom).
+    #[test]
+    fn the_answer_does_not_hang_on_the_drops_it_starts_from() {
+        let (unit, spec) = thirteen_trays_with_trays(4.0);
+        let model = HeatBalanceCascade::new();
+        let cold = unit.separate(&model, &spec, None).unwrap();
+        let settled = cold.profile.clone().unwrap();
+        let no_drops = CascadeProfile {
+            tray_drops: Vec::new(),
+            ..settled.clone()
+        };
+        let absurd = CascadeProfile {
+            tray_drops: vec![Pascal(2.0e4); 12],
+            ..settled.clone()
+        };
+        for (name, seed) in [
+            ("settled", &settled),
+            ("no drops", &no_drops),
+            ("absurd drops", &absurd),
+        ] {
+            let warm = unit.separate(&model, &spec, Some(seed)).unwrap();
+            let pressure = warm
+                .trays
+                .iter()
+                .zip(&cold.trays)
+                .map(|(a, b)| (a.pressure.value() - b.pressure.value()).abs())
+                .fold(0.0, f64::max);
+            let temperature = warm
+                .profile
+                .as_ref()
+                .unwrap()
+                .temperatures
+                .iter()
+                .zip(&settled.temperatures)
+                .map(|(a, b)| (a.value() - b.value()).abs())
+                .fold(0.0, f64::max);
+            // Measured 0.61 Pa and 3.0e-4 K from the settled profile, 0.56 Pa
+            // and 2.7e-4 K from the absurd drops, 1e-9 from none.
+            assert!(pressure < 1.0, "{name}: {pressure} Pa");
+            assert!(temperature < 5e-3, "{name}: {temperature} K");
+        }
+    }
+
+    /// **Past flood the drop fed back is capped, and the trays still read
+    /// flooded** (M73.2, the user's decision, §78.8): at a reflux of 15,
+    /// walked from 4, the flooded trays feed back less than they read and
+    /// every other tray exactly what it reads; the stages' pressures rise by
+    /// the capped drops, so the column's span falls short of the raw drops'
+    /// sum.
+    #[test]
+    fn past_flood_the_drop_fed_back_is_capped() {
+        let model = HeatBalanceCascade::new();
+        let (unit, spec) = thirteen_trays_with_trays(4.0);
+        let at_four = unit.separate(&model, &spec, None).unwrap();
+        let (_, high) = thirteen_trays_with_trays(15.0);
+        let flooded = unit
+            .separate(&model, &high, at_four.profile.as_ref())
+            .unwrap();
+        let mut past = 0;
+        for tray in &flooded.trays {
+            let jet = tray.flood_fraction > 1.0;
+            if jet {
+                past += 1;
+                assert!(tray.fed_back_drop < tray.pressure_drop, "{tray:?}");
+            } else {
+                assert_eq!(tray.fed_back_drop, tray.pressure_drop, "{tray:?}");
+            }
+        }
+        let raw: f64 = flooded.trays.iter().map(|t| t.pressure_drop.value()).sum();
+        let span = flooded.stage_pressure(13).unwrap().value() - 1.8e5;
+        // Measured: all twelve past jet flood, the span 169.5 mbar against
+        // the raw drops' 375 (the probe: 150–170 capped, 360 raw).
+        assert!(past >= 10, "{past}");
+        assert!((1.5e4..1.8e4).contains(&span), "{span} Pa");
+        assert!(raw > 3.0e4, "{raw} Pa");
     }
 
     /// **On a loop column a short tray's product is cut back, and the set
@@ -5245,8 +5593,8 @@ mod loop_tests {
     use super::*;
     use crate::ConstantAlphaThermo;
     use refinery_core::components::{Phase, PseudoComponent};
-    use refinery_core::graph::{ColumnDraw, NodeId, PumparoundLoop};
-    use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol, KgPerSec, P_ATM};
+    use refinery_core::graph::{ColumnDraw, NodeId, PumparoundLoop, TraySection};
+    use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol, KgPerSec, Meter, P_ATM};
 
     fn slate() -> Slate {
         Slate::new(
@@ -5365,7 +5713,7 @@ mod loop_tests {
         let thermo = thermo(&slate);
         let profile = separation.profile.as_ref().unwrap();
         let t: Vec<f64> = profile.temperatures.iter().map(|t| t.value()).collect();
-        let k = stage_k_values_profile(&slate, &thermo, &t, P_ATM).unwrap();
+        let k = stage_k_values_profile(&slate, &thermo, &t, &vec![P_ATM; t.len()]).unwrap();
         let mut liquid = Vec::new();
         let mut vapour = Vec::new();
         for j in 0..t.len() {
@@ -5483,6 +5831,84 @@ mod loop_tests {
 
     /// **Newton lands where the fixed point does** with a loop's circulation
     /// among its unknowns.
+    /// **With trays, Newton and the fixed point land on one column** (M73.2,
+    /// docs/DESIGN.md §78.9): the fixed point's K-values and bubble points
+    /// read each stage's pressure as Newton's do, so the two land on the same
+    /// stage pressures, to the re-solve's tolerance, and the same stage
+    /// temperatures — and not on the column without trays. On Trouton's
+    /// K-values, which fall with the pressure: this module's constant-alpha
+    /// ones do not read it.
+    #[test]
+    fn with_trays_newton_lands_where_the_fixed_point_does() {
+        let bare = spec(vec![the_loop(10.0e6)]);
+        let trayed = CascadeSpec {
+            trays: vec![TraySection {
+                from: 1,
+                to: 7,
+                diameter: Meter(1.2),
+                spacing: Meter(0.61),
+                weir_height: Meter(0.05),
+                hole_diameter: Meter(0.005),
+                hole_area_share: 0.10,
+                downcomer_share: 0.12,
+                clearance: Meter(0.04),
+                passes: 1,
+            }],
+            ..bare.clone()
+        };
+        let separate = |model: &HeatBalanceCascade, spec: &CascadeSpec| {
+            let slate = slate();
+            let feed = feed();
+            let draws = draws();
+            model
+                .separate(
+                    &ColumnPass {
+                        slate: &slate,
+                        draws: &draws,
+                        smearing: Kelvin(0.0),
+                        pressure: P_ATM,
+                        feed: &feed,
+                        feed_flow: KgPerSec(10.0),
+                        temperature: Kelvin(400.0),
+                        cascade: Some(spec),
+                        seed: None,
+                        running_reboiler: None,
+                        earlier_pass: None,
+                        steam: None,
+                    },
+                    &crate::TroutonThermo::new(),
+                )
+                .unwrap()
+        };
+        let newton = separate(&HeatBalanceCascade::new(), &trayed);
+        let fixed = separate(&HeatBalanceCascade::fixed_point(), &trayed);
+        let plain = separate(&HeatBalanceCascade::new(), &bare);
+        let gap = |a: &Separation, b: &Separation| {
+            let (a, b) = (a.profile.as_ref().unwrap(), b.profile.as_ref().unwrap());
+            a.temperatures
+                .iter()
+                .zip(&b.temperatures)
+                .map(|(p, q)| (p.value() - q.value()).abs())
+                .fold(0.0, f64::max)
+        };
+        let pressure = newton
+            .trays
+            .iter()
+            .zip(&fixed.trays)
+            .map(|(a, b)| (a.pressure.value() - b.pressure.value()).abs())
+            .fold(0.0, f64::max);
+        let span = newton.stage_pressure(8).unwrap().value() - P_ATM.value();
+        // Measured: the span 88.5 mbar; the two solves 1.1e-3 K and 0.05 Pa
+        // apart (7.1e-3 K without trays, their own tolerances); the trays
+        // move a stage 3.58 K.
+        assert!(span > 1.0e3, "{span} Pa");
+        assert!(pressure < 1.0, "{pressure} Pa");
+        let solves = gap(&newton, &fixed);
+        assert!(solves < 1e-2, "{solves} K");
+        let moved = gap(&newton, &plain);
+        assert!(moved > 1.0, "{moved} K");
+    }
+
     #[test]
     fn newton_lands_where_the_fixed_point_does_with_a_loop() {
         let spec = spec(vec![the_loop(10.0e6)]);

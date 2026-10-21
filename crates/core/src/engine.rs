@@ -4082,6 +4082,7 @@ impl Engine {
                                 .iter()
                                 .map(|tray| TrayOperation {
                                     stage: tray.stage,
+                                    pressure_pa: tray.pressure.value(),
                                     flood_fraction: tray.flood_fraction,
                                     weep_margin: tray.weep_margin,
                                     pressure_drop_pa: tray.pressure_drop.value(),

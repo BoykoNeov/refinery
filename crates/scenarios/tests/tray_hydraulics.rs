@@ -1,7 +1,8 @@
 //! M73.1 — a column's trays declared and their hydraulics reported
 //! (docs/DESIGN.md §78.2, §78.3): the loop plant (`scenarios/crude_unit_loops.
 //! toml`, untouched) with tray sections added inline — the slice's test
-//! fixture; the new plant is M73.3's.
+//! fixture, and M73.2's (`tray_pressure.rs`, each stage at its own pressure);
+//! the new plant is M73.3's.
 //!
 //! The sections are sized as §78.2 says, offline with the probe's checked
 //! script (`tools/steptime/prototypes/m73_1/`) on the file's settings: each
@@ -13,7 +14,7 @@ use refinery_core::engine::Engine;
 use refinery_core::snapshot::{ColumnOperation, Command, Snapshot};
 use refinery_scenarios::{build_engine, load_str};
 
-const PLANT: &str = include_str!("../../../scenarios/crude_unit_loops.toml");
+pub(super) const PLANT: &str = include_str!("../../../scenarios/crude_unit_loops.toml");
 const CASCADE_PLANT: &str = include_str!("../../../scenarios/crude_column_cascade.toml");
 const ANCHOR: &str = "reflux_ratio = 4.0\nloops = [";
 /// The loop plant's twelve trays in five sections, each loop's two stages
@@ -57,27 +58,27 @@ fn with_trays(trays: &str) -> String {
     plant.replace(ANCHOR, &format!("reflux_ratio = 4.0\n{trays}loops = ["))
 }
 
-fn fixture() -> String {
+pub(super) fn fixture() -> String {
     with_trays(&trays_of(&SECTIONS))
 }
 
-fn on_solver(src: &str, solver: &str) -> String {
+pub(super) fn on_solver(src: &str, solver: &str) -> String {
     src.replace("flow = \"newton\"", &format!("flow = \"{solver}\""))
 }
 
-fn engine_of(src: &str) -> Result<Engine, String> {
+pub(super) fn engine_of(src: &str) -> Result<Engine, String> {
     let file = load_str(src).map_err(|e| e.to_string())?;
     build_engine(&file).map_err(|e| e.to_string())
 }
 
-fn run(engine: &mut Engine, ticks: u32) -> Snapshot {
+pub(super) fn run(engine: &mut Engine, ticks: u32) -> Snapshot {
     for tick in 0..ticks {
         engine.tick().unwrap_or_else(|e| panic!("tick {tick}: {e}"));
     }
     engine.snapshot()
 }
 
-fn operation(snapshot: &Snapshot) -> ColumnOperation {
+pub(super) fn operation(snapshot: &Snapshot) -> ColumnOperation {
     snapshot
         .nodes
         .iter()
@@ -86,7 +87,7 @@ fn operation(snapshot: &Snapshot) -> ColumnOperation {
         .expect("the column reports its operation")
 }
 
-fn set_reflux(engine: &mut Engine, reflux_ratio: f64) {
+pub(super) fn set_reflux(engine: &mut Engine, reflux_ratio: f64) {
     let node = engine.graph.find_node("column").unwrap();
     engine
         .apply(Command::SetRefluxRatio { node, reflux_ratio })
@@ -96,7 +97,7 @@ fn set_reflux(engine: &mut Engine, reflux_ratio: f64) {
 /// The lists are the trays' own verdicts, and nothing else (§78.3): every
 /// tray past jet flood or with its downcomer past its limit is named
 /// flooding, every tray under its weep point weeping, and no other.
-fn assert_lists_agree(operation: &ColumnOperation) {
+pub(super) fn assert_lists_agree(operation: &ColumnOperation) {
     let flooding: Vec<u32> = operation
         .trays
         .iter()
@@ -188,58 +189,6 @@ fn the_reflux_floods_and_weeps_the_trays_by_name() {
             assert!(operation.trays_weeping.is_empty(), "{operation:?}");
         }
     }
-}
-
-/// The snapshot as JSON, every tray key removed: the column's operation's,
-/// and its declaration's on its `kind`.
-fn without_trays(snapshot: &Snapshot) -> serde_json::Value {
-    fn strip(value: &mut serde_json::Value) {
-        match value {
-            serde_json::Value::Object(map) => {
-                map.remove("trays");
-                map.remove("trays_flooding");
-                map.remove("trays_weeping");
-                map.values_mut().for_each(strip);
-            }
-            serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
-            _ => {}
-        }
-    }
-    let mut value = serde_json::to_value(snapshot).unwrap();
-    strip(&mut value);
-    value
-}
-
-/// **The trays are a reading** (§78.3): the fixture and the loop plant it was
-/// made from run to the same snapshot, bit for bit, once the tray keys are
-/// taken out — through a cold start and a reflux step that floods trays.
-fn the_trays_move_nothing_else(solver: &str) {
-    let mut with = engine_of(&on_solver(&fixture(), solver)).unwrap();
-    let mut bare = engine_of(&on_solver(PLANT, solver)).unwrap();
-    for (ticks, reflux) in [(200, None), (50, Some(6.0)), (50, Some(1.0))] {
-        if let Some(reflux) = reflux {
-            set_reflux(&mut with, reflux);
-            set_reflux(&mut bare, reflux);
-        }
-        let (a, b) = (run(&mut with, ticks), run(&mut bare, ticks));
-        assert!(!operation(&a).trays.is_empty());
-        assert!(operation(&b).trays.is_empty());
-        assert_eq!(
-            without_trays(&a),
-            without_trays(&b),
-            "{solver}, reflux {reflux:?}"
-        );
-    }
-}
-
-#[test]
-fn the_trays_move_nothing_else_newton() {
-    the_trays_move_nothing_else("newton");
-}
-
-#[test]
-fn the_trays_move_nothing_else_simple() {
-    the_trays_move_nothing_else("simple");
 }
 
 /// **A column without trays publishes no tray key**: the shipped plants'
