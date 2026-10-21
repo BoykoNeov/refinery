@@ -29913,7 +29913,7 @@ trays past their limits at each step, every tray weeping at 1, none named at
 3, nine flooding at 6; each loop's draw tray carrying its circulation; the
 fixture and its plant bit-identical on both solvers once the tray keys are
 taken out (the trays move nothing); no tray key on a plant without trays;
-fourteen refusals by name.
+fifteen refusals by name.
 
 **Mutations**: eighteen, eighteen caught — the crest's 750, `K2`'s slope, the
 weep point's 0.90, the dry plate's 51, the residual's 12.5e3, the downcomer's
