@@ -46,9 +46,10 @@ fn tray_pressure(s: &Snapshot, stage: usize) -> f64 {
 /// 1): the fixture against the loop plant it was made from, 300 ticks from
 /// cold. The top tray at the column's declared 1.8 bar, each tray below
 /// higher; the column node, which every line into it reads, still at 1.8 bar;
-/// the bottom hotter by what the probe measured (5.5 K), the top unmoved;
-/// the feed flashing less, 100 mbar higher (0.663 → 0.654); every product
-/// within a fraction of a point.
+/// the bottom hotter by about what the probe measured (5.5 K; 5.9 K on the
+/// fixture's sections), the top unmoved; the feed flashing less, 100 mbar
+/// higher (0.663 → 0.654 in the probe); every product within a fraction of a
+/// point.
 fn the_drop_moves_the_column(solver: &str) {
     let mut with = engine_of(&on_solver(&fixture(), solver)).unwrap();
     let mut bare = engine_of(&on_solver(PLANT, solver)).unwrap();
@@ -78,11 +79,13 @@ fn the_drop_moves_the_column(solver: &str) {
                 .fold(0.0, f64::max)
         })
         .fold(0.0, f64::max);
-    // Measured on both solvers: the last tray 111.8 mbar over the top, the
-    // bottom +5.49 K, the top +0.03 K, the flash 0.6615 → 0.6532, every
-    // product's every cut within 0.0016 of its mass fraction.
-    assert!((1.05e4..1.20e4).contains(&span), "{span} Pa");
-    assert!((5.0..6.0).contains(&bottom), "{bottom} K");
+    // Measured on both solvers, on the fixture sized on §78.10's multipass
+    // layout: the last tray 120.4 mbar over the top, the bottom +5.89 K, the
+    // top +0.03 K, the flash 0.6615 → 0.6527, every product's every cut
+    // within 0.0016 of its mass fraction (on M73.2's fixture, five sections
+    // on the simplification: 111.8 mbar, +5.49 K, → 0.6532, 0.0016).
+    assert!((1.15e4..1.30e4).contains(&span), "{span} Pa");
+    assert!((5.5..6.5).contains(&bottom), "{bottom} K");
     assert!(top.abs() < 0.1, "{top} K");
     assert!(flash.0 < flash.1 - 5e-3, "{flash:?}");
     assert!(product < 3e-3, "{product}");
@@ -112,9 +115,10 @@ fn past_flood_the_column_runs_on_capped() {
     assert!(operation.trays_flooding.len() >= 6, "{operation:?}");
     let raw: f64 = operation.trays.iter().map(|t| t.pressure_drop_pa).sum();
     let span = operation.trays[11].pressure_pa - COLUMN_PA;
-    // Measured: the last tray 155.7 mbar over the top, the raw drops 373.
-    assert!((1.4e4..1.75e4).contains(&span), "{span} Pa");
-    assert!(raw > 3.0e4, "{raw} Pa");
+    // Measured: the last tray 170.2 mbar over the top, the raw drops 417
+    // (M73.2's fixture: 155.7 and 373).
+    assert!((1.6e4..1.85e4).contains(&span), "{span} Pa");
+    assert!(raw > 3.5e4, "{raw} Pa");
 }
 
 /// `k·Q|Q| + ρ·g·Δz` [Pa], a pipe's drop at `mass_flow` (Darcy–Weisbach).
@@ -236,7 +240,7 @@ fn boiling_with_trays() -> String {
         format!(
             "    {{ from = {from}, to = {to}, diameter_m = {diameter}, spacing_m = 0.61, \
              weir_height_m = 0.05, hole_diameter_m = 0.005, hole_area_share = 0.10, \
-             downcomer_share = 0.12, clearance_m = 0.04, passes = 4 }},\n"
+             downcomer_share = 0.18, clearance_m = 0.04, passes = 4 }},\n"
         )
     };
     plant.replace(

@@ -23,6 +23,10 @@
 //!   ed. (2005), §11.13.
 //! - **[S22]** Souza et al., *Chem. Eng. Res. Des.* 180 (2022) 1–12.
 //! - **[S25]** Souza et al., *Ind. Eng. Chem. Res.* 64 (2025) 2256–2273.
+//! - **[L]** Coker, *Ludwig's Applied Process Design* Vol. 2, 4th ed. (2010),
+//!   §10 (Nutter's valve-tray method): Fig. 10-149, Tables 10-52–10-55.
+//! - **[K]** Kister, *Distillation Operation* (1990), §6.12, §6.16, §6.19.
+//! - **[B]** Bolles, *AIChE J.* 22 (1976) 153–158: multipass flow distribution.
 
 use crate::cascade::Flows;
 use refinery_core::components::{Phase, Slate};
@@ -51,6 +55,10 @@ pub const MAX_HOLE_M: f64 = 0.013;
 pub const HOLE_SHARE_RANGE: (f64, f64) = (0.10, 0.15);
 /// The most liquid paths a tray is admitted with.
 pub const MAX_PASSES: u32 = 4;
+/// The least share of the column a side downcomer is admitted with: Nutter's
+/// floor, "minimum of 4.5 % of tower area" ([L] Fig. 10-149); Kister has
+/// downcomers under 5–8 % of the column avoided ([K] §6.16).
+pub const MIN_SIDE_DOWNCOMER_SHARE: f64 = 0.045;
 
 /// Each cut's density falls this much per kelvin above its declared (15 °C)
 /// one [kg/m³/K] — a game value: petroleum liquids expand about 0.0006–0.0011
@@ -76,13 +84,15 @@ pub struct TrayGeometry {
     pub weir_height: Meter,
     /// Perforation diameter [m].
     pub hole_diameter: Meter,
-    /// The column's area less one downcomer's [m²] — what Fair's chart rates.
+    /// The column's area less its outlet downcomers' [m²] — what Fair's chart
+    /// rates.
     pub net_area: SquareMeter,
     /// The holes' total area [m²].
     pub hole_area: SquareMeter,
-    /// One downcomer's area [m²].
+    /// The rated pass's downcomer's area [m²]: a side downcomer's (§78.10).
     pub downcomer_area: SquareMeter,
-    /// The outlet weir's length [m], per pass.
+    /// The outlet weir's length [m], per pass: the side downcomer's chord,
+    /// every pass's weir tuned to it (§78.10).
     pub weir_length: Meter,
     /// The gap under the downcomer's apron [m].
     pub clearance: Meter,
@@ -93,22 +103,34 @@ pub struct TrayGeometry {
 }
 
 impl TrayGeometry {
-    /// A declared section's geometry. A multipass tray is the simplification
-    /// §78.4.1 names: its areas a single-pass tray's (net `A_c − A_d`, active
-    /// `A_c − 2·A_d`), each pass over a weir the downcomer's chord long.
+    /// A declared section's geometry, on the multipass layout §78.10 settles.
+    /// `downcomer_share` is the tray's whole downcomer area over the column's,
+    /// Nutter's `DCA/A_t` ([L] eq. 10-573); every tray has that much outlet
+    /// downcomer and that much under its inlets, so the net area is
+    /// `A_c − DCA` and the active `A_c − 2·DCA` on any number of passes. On
+    /// `n` passes the side downcomers each hold `DCA/n` and the inner ones
+    /// `2·DCA/n` ([L] Fig. 10-149: four passes `DCA/4`, `DCA/2`, `DCA/2`;
+    /// two `DCA/2`, `DCA`); the passes share the bubbling and hole areas
+    /// evenly and their outlet weirs are tuned to carry the liquid evenly
+    /// ([K] §6.12 guideline 7; [B] p. 158, by picket fences, which only
+    /// shorten a weir). So every pass runs over a weir the side downcomer's
+    /// chord long, and the side pass — the shortest apron, its downcomer
+    /// `DCA/n` carrying `L/n` — is the one rated. One pass is a single-pass
+    /// tray exactly.
     pub fn of(section: &TraySection) -> Self {
         let diameter = section.diameter.value();
         let column = std::f64::consts::PI * diameter * diameter / 4.0;
         let downcomer = section.downcomer_share * column;
         let active = column - 2.0 * downcomer;
+        let side_share = section.downcomer_share / f64::from(section.passes);
         Self {
             spacing: section.spacing,
             weir_height: section.weir_height,
             hole_diameter: section.hole_diameter,
             net_area: SquareMeter(column - downcomer),
             hole_area: SquareMeter(section.hole_area_share * active),
-            downcomer_area: SquareMeter(downcomer),
-            weir_length: Meter(diameter * chord_of_segment(section.downcomer_share)),
+            downcomer_area: SquareMeter(side_share * column),
+            weir_length: Meter(diameter * chord_of_segment(side_share)),
             clearance: section.clearance,
             orifice_coefficient: orifice_coefficient(section.hole_area_share),
             passes: section.passes,
@@ -120,7 +142,8 @@ impl TrayGeometry {
 /// the diameter [-] — the weir of a segmental downcomer. The segment's area
 /// share is `(θ − sin θ)/(2π)` at a central angle `θ`, which rises with `θ`, and
 /// its chord `D·sin(θ/2)`; `θ` found by bisection (a fixed count, deterministic).
-/// 0.727 at 10 %, 0.764 at 12 % — Sinnott's Fig. 11.31 reads 0.73 and 0.76.
+/// 0.727 at 10 %, 0.764 at 12 % — Sinnott's Fig. 11.31 reads 0.73 and 0.76;
+/// Nutter's tables to their four places ([L] Tables 10-52–10-53).
 fn chord_of_segment(share: f64) -> f64 {
     let (mut low, mut high) = (0.0_f64, std::f64::consts::PI);
     for _ in 0..60 {
@@ -631,6 +654,16 @@ fn check_geometry(section: &TraySection) -> Result<(), String> {
             section.passes
         ));
     }
+    let side = downcomer / f64::from(section.passes);
+    if side < MIN_SIDE_DOWNCOMER_SHARE {
+        return Err(format!(
+            "downcomer_share = {downcomer} on {} passes leaves each side downcomer {:.1} % of \
+             the column, under Nutter's floor of 4.5 % (Ludwig Vol. 2, 4th ed., \
+             Fig. 10-149; docs/DESIGN.md §78.10).",
+            section.passes,
+            100.0 * side
+        ));
+    }
     Ok(())
 }
 
@@ -647,7 +680,7 @@ mod tests {
             weir_height: Meter(0.05),
             hole_diameter: Meter(0.005),
             hole_area_share: 0.10,
-            downcomer_share: 0.12,
+            downcomer_share: 0.18,
             clearance: Meter(0.04),
             passes,
         }
@@ -672,6 +705,29 @@ mod tests {
         assert!((chord_of_segment(0.5) - 1.0).abs() < 1e-9);
     }
 
+    /// **The chord against Nutter's downcomer tables** ([L] Tables 10-52 and
+    /// 10-53, read off the pages; the last two rows the worked example's on
+    /// p. 252): `A_d/A_t` → `L/DIA`, over the side downcomers' shares a
+    /// multipass tray has (4.5–7 %) and past them. The tables print four
+    /// places; an area rounded by half a unit in its last moves the chord by
+    /// up to 3e-4 at the smallest row (the chord's slope there about 6), so
+    /// 3e-4 (measured 1.8e-4 at worst).
+    #[test]
+    fn the_chord_reads_nutters_tables() {
+        for (area, chord) in [
+            (0.0245, 0.4750),
+            (0.0446, 0.5724),
+            (0.0598, 0.6258),
+            (0.0651, 0.6416),
+            (0.0701, 0.6557),
+            (0.2246, 0.8940),
+            (0.2326, 0.9009),
+        ] {
+            let got = chord_of_segment(area);
+            assert!((got - chord).abs() < 3e-4, "{area}: {got} against {chord}");
+        }
+    }
+
     #[test]
     fn the_orifice_coefficient_runs_between_its_two_published_readings() {
         assert!((orifice_coefficient(0.10) - 0.84).abs() < 1e-12);
@@ -679,20 +735,44 @@ mod tests {
         assert!((orifice_coefficient(0.125) - 0.86).abs() < 1e-12);
     }
 
+    /// **A multipass tray is rated on its side pass** (§78.10): the areas a
+    /// single-pass tray's at the same whole downcomer share; the weir the
+    /// chord of a side downcomer `DCA/n`, the downcomer under it `DCA/n`; one
+    /// pass the single-pass tray to the bit.
     #[test]
-    fn a_multipass_tray_divides_its_liquid_and_its_flow_parameter() {
-        // One pass is the single-pass tray; four quarter the weir's load and
-        // the flow parameter, and leave the vapour's side alone.
-        let one = sieve_tray(&TrayGeometry::of(&section(1)), &load(60.0, 120.0));
-        let four = sieve_tray(&TrayGeometry::of(&section(4)), &load(60.0, 120.0));
-        let quarter = sieve_tray(&TrayGeometry::of(&section(1)), &load(60.0, 30.0));
-        assert!((four.flow_parameter - one.flow_parameter / 4.0).abs() < 1e-12);
+    fn a_multipass_tray_is_rated_on_its_side_pass() {
+        let one = TrayGeometry::of(&section(1));
+        let column = std::f64::consts::PI * 36.0 / 4.0;
+        assert_eq!(one.weir_length, Meter(6.0 * chord_of_segment(0.18)));
+        assert_eq!(one.downcomer_area, SquareMeter(0.18 * column));
+        for passes in [2, 4] {
+            let many = TrayGeometry::of(&section(passes));
+            let side = 0.18 / f64::from(passes);
+            assert_eq!(many.weir_length, Meter(6.0 * chord_of_segment(side)));
+            assert_eq!(many.downcomer_area, SquareMeter(side * column));
+            assert_eq!(many.net_area, one.net_area);
+            assert_eq!(many.hole_area, one.hole_area);
+        }
+        // Four passes: a quarter of the liquid over the side chord, the flow
+        // parameter a quarter, the vapour's side as one pass's.
+        let four_geometry = TrayGeometry::of(&section(4));
+        let four = sieve_tray(&four_geometry, &load(60.0, 120.0));
+        let single = sieve_tray(&TrayGeometry::of(&section(1)), &load(60.0, 120.0));
+        let side_pass = TrayGeometry {
+            passes: 1,
+            ..four_geometry
+        };
+        let quarter = sieve_tray(&side_pass, &load(60.0, 30.0));
+        assert!((four.flow_parameter - single.flow_parameter / 4.0).abs() < 1e-12);
         assert_eq!(four.weir_crest, quarter.weir_crest);
         assert_eq!(four.downcomer_loss, quarter.downcomer_loss);
-        assert_eq!(four.hole_velocity, one.hole_velocity);
-        assert_eq!(four.dry_head, one.dry_head);
-        // A smaller flow parameter is a larger flood capacity.
-        assert!(four.flood_velocity.value() > one.flood_velocity.value());
+        assert_eq!(four.hole_velocity, single.hole_velocity);
+        assert_eq!(four.dry_head, single.dry_head);
+        // The side chord is shorter than the whole share's: a higher crest
+        // than the liquid's quarter over the one-pass weir.
+        let one_pass_weir = sieve_tray(&TrayGeometry::of(&section(1)), &load(60.0, 30.0));
+        assert!(four.weir_crest.value() > one_pass_weir.weir_crest.value());
+        assert!(four.flood_velocity.value() > single.flood_velocity.value());
     }
 
     /// **Up to jet flood a tray feeds back its own drop, past it the drop at

@@ -923,7 +923,9 @@ pub struct TraySection {
     pub hole_diameter: Meter,
     /// The holes' total area over the tray's active (bubbling) area [-].
     pub hole_area_share: f64,
-    /// The downcomer's area over the column's [-]; its chord is the weir.
+    /// The tray's whole downcomer area over the column's [-] (Nutter's
+    /// `DCA/A_t`); on `passes` passes each side downcomer holds this over the
+    /// passes, and its chord is every pass's weir (docs/DESIGN.md §78.10).
     pub downcomer_share: f64,
     /// The gap under the downcomer's apron [m], below the weir so the
     /// downcomer stays sealed.

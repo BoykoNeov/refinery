@@ -4860,29 +4860,31 @@ mod newton_tests {
         }
     }
 
-    /// The 13-tray column with its trays in M73.1's five sections
-    /// (`crates/scenarios/tests/tray_hydraulics.rs`: 6.1 / 7.4 / 8.3 / 8.8 /
-    /// 8.3 m, each loop's two stages in one), at `reflux_ratio`.
+    /// The 13-tray column with its trays in the loop plant fixture's six
+    /// sections (`crates/scenarios/tests/tray_hydraulics.rs`, sized on the
+    /// multipass layout of docs/DESIGN.md §78.10: 5.9 / 7.3 / 8.4 / 8.5 /
+    /// 7.0 / 8.5 m, each loop's two stages in one), at `reflux_ratio`.
     fn thirteen_trays_with_trays(reflux_ratio: f64) -> (CrudeUnit, CascadeSpec) {
         let (unit, spec) = thirteen_trays();
         let trays = [
-            (1, 2, 6.1),
-            (3, 5, 7.4),
-            (6, 8, 8.3),
-            (9, 10, 8.8),
-            (11, 12, 8.3),
+            (1, 2, 5.9, 0.18, 0.10),
+            (3, 5, 7.3, 0.22, 0.15),
+            (6, 8, 8.4, 0.24, 0.15),
+            (9, 10, 8.5, 0.18, 0.12),
+            (11, 11, 7.0, 0.18, 0.12),
+            (12, 12, 8.5, 0.28, 0.15),
         ]
         .iter()
-        .map(|(from, to, diameter)| TraySection {
+        .map(|(from, to, diameter, downcomer, holes)| TraySection {
             from: *from,
             to: *to,
             diameter: Meter(*diameter),
-            spacing: Meter(0.61),
+            spacing: Meter(0.76),
             weir_height: Meter(0.05),
             hole_diameter: Meter(0.005),
-            hole_area_share: 0.10,
-            downcomer_share: 0.12,
-            clearance: Meter(0.04),
+            hole_area_share: *holes,
+            downcomer_share: *downcomer,
+            clearance: Meter(0.045),
             passes: 4,
         })
         .collect();
@@ -4952,12 +4954,13 @@ mod newton_tests {
         let profile = separation.profile.as_ref().unwrap();
         let at_stage = worst_summation(&unit, profile, |j| pressures[j]);
         let at_top = worst_summation(&unit, profile, |_| Pascal(1.8e5));
-        // Measured 4.1e-7 and 6.8e-2; the column's span 122.3 mbar (the
-        // probe's 122.1 on the scenario's thermodynamics).
+        // Measured 4.7e-7 and 7.3e-2; the column's span 131.5 mbar on the
+        // fixture's sections (§78.10; on M73.2's, 4.1e-7, 6.8e-2 and
+        // 122.3 mbar, the probe's 122.1 on the scenario's thermodynamics).
         assert!(at_stage < 1e-6, "{at_stage}");
         assert!(at_top > 4e-2, "{at_top}");
         let span = pressures[12].value() - 1.8e5;
-        assert!((1.20e4..1.25e4).contains(&span), "{span} Pa");
+        assert!((1.30e4..1.36e4).contains(&span), "{span} Pa");
         // The feed's flash share, at its stage's pressure (stage 11).
         let feed = MoleFractions::from_mass(&unit.feed, &unit.slate).unwrap();
         let thermo = TroutonThermo::new();
@@ -4980,8 +4983,8 @@ mod newton_tests {
             )
             .unwrap()
         };
-        // Measured 0.6536 at the feed stage, 0.6619 at the top (the probe's
-        // 0.654 and 0.663).
+        // Measured 0.6531 at the feed stage, 0.6619 at the top (M73.2's
+        // sections 0.6536; the probe's 0.654 and 0.663).
         let share = separation.feed_vapour_fraction.unwrap();
         assert_eq!(share, share_at(pressures[10]));
         assert!(share < share_at(Pascal(1.8e5)) - 5e-3, "{share}");
@@ -5028,8 +5031,9 @@ mod newton_tests {
                 .zip(&settled.temperatures)
                 .map(|(a, b)| (a.value() - b.value()).abs())
                 .fold(0.0, f64::max);
-            // Measured 0.61 Pa and 3.0e-4 K from the settled profile, 0.56 Pa
-            // and 2.7e-4 K from the absurd drops, 1e-9 from none.
+            // Measured 0.67 Pa and 3.3e-4 K from the settled profile, 0.61 Pa
+            // and 3.0e-4 K from the absurd drops, 5e-10 from none (M73.2's
+            // sections: 0.61, 0.56 Pa).
             assert!(pressure < 1.0, "{name}: {pressure} Pa");
             assert!(temperature < 5e-3, "{name}: {temperature} K");
         }
@@ -5062,10 +5066,11 @@ mod newton_tests {
         }
         let raw: f64 = flooded.trays.iter().map(|t| t.pressure_drop.value()).sum();
         let span = flooded.stage_pressure(13).unwrap().value() - 1.8e5;
-        // Measured: all twelve past jet flood, the span 169.5 mbar against
-        // the raw drops' 375 (the probe: 150–170 capped, 360 raw).
+        // Measured: all twelve past jet flood, the span 184.9 mbar against
+        // the raw drops' 420 (M73.2's sections: 169.5 and 375; the probe:
+        // 150–170 capped, 360 raw).
         assert!(past >= 10, "{past}");
-        assert!((1.5e4..1.8e4).contains(&span), "{span} Pa");
+        assert!((1.7e4..2.0e4).contains(&span), "{span} Pa");
         assert!(raw > 3.0e4, "{raw} Pa");
     }
 

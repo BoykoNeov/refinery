@@ -10944,3 +10944,21 @@ Each tray now publishes the pressure it ran at. On M73.1's fixture: the bottom
 on, its pressure span held at 156 mbar where the raw drops add up to 373.
 Mutations: sixteen, thirteen caught, three argued equivalent. Every shipped plant byte-identical, 68 of 68 on both fidelities.
 Next: M73.3, the plant (its multipass layout settled first, C21).
+
+### M73.3 — **IN PROGRESS** 2026-10-21: the multipass layout settled (C21); the plant next
+
+**The layout settled** (DESIGN §78.10), on books the user supplied (local,
+not shipped): Nutter's published area layout (Ludwig Vol. 2, 4th ed.,
+Fig. 10-149) — four passes of equal bubbling area, side downcomers a quarter
+of the tray's downcomer area, the inner ones a half — with the outlet weirs
+tuned to carry the liquid evenly (Kister, *Distillation Operation* §6.12;
+Bolles 1976). So each pass runs over the side downcomer's chord, and the side
+pass is rated; side downcomers under 4.5 % of the column refused; the chord
+tested against Nutter's tables (1.8e-4). One pass unchanged to the bit. The
+M73.1/M73.2 fixture, sized on the old simplification (3 % side downcomers),
+re-sized by Kister's rules: 0.76 m spacing, six sections, every tray inside
+its window at the file's settings (72–79 % of flood, downcomers 59–80 %); the
+reflux window much as before (weeping below about 2, flooding from 5.5), its
+first floods now by jet flood; every moved number in §78.10, old → new.
+Mutations: seven, all caught. Every shipped plant byte-identical. Next: the
+plant file, on the fixture's sections.

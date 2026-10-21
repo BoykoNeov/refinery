@@ -29804,7 +29804,8 @@ against the three chart readings above at 2.5 %.
   long, and the flow parameter's `L/G` per pass ([P]). A real four-pass
   tray's centre and off-centre downcomers are none of these; none of the
   sources gives their geometry. Pinned by its own unit test (one pass must
-  give the single-pass numbers; four quarter the weir load).
+  give the single-pass numbers; four quarter the weir load). **Replaced in
+  M73.3 (§78.10)** by Nutter's layout: the weir the SIDE downcomer's chord.
 - **Refused by name at load**: spacing outside Fair's curves (0.15–0.90 m);
   the weir under 25 mm or over 15 % of the spacing; holes over 13 mm; the hole
   share outside 0.10–0.15; the downcomer share outside (0, 0.5) (no active
@@ -29866,7 +29867,10 @@ saved loads in `W:\temp\claude\m73_0\out`, re-made by M73.0's 8-minute sweep):
   (Kister, *Distillation Design*, ch. 6; Perry §14, "Number of Passes" and
   "Multipass Balancing") built and tested against, or else the new plant on
   two passes where its downcomers allow and four passes labelled a game
-  approximation here and on the screen.
+  approximation here and on the screen. **Settled (§78.10, M73.3)**: Nutter's
+  published layout and Kister's and Bolles's tuned-weir design, built and
+  tested against Nutter's tables; the old simplification is gone and the
+  M73.1/M73.2 fixture re-sized on the new layout.
 
 ### 78.6 The slices
 
@@ -30126,3 +30130,127 @@ cold start's temperature, Newton's residual scale and the flash's bracket —
 the flash share lands to the bit either way).
 
 **Every shipped plant byte-identical** on both fidelities (68 of 68).
+
+### 78.10 The multipass layout settled (M73.3, 2026-10-21) — C21
+
+§78.5 left a multipass tray as a named simplification: a one-pass tray's areas,
+the liquid split between the passes, each over a weir the chord of the WHOLE
+downcomer share. The sources the probe could not reach online were supplied by
+the user as local books (`articles/`, git-ignored, not shipped):
+
+- **[L]** Coker, *Ludwig's Applied Process Design* Vol. 2, 4th ed. (2010),
+  §10, Nutter's valve-tray method: eq. 10-573 (`R_DCA = A_DC/(2·A_DC + A_b)`),
+  **Fig. 10-149** (area distribution by pass type), Tables 10-52–10-55
+  (segmental downcomers, `H/D`, `L/D`, `A_d/A_t`).
+- **[K]** Kister, *Distillation Operation* (1990), §6.12 (pp. 166–170, multipass
+  trays), §6.16 (pp. 175–180, downcomer area), §6.19 (pp. 183–184, clearance).
+- **[B]** Bolles, "Multipass flow distribution and mass transfer efficiency for
+  distillation plates", *AIChE J.* 22 (1976) 153–158.
+
+**What they agree on.** [L] Fig. 10-149: on four passes the side downcomers
+each `DCA/4`, the centre `DCA/2`, the two off-centre `DCA/2` each, the four
+bubbling areas `A_b/4`; on two, the sides `DCA/2` and the centre `DCA`; every
+side downcomer at least 4.5 % of the tower; "multipass trays are designed with
+equal bubbling areas; weir lengths or heights can be adjusted to provide
+uniform tray hydraulics". [K] guideline 7: the vapour splits by hole area, the
+liquid by the outlet weirs; a four-pass tray's centre weirs are longer than its
+side ones, so unless the design allows for it the passes' L/V differ; equal
+bubbling and hole area per panel, and equal liquid by inlet weirs or by tuning
+the outlet weirs. [B]: his model of a four-pass tray (each pass rated by
+single-pass correlations, Fair's, eqs. 17–25) on a 10.7 m tray — untuned, the
+long inner weirs take the liquid, L/V 0.53 on the outer passes against 1.14 on
+the inner (case 1); with inlet weirs L/V 0.82–0.84 on every pass and every
+pass at 69 % of flood (case 2); picket fences, which only shorten a weir, the
+simplest way to tune the outlet weirs.
+
+**Built** (`TrayGeometry::of`): `downcomer_share` is `DCA/A_t`, the tray's
+whole downcomer area; every tray has that much outlet downcomer and that much
+under its inlets, so the net area `A_c − DCA` and the active `A_c − 2·DCA` hold
+on any number of passes, as before. On `n` passes the tray is the TUNED design
+the sources describe — each pass `A_b/n` and `A_h/n`, its outlet weir tuned
+to carry `L/n` — so every pass's weir is the side downcomer's chord (the
+shortest; a picket fence cannot lengthen one) and the side pass is the one
+rated: its weir the chord of a segment `DCA/n` of the column, its apron that
+chord, the downcomer feeding it `DCA/n` carrying `L/n` — the shortest apron,
+so it also has the most backup. Two things changed: the weir `D·chord(s/n)`
+(was `D·chord(s)`) and the apron's cap `s·A_c/n` (was `s·A_c`). One pass is
+the single-pass tray to the bit (`s/1 = s`), so NPTEL's reference test is
+untouched. **Refused by name**: a side downcomer under 4.5 % of the column
+(`s/n < 0.045`, [L]; [K] avoids any downcomer under 5–8 %).
+
+- **Conservative on two passes**: a two-pass column alternates trays whose
+  outlet is the side downcomers with trays whose outlet is the centre one,
+  whose weirs are nearly the diameter; every tray is rated as the side-outlet
+  one.
+- **Not built**: [B]'s untuned split (the design is assumed tuned, as all
+  three sources advise), vapour equalizing tunnels, inlet weirs.
+- **Still unchecked**: no source gives a multipass worked example with every
+  input stated; the rating per pass is [B]'s method on the checked one-pass
+  set. The geometry is published ([L]'s tables reproduce to 1.8e-4, below);
+  the layout's areas and the split are the sources' design rule.
+
+**The sizing rules** (`tools/steptime/prototypes/m73_3/size.py`, on M73.0's
+saved loads, then checked in the engine): four passes (above 12 ft across, [K]
+guideline 3), each section's diameter its widest tray's at 80 % of jet flood,
+and the narrowest design with every tray's downcomer at 80 % of its limit or
+under, the liquid's loss under the apron at 1.5 in (38 mm) or under ([K]
+§6.19), the weir load at 13 gpm/in or under ([K] guideline 2), the clear
+liquid in the downcomer under 0.4 ft/s ([K] Table 6.1, "medium" — crude oil
+distillation — at 24 in), every side downcomer 4.5 % or more, the holes 1.2
+times their weep point or more. On 0.61 m spacing only the top section
+meets every rule; below it the four-pass downcomers sit at 96–104 % of their
+limit at the file's settings (the Francis crest over the shorter side weir
+counts twice in the backup, then the apron), so **0.76 m (30 in)**, which [K] guideline 8 prefers at high liquid loads; a
+50 mm weir, the apron 5 mm under it (Sinnott's 5–10 mm); 5 mm holes. The feed
+tray (11) and the tray above the reboiler (12) carry loads unlike each other
+and take a section each:
+
+```
+section  stages   D m   downcomer  holes   (spacing 0.76, weir 0.05, clearance 0.045, 4 passes)
+   1      1–2     5.9     0.18      0.10
+   2      3–5     7.3     0.22      0.15
+   3      6–8     8.4     0.24      0.15
+   4      9–10    8.5     0.18      0.12
+   5      11      7.0     0.18      0.12
+   6      12      8.5     0.28      0.15
+```
+
+**The fixture moved, by the layout** — M73.1's and M73.2's (five sections on
+0.61 m, `s` 0.12, 3 % side downcomers, now refused) re-sized to the six above,
+in `tray_hydraulics.rs`, `tray_pressure.rs` and `heat_balance.rs`'s 13-tray
+column. Old → new, both flow solvers to the same digits:
+
+- at the file's settings: flood 60–80 → 72–79 %; weep margin 1.24–1.84 →
+  1.48–2.29; downcomers 71–92 → 59–80 % of their limit; the drop 123 → 131
+  mbar;
+- the reflux line (walked from 4): every tray weeping at 1, as before, and
+  none at 2; at 1.8 three still weep (3–5), where M73.1's weeping ended at
+  about 1.8; flooding from 5.5, as before, but the first by JET flood (tray
+  2), where M73.1's were past their downcomers; at 6 four flooding (was nine),
+  all by jet flood; at 8 all twelve;
+- each stage at its own pressure: the last tray 111.8 → 120.4 mbar over the
+  top; the bottom +5.49 → +5.89 K; the feed's flash share, 0.6615 at one
+  pressure, 0.6532 → 0.6527; every product within 0.0016, as before;
+- past flood at a reflux of 15: the span 155.7 → 170.2 mbar, the raw drops
+  373 → 417;
+- the solver's own 13-tray column (Trouton K-values): the span 122.3 → 131.5
+  mbar; `|Σ K·x − 1|` 4.1e-7 → 4.7e-7 at each stage's pressure, 6.8e-2 →
+  7.3e-2 at the top's; the flash at the feed stage 0.6536 → 0.6531; from its
+  settled profile 0.61 → 0.67 Pa; capped at 15, 169.5 → 184.9 mbar against
+  raw 375 → 420.
+
+So the window the screen will show (§78.5: weeping below about 1.8–2,
+flooding from about 5–5.5) stands, now on a published layout, and its
+flooding end no longer leans on the multipass downcomer.
+
+**Gates**: `trays::tests::the_chord_reads_nutters_tables` — the chord against
+five rows of [L] Tables 10-52–10-53 and the worked example's two (p. 252),
+from 2.45 to 23.3 %, to 3e-4 (measured 1.8e-4); `::a_multipass_tray_is_rated_
+on_its_side_pass` — the weir `D·chord(s/n)` and the downcomer `s·A_c/n` on two
+and four passes, the net and hole areas one pass's, a quarter of the liquid
+over the side chord; `tray_hydraulics.rs` — a side downcomer of 4.0 % refused
+by name, the window above by name (four at 6, by jet flood; twelve at 8).
+**Mutations**: seven, seven caught — the weir on the whole share, the apron's
+cap the whole downcomer, the side share not divided, the net area divided by
+the passes, the floor at 3 %, the floor not over the passes, the floor
+dropped.

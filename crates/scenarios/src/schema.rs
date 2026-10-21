@@ -800,9 +800,11 @@ pub struct CascadeDef {
 }
 
 /// One section of sieve trays: `{ from = 1, to = 4, diameter_m = 6.5,
-/// spacing_m = 0.61, weir_height_m = 0.05, hole_diameter_m = 0.005,
-/// hole_area_share = 0.10, downcomer_share = 0.12, clearance_m = 0.04,
-/// passes = 4 }`. Lengths in metres. **`deny_unknown_fields`**: a key the
+/// spacing_m = 0.76, weir_height_m = 0.05, hole_diameter_m = 0.005,
+/// hole_area_share = 0.10, downcomer_share = 0.18, clearance_m = 0.045,
+/// passes = 4 }`. Lengths in metres; `downcomer_share` the tray's whole
+/// downcomer area over the column's, each side downcomer its share over the
+/// passes and at least 4.5 % (docs/DESIGN.md §78.10). **`deny_unknown_fields`**: a key the
 /// correlations do not read (a plate thickness, say) is refused rather than
 /// taken for one they do.
 #[derive(Debug, Deserialize)]
