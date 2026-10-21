@@ -1,0 +1,78 @@
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index 0e07d0d..5e34163 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -680,6 +680,7 @@ impl HeatBalanceCascade {
+         if setup.water.is_some() {
+             k = effective_k(k, &profile.flows.vapour, &profile.water_vapour);
+         }
++        probe_record(slate, pass.pressure, &profile, &k);
+         let draws = plan.draw_states(&profile.liquid, &k, slate)?;
+         let condenser_t = match &setup.water {
+             None => bubble_temperature_unnormalized(
+@@ -5619,3 +5620,65 @@ mod loop_tests {
+         );
+     }
+ }
++
++// ---- M73.0 PROBE (not for commit): each converged column's tray loads, kept
++// per thread so a parallel driver reads its own run's last answer. On only
++// with PROBE_HYD set.
++thread_local! {
++    static PROBE_LAST: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
++}
++
++fn probe_on() -> bool {
++    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ON.get_or_init(|| std::env::var("PROBE_HYD").is_ok())
++}
++
++fn probe_vec(v: &[f64]) -> String {
++    let parts: Vec<String> = v.iter().map(|x| format!("{x:?}")).collect();
++    format!("[{}]", parts.join(","))
++}
++
++fn probe_record(slate: &Slate, pressure: Pascal, profile: &Profile, k: &[Vec<f64>]) {
++    if !probe_on() {
++        return;
++    }
++    let n = profile.temperatures.len();
++    let f = &profile.flows;
++    let mut stages = Vec::with_capacity(n);
++    for j in 0..n {
++        let y: Vec<f64> = (0..slate.len()).map(|c| k[j][c] * profile.liquid[j][c]).collect();
++        let pick = |v: &Vec<f64>| v.get(j).copied().unwrap_or(0.0);
++        stages.push(format!(
++            "{{\"T\":{:?},\"x\":{},\"y\":{},\"V\":{:?},\"Vw\":{:?},\"Lin\":{:?},\"Ldown\":{:?},\"Ldrawn\":{:?},\"Cin\":{:?},\"Cout\":{:?},\"FW\":{:?}}}",
++            profile.temperatures[j],
++            probe_vec(&profile.liquid[j]),
++            probe_vec(&y),
++            pick(&f.vapour),
++            pick(&profile.water_vapour),
++            pick(&f.liquid_in),
++            pick(&f.liquid_down),
++            pick(&f.liquid_drawn),
++            pick(&f.circulation_in),
++            pick(&f.circulation_out),
++            pick(&profile.free_water),
++        ));
++    }
++    let mw: Vec<f64> = (0..slate.len()).map(|c| slate.get(c).molar_mass.value()).collect();
++    let rho: Vec<f64> = (0..slate.len())
++        .map(|c| slate.get(c).density.map_or(0.0, |d| d.value()))
++        .collect();
++    let line = format!(
++        "{{\"P\":{:?},\"R\":{:?},\"mw\":{},\"rho\":{},\"stages\":[{}]}}",
++        pressure.value(),
++        profile.reflux_ratio,
++        probe_vec(&mw),
++        probe_vec(&rho),
++        stages.join(",")
++    );
++    PROBE_LAST.with(|cell| *cell.borrow_mut() = Some(line));
++}
++
++/// M73.0 probe: the last converged column answer on this thread, as JSON.
++pub fn probe_last_loads() -> Option<String> {
++    PROBE_LAST.with(|cell| cell.borrow().clone())
++}

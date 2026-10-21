@@ -1,0 +1,31 @@
+=== stripped (each tray its own) kw={}: 135 settings ran, 0 failed
+  tray  D m  base: T_C  %fl  weep  dP mbar backup | allowed: Qv/base  L/base   max%fl  minweep maxbackup
+    1  6.46   164.9  80.0  1.69  12.56  1.04 | 0.26-1.18 0.05-1.15    91.7   0.43   1.15
+    2  6.70   202.8  80.0  1.64  12.46  1.04 | 0.25-1.18 0.04-1.15    91.9   0.40   1.16
+    3  6.68   228.9  80.0  1.61  12.32  1.03 | 0.25-1.19 0.04-1.16    92.6   0.40   1.15
+    4  6.47   256.1  80.0  1.65  11.81  0.97 | 0.48-1.19 0.21-1.20    93.4   0.78   1.11
+    5  6.40   284.9  80.0  1.64  11.71  0.96 | 0.49-1.20 0.21-1.22    94.1   0.77   1.11
+    6  6.14   310.9  80.0  1.70  10.95  0.88 | 0.63-1.21 0.21-1.36    96.0   1.06   1.07
+    7  5.50   333.6  80.0  1.79  10.40  0.80 | 0.76-1.22 0.31-1.96    97.9   1.40   1.18
+    8  1.99   376.5  80.0  1.06  11.44  0.95 | 0.19-2.35 0.92-1.57   158.0   0.24   1.46
+    9  1.78   369.3  80.0  0.94  11.44  0.95 | 0.17-2.33 0.96-1.56   146.3   0.20   1.36
+  base total dP 105.1 mbar
+  settings: jet flood >100 % on some tray 65, >90 % 80; weeping 91; downcomer backed up 100; total dP 73-125 mbar; of 135
+   flood e.g.: furnace=37.5+steam=0.5+pa=0.0; furnace=37.5+steam=0.5+pa=3.0; furnace=37.5+steam=0.5+pa=6.0; furnace=37.5+steam=0.5+pa=9.0; furnace=37.5+steam=0.75+pa=0.0; furnace=37.5+steam=0.75+pa=3.0
+   weep e.g.: furnace=37.5+steam=0.05+pa=3.0; furnace=37.5+steam=0.05+pa=6.0; furnace=37.5+steam=0.25+pa=0.0; furnace=37.5+steam=0.25+pa=3.0; furnace=37.5+steam=0.25+pa=6.0; furnace=37.5+steam=0.5+pa=3.0
+   downcomer e.g.: furnace=37.5+steam=0.05+pa=3.0; furnace=37.5+steam=0.05+pa=6.0; furnace=37.5+steam=0.25+pa=0.0; furnace=37.5+steam=0.25+pa=3.0; furnace=37.5+steam=0.25+pa=6.0; furnace=37.5+steam=0.5+pa=0.0
+=== stripped (one diameter) kw={}: 135 settings ran, 0 failed
+  tray  D m  base: T_C  %fl  weep  dP mbar backup | allowed: Qv/base  L/base   max%fl  minweep maxbackup
+    1  6.70   164.9  74.4  1.57  12.00  1.00 | 0.26-1.18 0.05-1.15    85.2   0.40   1.11
+    2  6.70   202.8  80.0  1.64  12.46  1.04 | 0.25-1.18 0.04-1.15    91.9   0.40   1.16
+    3  6.70   228.9  79.6  1.61  12.28  1.03 | 0.25-1.19 0.04-1.16    92.2   0.40   1.15
+    4  6.70   256.1  74.5  1.54  11.31  0.94 | 0.48-1.19 0.21-1.20    87.0   0.73   1.07
+    5  6.70   284.9  73.1  1.50  11.09  0.93 | 0.49-1.20 0.21-1.22    86.0   0.71   1.06
+    6  6.70   310.9  67.1  1.43   9.82  0.82 | 0.63-1.21 0.21-1.36    80.5   0.89   0.99
+    7  6.70   333.6  53.9  1.21   8.20  0.68 | 0.76-1.22 0.31-1.96    65.9   0.94   1.04
+    8  6.70   376.5   7.0  0.09   7.18  0.64 | 0.19-2.35 0.92-1.57    13.9   0.02   0.83
+    9  6.70   369.3   5.7  0.07   7.16  0.63 | 0.17-2.33 0.96-1.56    10.4   0.01   0.81
+  base total dP 91.5 mbar
+  settings: jet flood >100 % on some tray 0, >90 % 1; weeping 135; downcomer backed up 17; total dP 63-102 mbar; of 135
+   weep e.g.: furnace=37.5+steam=0.05+pa=3.0; furnace=37.5+steam=0.05+pa=6.0; furnace=37.5+steam=0.25+pa=0.0; furnace=37.5+steam=0.25+pa=3.0; furnace=37.5+steam=0.25+pa=6.0; furnace=37.5+steam=0.5+pa=0.0
+   downcomer e.g.: furnace=50.0+steam=0.5+pa=12.0; furnace=50.0+steam=0.75+pa=12.0; furnace=50.0+steam=1.0+pa=12.0; furnace=55.0+steam=0.05+pa=12.0; furnace=55.0+steam=0.5+pa=0.0; furnace=55.0+steam=0.75+pa=0.0
