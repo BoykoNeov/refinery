@@ -30299,8 +30299,8 @@ step. Six batches on 14 threads, the longest 27 minutes, 2 h 18 min in all
   the reflux, flow and return at every furnace duty (the loop plant 89), all
   on the jump's own tick. The walks failed 495 of 5 994 times on 273 settings
   (514 on 284), 19 of them where the jump ran, all at 25–40 MW; a third of the
-  walks' failures a start that left the physical region, the rest the cascade
-  not converging. **The pressure re-solve never gave up** (§78.9's 25 solves)
+  walks' failures — 114 of 495 — a start that left the physical region, 231 no
+  step improving the solve, 150 the cascade not converging. **The pressure re-solve never gave up** (§78.9's 25 solves)
   on any run.
 - 16 199 settings are allowed, all reachable. **The trays did not move the
   edge inward**: every setting the loop plant's table allows, this one does,
