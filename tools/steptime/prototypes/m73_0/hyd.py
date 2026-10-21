@@ -37,7 +37,7 @@ def k2(h):
 
 class Geometry:
     def __init__(self, diameter, spacing=0.61, weir=0.050, hole=0.005, hole_share=0.10,
-                 downcomer_share=0.12, weir_share=0.77, c0=0.84, clearance=0.040):
+                 downcomer_share=0.12, weir_share=0.77, c0=0.84, clearance=0.040, passes=1):
         self.d = diameter
         self.ts = spacing
         self.hw = weir
@@ -47,6 +47,9 @@ class Geometry:
         self.an = self.ac - self.ad
         self.aa = self.ac - 2 * self.ad
         self.ah = hole_share * self.aa
+        # A tray of `passes` liquid paths: the liquid split between them, each
+        # over its own weir (Kister, Distillation Design (1992) 6.3).
+        self.passes = passes
         self.lw = weir_share * diameter
         self.c0 = c0
         self.am = clearance * self.lw
@@ -117,14 +120,15 @@ def hydraulics(tr, g):
     flv, unf = flood_velocity(tr, g.ts)
     un = tr["qv"] / g.an
     uh = tr["qv"] / g.ah
-    how = 750 * (tr["l_mass"] / (tr["rho_l"] * g.lw)) ** (2 / 3)
+    lpass = tr["l_mass"] / g.passes
+    how = 750 * (lpass / (tr["rho_l"] * g.lw)) ** (2 / 3)
     hw = g.hw * 1000
     uh_min = (k2(hw + how) - 0.90 * (25.4 - g.dh * 1000)) / math.sqrt(tr["rho_v"])
     hd = 51 * (uh / g.c0) ** 2 * tr["rho_v"] / tr["rho_l"]
     hr = 12.5e3 / tr["rho_l"]
     ht = hd + hw + how + hr
     dp = 9.81e-3 * ht * tr["rho_l"]
-    hdc = 166 * (tr["l_mass"] / (tr["rho_l"] * g.am)) ** 2
+    hdc = 166 * (lpass / (tr["rho_l"] * g.am)) ** 2
     hb = hw + how + ht + hdc
     return dict(flv=flv, flood=un / unf, weep=uh / uh_min, how=how, dp=dp, backup=hb / (500 * (g.ts + g.hw)))
 
@@ -132,18 +136,23 @@ def hydraulics(tr, g):
 TB = [t + 273.15 for t in (70, 150, 220, 300, 380, 560, 100)]
 
 
-def design(load, flood_target=0.80, exit_velocity=0.40, **kw):
+def design(load, flood_target=0.80, exit_velocity=0.40, backup_target=0.60, **kw):
     """Each tray its own geometry, designed on `load` (the plant file's
     settings): the diameter at `flood_target` of flood, holes 10 % of the active
-    area, and the downcomer clearance at `exit_velocity` [m/s] under it (Kister,
-    Distillation Design (1992) 6.2: under-downcomer velocity 0.45 m/s at most)."""
+    area, the downcomer clearance at `exit_velocity` [m/s] under it (Kister,
+    Distillation Design (1992) 6.2: under-downcomer velocity 0.45 m/s at most),
+    and the fewest liquid passes (1, 2 or 4) that keep its downcomer backup at
+    `backup_target` of the limit or under."""
     out = []
     for tr in trays(load, TB[: len(load["mw"])], **kw):
         _, unf = flood_velocity(tr, 0.61)
         an = tr["qv"] / (flood_target * unf)
         d = math.sqrt(4 * (an / 0.88) / math.pi)
-        g = Geometry(d)
-        g.am = (tr["l_mass"] / tr["rho_l"]) / exit_velocity
+        for passes in (1, 2, 4):
+            g = Geometry(d, passes=passes)
+            g.am = (tr["l_mass"] / passes / tr["rho_l"]) / exit_velocity
+            if hydraulics(tr, g)["backup"] <= backup_target:
+                break
         out.append(g)
     return out
 
@@ -154,7 +163,7 @@ def one_diameter(per_tray):
     d = max(g.d for g in per_tray)
     out = []
     for g in per_tray:
-        h = Geometry(d)
+        h = Geometry(d, passes=g.passes)
         h.am = g.am
         out.append(h)
     return out

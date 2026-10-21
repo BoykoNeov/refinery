@@ -1,9 +1,10 @@
 """M73.0: share of sampled settings flooded / weeping, by each key's value (each tray its own design)."""
+import os
 import sys, collections
-sys.path.insert(0, "W:/temp/claude/m73_0")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hyd
 plant = sys.argv[1]
-OUT = "W:/temp/claude/m73_0/out/"
+OUT = os.environ.get("M73_OUT", "W:/temp/claude/m73_0/out") + "/"
 base = next(iter(hyd.read(OUT + f"base_{plant}.out").values()))
 geoms = hyd.design(base)
 sweep = hyd.read(OUT + f"sweep_{plant}.out")

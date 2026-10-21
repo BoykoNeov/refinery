@@ -1,8 +1,9 @@
 """M73.0: where the allowed keys take each tray against a tray designed on the
 plant file's settings. Usage: analyze.py <plant> [sigma_scale] [expand]"""
+import os
 import sys
 
-sys.path.insert(0, "W:/temp/claude/m73_0")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hyd  # noqa: E402
 
 plant = sys.argv[1]
@@ -11,7 +12,7 @@ if len(sys.argv) > 2:
     kw["sigma_scale"] = float(sys.argv[2])
 if len(sys.argv) > 3:
     kw["expand"] = float(sys.argv[3])
-OUT = "W:/temp/claude/m73_0/out/"
+OUT = os.environ.get("M73_OUT", "W:/temp/claude/m73_0/out") + "/"
 base = next(iter(hyd.read(OUT + f"base_{plant}.out").values()))
 sweep = hyd.read(OUT + f"sweep_{plant}.out")
 res = hyd.results(OUT + f"sweep_{plant}.out")
@@ -28,7 +29,7 @@ for label, geoms in (("each tray its own", hyd.design(base, **kw)),
         rq = [e["qv"] / h["qv"] for e in qv]
         rl = [e["l"] / h["l"] for e in qv]
         per.append(qv)
-        print(f"  {j+1:>3} {g.d:5.2f}  {h['T']-273.15:6.1f} {100*h['flood']:5.1f} {h['weep']:5.2f} {h['dp']/100:6.2f} {h['backup']:5.2f} |"
+        print(f"  {j+1:>3} {g.d:5.2f}x{g.passes} {h['T']-273.15:6.1f} {100*h['flood']:5.1f} {h['weep']:5.2f} {h['dp']/100:6.2f} {h['backup']:5.2f} |"
               f" {min(rq):4.2f}-{max(rq):4.2f} {min(rl):4.2f}-{max(rl):4.2f}"
               f"  {100*max(e['flood'] for e in qv):6.1f} {min(e['weep'] for e in qv):6.2f} {max(e['backup'] for e in qv):6.2f}")
     print(f"  base total dP {sum(h['dp'] for h in b)/100:.1f} mbar")

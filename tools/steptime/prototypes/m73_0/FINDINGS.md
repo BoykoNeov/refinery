@@ -34,7 +34,13 @@ plants only**. No engine code changed.
 - Geometry: each tray designed on the plant file's own settings â€” diameter
   at 80 % of flood, 0.61 m spacing, 50 mm weir, 5 mm holes at 10 % of the
   active area, downcomers 12 % of the column, clearance at 0.40 m/s under the
-  downcomer. Or the whole column at its widest tray's diameter.
+  downcomer, and the fewest liquid passes (1, 2, 4) holding the downcomer's
+  backup at 0.6 of its limit — four on every tray, and still 0.66–0.83 at the
+  file's settings. Or the whole column at its widest tray's diameter.
+- `lines.py <plant>`: one key moved alone from the file's settings (the
+  reflux 0.5–15 on the loop plant and the crude unit; the steam valve 5–100 %
+  on the stripped plant), the worst tray's flood, weep and backup.
+- The scripts read `$M73_OUT` (default `W:	emp\claude\m73_0\out`).
 
 ## Findings
 
