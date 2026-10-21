@@ -30268,3 +30268,94 @@ fixture's tests are the plant's. Its cold start is the loop plant's (§77.5);
 the corpus runs it 6 000
 ticks on both fidelities with the loop plant's solver iterations. It is the
 37th furnace plant `burnout_reference.rs` counts.
+
+### 78.11 The tray plant on the column screen, and its keys as a measured region (M73.4)
+
+**The screen.** Key 7 loads `crude_unit_trays.toml`, with the loop plant's
+keys (§77.15): the furnace in 5 MW steps, the reflux, the loops' flow (E/D)
+and their return temperatures (R/F), the three loops together. What it adds
+is the trays, every number a snapshot field (§78.3, §78.9): top left, the
+spread of the trays' share of jet flood, the holes' least margin over their
+weep point, the downcomers' worst backup, the pressure from the top tray to
+the last, and the trays flooding or weeping by stage ("FLOODING: trays 9–10",
+"WEEPING: trays 1–2"; "every tray inside its window" while none is); on the
+column each such tray outlined and lettered F or W beside its temperature,
+flooding first where a tray does both. The keys go past both (decision 4,
+§78): a flooded or weeping column is shown, not refused; the table holds only
+where the column runs. Measured headless: 1.1–1.6 ms a tick through the
+timeline (each tick re-solves the trays' pressures, §78.9), so six ticks a
+frame (the loop plant eight).
+
+**The routes** — the loop plant's grid and routes (§77.15; 17 010 settings),
+with one change, **the user's choice (2026-10-22)**: each run settles 1 000
+ticks after its last move, not 3 000. A sample ran 3.6 times the loop plant's
+cost on the jumps and twice on the walks, so key 6's routes whole came to
+about 3 ¼ h, possibly 6; offered beside the full routes and a 10 MW furnace
+step. Six batches on 14 threads, the longest 27 minutes, 2 h 18 min in all
+(`tools/steptime/prototypes/m73_4/`, `FINDINGS.md`).
+
+**Measured** (the shipped engine):
+- The jumps ran 16 218 of 17 010; the 792 failures are the same 88 settings of
+  the reflux, flow and return at every furnace duty (the loop plant 89), all
+  on the jump's own tick. The walks failed 495 of 5 994 times on 273 settings
+  (514 on 284), 19 of them where the jump ran, all at 25–40 MW; a third of the
+  walks' failures a start that left the physical region, the rest the cascade
+  not converging. **The pressure re-solve never gave up** (§78.9's 25 solves)
+  on any run.
+- 16 199 settings are allowed, all reachable. **The trays did not move the
+  edge inward**: every setting the loop plant's table allows, this one does,
+  and 16 more — at a reflux of 2 the loops returning 60 K warm run at 125 %
+  of their flow (the loop plant 150 %), at every furnace but 25 and 30 MW;
+  at 25 MW the loops stopped at a reflux of 2.5 but at the file's return; three
+  at 30 MW. So §78.0's pressure profile, 5–6 K at the bottom, changes where the
+  column runs by one grid step in a few corners, and none for the worse.
+- **The trays**, at the file's loops, the same at 0, 20 and 40 MW within a
+  tray or two: every tray weeping at a reflux of 0.5 and 1, trays 3–8 at 1.5,
+  none from 2 to 5 (the least margin 1.00 at 2), tray 2 flooding at 5.5, trays
+  1–4 at 6, all twelve from 7; on to 15 the column runs, every tray at up to
+  256 % of jet flood. The pressure to the last tray 74 mbar at a reflux of 0.5,
+  120 at 4, 170 at 15. Over the allowed region every tray is inside its window
+  on 1 542 of 16 199 settings — the screen's range is mostly a flooding or
+  weeping column, as decision 4 chose. Between a reflux of 1 and 5 the loops
+  decide: fast and cold, they flood the trays their liquid runs down (9–12);
+  warm, they leave the trays starved.
+- **The long check**: at 0 and 40 MW, 34 allowed settings on the edge, and
+  the timeline's two, jumped to and run 20 000 ticks: all 36 ran — the check
+  the shorter wait leans on.
+
+**The timeline** (`--auto --plant=trays`), the furnace at the file's 20 MW:
+the reflux to 1.5 at 600 (trays 3–8 weep), to 6 at 1 500 (1–4 flood), to 10 at
+2 400 (all twelve flood; the column runs at 10, the pressure to the last tray
+161 mbar against the drops' raw reading far more), back to 2 at 3 300 (none);
+the loops' flow to 200 % at 3 600 (9–11 flood, one cooler at its limit) and
+their return 20 K colder at 3 900 (9–12, all three at their limit); the reflux
+to 1 at 4 200 (9–10 flood and 1–2 weep at once); the return to +40 K at 4 500
+(all twelve weep); at 4 800 the return key to +60 K is held: "the loops' return
+temperatures stay at +40 K: +60 K is past the column's edge here — the reflux
+at 2.0 would free it".
+
+**Gates** (`column_screen.rs`, slow): `slow_the_tray_plant_timeline` replays
+it, the trays named flooding and weeping at every step exactly, the column at
+its reflux of 10 flooded, its pressure under the drops it reads, the region's
+answer at the held press. `slow_the_tray_units_region_is_the_columns`: the
+table allows the file's setting, and on either side of its edge the column
+does what the table says (20 MW, reflux 2, +60 K: 125 % runs, 100 % does not —
+the corner where the trays moved the edge, the loop plant's table refusing
+it; 0 MW, reflux 1, 50 %: +0 K runs, +20 K does not). Either edge bit flipped
+in the table, a gate fails (both tried). **Not measured**: a failure between
+1 000 and 3 000 ticks after a move (none was seen on any jump; the edge ran
+20 000); as §77.15, the return walked first, key orders beyond two, the loops
+apart. **What moved**: nothing in the engine.
+
+### 78.12 M73 closed
+
+The trays declared per section and checked against published correlations
+(M73.1), each stage at its own pressure with the drop capped past flood
+(M73.2), the multipass layout on Nutter's published one (M73.3, C21), the
+plant `crude_unit_trays.toml` and the column screen's key 7 with its measured
+table (M73.4). Every shipped plant byte-identical through M73 on both
+fidelities; one plant added (69). Left open, each a ledger row: the products
+do not worsen when the trays flood or weep (C23); sieve trays only, tuned
+(C24); trays on one plant only (C25); a wet or steamed column with trays not
+gated (C22); the reflux floor (C8) kept as the solve's aid beside real
+weeping.

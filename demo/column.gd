@@ -35,6 +35,12 @@
 #               (E/D) and their return temperatures from the file's (R/F); the
 #               heat each takes out is the result. A loop whose cooler runs at
 #               its limit returns warmer than set and reads in warning.
+#   trays       scenarios/crude_unit_trays.toml — that loop plant with its
+#               trays sized (M73, §78): six sections of four-pass sieve trays,
+#               each stage at its own pressure. The loop plant's keys; each
+#               tray reads its share of flood, and one that floods (too much
+#               vapour) or weeps (too little) is marked on the column. The
+#               keys go past both: the column runs on, its trays named.
 #
 # Same rule as every screen: this script computes nothing physical. Every
 # number it draws is a snapshot field — the stage temperatures and vapour, the
@@ -45,7 +51,7 @@
 # to MW (CLAUDE.md rule 4).
 #
 # Interactive:  godot --path . res://demo/column.tscn
-#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 / 6 switch plants)
+#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 / 6 / 7 switch plants)
 # Recorded:     godot --headless --path . res://demo/column.tscn --quit-after 20000 -- --auto [--plant=hot]
 #               ...runs that plant's scripted timeline (TIMELINES) and prints a
 #               `t=` line at a fixed interval plus one line per command.
@@ -223,6 +229,38 @@ const PLANTS := {
 		"loop_return_k": [-60.0, 60.0],
 		"range_ref": "§77.15",
 	},
+	"trays":
+	{
+		"scenario": "res://scenarios/crude_unit_trays.toml",
+		"title": "The loop plant on sized trays: each tray floods or weeps, each stage at its own pressure",
+		"furnace": "furnace",
+		"feed_pipe": "transfer_line",
+		"draws":
+		[
+			["naphtha_draw", "naphtha"],
+			["kerosene_draw", "kerosene"],
+			["diesel_draw", "diesel"],
+			["gas_oil_draw", "gas oil"],
+			["residue_draw", "residue"],
+		],
+		# Measured on the screen (M73.4, §78.11): 1.1–1.6 ms a tick through its
+		# timeline (each tick re-solves the trays' pressures), so six ticks
+		# keep a frame near 9–10 ms.
+		"ticks_per_frame": 6,
+		# The keys' region, measured on the loop plant's grid and routes
+		# (M73.4, §78.11), each run settled 1 000 ticks after its last move
+		# (the user's choice: a tick here re-solves the trays' pressures,
+		# about three times the loop plant's cost). The region holds only
+		# where the column runs: a flooding or weeping tray is shown, not
+		# refused (the user's decision 4, §78).
+		"region": "res://demo/column_region_trays.json",
+		"furnace_step_mw": 5.0,
+		"furnace_mw": [0.0, 40.0],
+		"reflux": [0.5, 15.0],
+		"loop_flow": [0.0, 2.0],
+		"loop_return_k": [-60.0, 60.0],
+		"range_ref": "§78.11",
+	},
 }
 
 ## Scripted timelines for the recorded runs, in ticks. Each is replayed with the
@@ -307,11 +345,34 @@ const AUTO_LOOPS := {
 	3900: ["loops_return_up"],
 	4200: ["quit"],
 }
+## trays (M73.4, §78.11), the furnace at the file's 20 MW throughout: the
+## reflux down to 1.5 at 600 starves the trays of vapour and the middle ones
+## (3–8) weep; up to 6 at 1 500 the top four flood; to 10 at 2 400 all twelve
+## flood and the column runs on, the drop it feeds back capped at flood
+## (§78.9); back to 2 at 3 300, every tray inside its window. The loops' flow
+## to 200 % at 3 600 and their return 20 K colder at 3 900 flood the trays
+## their liquid runs down (9–12); the reflux to 1 at 4 200 leaves the top two
+## weeping while 9 and 10 still flood. Their return to +40 K at 4 500 and every
+## tray weeps; at 4 800 the return key pressed to +60 K, past the column's
+## edge at that reflux: the screen holds it and says the reflux at 2.0 would
+## free it (M73.4's region).
+const AUTO_TRAYS := {
+	600: ["reflux_1.5"],
+	1500: ["reflux_6"],
+	2400: ["reflux_10"],
+	3300: ["reflux_2"],
+	3600: ["loops_flow_2"],
+	3900: ["loops_return_down"],
+	4200: ["reflux_1"],
+	4500: ["loops_return_40"],
+	4800: ["loops_return_up"],
+	5100: ["quit"],
+}
 ## The reboiler key pressed every `[2]` ticks from `[0]` to `[1]` on a timeline.
 const WALKS := {"cold": [510, 2390, 10]}
 const TIMELINES := {
 	"crude": AUTO_CRUDE, "hot": AUTO_HOT, "overheated": AUTO_OVERHEATED, "stripped": AUTO_STRIPPED, "cold": AUTO_COLD,
-	"loops": AUTO_LOOPS
+	"loops": AUTO_LOOPS, "trays": AUTO_TRAYS
 }
 const AUTO_SHOT_TICKS := {
 	"crude": [600, 1500, 2400, 3000],
@@ -320,6 +381,7 @@ const AUTO_SHOT_TICKS := {
 	"stripped": [600, 1500, 2400, 3300],
 	"cold": [500, 1005, 2000, 2400],
 	"loops": [1500, 2400, 3300, 3900],
+	"trays": [1500, 2400, 3300, 3900, 4500, 4800],
 }
 const PRINT_EVERY := 300
 
@@ -385,7 +447,7 @@ func _ready() -> void:
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
 	if not PLANTS.has(plant_key):
-		_halt("no plant '%s' (crude | hot | overheated | stripped | cold | loops)" % plant_key)
+		_halt("no plant '%s' (crude | hot | overheated | stripped | cold | loops | trays)" % plant_key)
 		return
 	_load(plant_key)
 
@@ -525,6 +587,8 @@ func _input(event: InputEvent) -> void:
 			_load("cold")
 		KEY_6:
 			_load("loops")
+		KEY_7:
+			_load("trays")
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -592,12 +656,18 @@ func _do(action: String) -> void:
 			_set_reflux(_reflux_set() + step)
 		"reflux_0":
 			_set_reflux(0.0)
+		"reflux_1":
+			_set_reflux(1.0)
 		"reflux_1.5":
 			_set_reflux(1.5)
 		"reflux_2":
 			_set_reflux(2.0)
 		"reflux_8":
 			_set_reflux(8.0)
+		"reflux_6":
+			_set_reflux(6.0)
+		"reflux_10":
+			_set_reflux(10.0)
 		"pumparounds_up", "pumparounds_down":
 			var up := action == "pumparounds_up"
 			if plant.has("pumparound_mw"):
@@ -1145,6 +1215,66 @@ func _loops_return_k() -> float:
 	return float(_loop_settings()[0]["return_temperature"]) - float(design_loop_returns[0])
 
 
+## Each tray's hydraulics as it ran, top tray first (M73.1, §78.3): its stage,
+## pressure, share of flood, weep margin, pressure drop and downcomer backup.
+## Empty on a column that declares no trays.
+func _trays() -> Array:
+	return _operation().get("trays", [])
+
+
+func _has_trays() -> bool:
+	return not _trays().is_empty()
+
+
+## The stages whose trays flood (past jet flood, or the downcomer backed up
+## past its limit) and weep, as the engine names them; absent while none does.
+func _trays_flooding() -> Array:
+	return _operation().get("trays_flooding", [])
+
+
+func _trays_weeping() -> Array:
+	return _operation().get("trays_weeping", [])
+
+
+func _tray_most(field: String) -> float:
+	var most := -INF
+	for tray in _trays():
+		most = maxf(most, float(tray[field]))
+	return most
+
+
+func _tray_least(field: String) -> float:
+	var least := INF
+	for tray in _trays():
+		least = minf(least, float(tray[field]))
+	return least
+
+
+## The pressure the last tray runs at over the top's [Pa]: the drops fed
+## back, each capped at jet flood (§78.9).
+func _tray_span_pa() -> float:
+	var trays := _trays()
+	return float(trays[-1]["pressure_pa"]) - float(trays[0]["pressure_pa"])
+
+
+## Stage numbers as runs, "1–3, 5"; "none" for none.
+func _stage_ranges(stages: Array) -> String:
+	if stages.is_empty():
+		return "none"
+	var parts: Array[String] = []
+	var first := int(stages[0])
+	var last := first
+	for i in range(1, stages.size() + 1):
+		if i < stages.size() and int(stages[i]) == last + 1:
+			last = int(stages[i])
+			continue
+		parts.append(str(first) if first == last else "%d–%d" % [first, last])
+		if i < stages.size():
+			first = int(stages[i])
+			last = first
+	return ", ".join(parts)
+
+
 ## A loop by its two trays, "4→3".
 func _loop_name(i: int) -> String:
 	var settings: Dictionary = _loop_settings()[i]
@@ -1294,6 +1424,11 @@ func _readout(tick: int) -> String:
 		for run in _loop_runs():
 			duties.append("%.1f%s" % [float(run["duty_w"]) / 1.0e6, _loop_flag(run)])
 		line += "  loops=%.0f%% return %+.0f K, %s MW" % [_loops_flow_share() * 100.0, _loops_return_k(), "/".join(duties)]
+	if _has_trays():
+		line += "  trays %.0f-%.0f%% of flood, +%.1f mbar, flooding [%s] weeping [%s]" % [
+			_tray_least("flood_fraction") * 100.0, _tray_most("flood_fraction") * 100.0, _tray_span_pa() / 100.0,
+			_stage_ranges(_trays_flooding()), _stage_ranges(_trays_weeping())
+		]
 	var cut := _cut_back()
 	if not cut.is_empty():
 		var named: Array[String] = []
@@ -1361,6 +1496,7 @@ func _draw() -> void:
 
 	_draw_furnace()
 	_draw_column()
+	_draw_trays()
 	_draw_products()
 	_draw_panel()
 
@@ -1376,7 +1512,7 @@ func _draw() -> void:
 	elif _has_loops():
 		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   Space pause   [ ] speed"
 	_text(Vector2(30, 600), keys, DIM)
-	_text(Vector2(30, 624), "1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops", DIM)
+	_text(Vector2(30, 624), "1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays", DIM)
 	if halted != "":
 		draw_multiline_string(
 			ThemeDB.fallback_font, Vector2(30, 90), "HALTED — %s" % halted, HORIZONTAL_ALIGNMENT_LEFT,
@@ -1446,6 +1582,14 @@ func _draw_column() -> void:
 			draw_rect(Rect2(band.position + Vector2(18, pitch * 0.5 - 9), Vector2(64, 16)), Color(0.05, 0.05, 0.07, 0.6))
 			_text(band.position + Vector2(22, pitch * 0.5 + 4), _c(float(temperatures[j])), INK, 12)
 		draw_line(band.position, band.position + Vector2(band.size.x, 0), SHELL, 1.0)
+		# A tray that floods or weeps (M73): outlined, and lettered beside its
+		# temperature; flooding wins where a tray does both.
+		var trouble := _tray_trouble(j + 1)
+		if trouble != "":
+			var mark := BAD if trouble.begins_with("F") else WARN
+			draw_rect(band.grow(-1.5), mark, false, 3.0)
+			draw_rect(Rect2(band.position + Vector2(84, pitch * 0.5 - 9), Vector2(13, 16)), Color(0.05, 0.05, 0.07, 0.85))
+			_text(band.position + Vector2(86, pitch * 0.5 + 4), trouble.left(1), mark, 13)
 		if j < vapour.size():
 			var width := 40.0 * float(vapour[j]) / feed_molar
 			draw_rect(Rect2(Vector2(COLUMN_RECT.position.x - 6 - width, band.position.y + pitch * 0.3), Vector2(width, pitch * 0.4)), VAPOUR)
@@ -1509,6 +1653,51 @@ func _draw_column() -> void:
 		var flagged := _loop_flag(run) != ""
 		_text(Vector2(x + 10, return_y + 4), "%.0f kg/s → %s" % [float(run["flow_kg_s"]), _c(float(run["return_temperature_k"]))], WARN if flagged else color, 10)
 		_text(Vector2(x + 10, return_y + 15), "%.1f MW off%s" % [float(run["duty_w"]) / 1.0e6, _loop_flag(run)], WARN if flagged else color, 10)
+
+
+## "FLOODING" or "WEEPING" for the tray on `stage` (one-based), as the engine
+## names it; empty where it runs inside its window, or has no tray.
+func _tray_trouble(stage: int) -> String:
+	for named in _trays_flooding():
+		if int(named) == stage:
+			return "FLOODING"
+	for named in _trays_weeping():
+		if int(named) == stage:
+			return "WEEPING"
+	return ""
+
+
+## The trays' readings (M73, §78), top left above the furnace: the spread of
+## their share of flood, the holes' least margin over the weep point, the
+## downcomers' worst backup, the pressure over the column, and the trays
+## flooding or weeping by stage. Nothing on a column without trays.
+func _draw_trays() -> void:
+	if not _has_trays():
+		return
+	var at := Vector2(30, 140)
+	_text(at, "TRAYS  %d, top down" % _trays().size(), DIM, 14)
+	at.y += 20
+	var flood_most := _tray_most("flood_fraction")
+	_text(at, "flood  %.0f–%.0f %% of jet flood" % [_tray_least("flood_fraction") * 100.0, flood_most * 100.0], BAD if flood_most > 1.0 else INK, 13)
+	at.y += 18
+	var weep_least := _tray_least("weep_margin")
+	_text(at, "holes  %.2f× weep point, least" % weep_least, WARN if weep_least < 1.0 else INK, 13)
+	at.y += 18
+	var backup := _tray_most("downcomer_backup")
+	_text(at, "downcomers  %.0f %% of limit, most" % (backup * 100.0), BAD if backup > 1.0 else INK, 13)
+	at.y += 18
+	_text(at, "pressure  +%.0f mbar to last tray" % (_tray_span_pa() / 100.0), INK, 13)
+	at.y += 22
+	var flooding := _trays_flooding()
+	var weeping := _trays_weeping()
+	if flooding.is_empty() and weeping.is_empty():
+		_text(at, "every tray inside its window", GOOD, 13)
+		return
+	if not flooding.is_empty():
+		_text(at, "FLOODING: trays %s" % _stage_ranges(flooding), BAD, 13)
+		at.y += 18
+	if not weeping.is_empty():
+		_text(at, "WEEPING: trays %s" % _stage_ranges(weeping), WARN, 13)
 
 
 ## A loop's trouble in a few words (M72.3): its cooler at capacity (it

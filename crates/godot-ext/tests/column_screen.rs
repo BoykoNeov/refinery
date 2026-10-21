@@ -635,6 +635,41 @@ impl Screen {
         )
     }
 
+    /// The tray plant (M73.4): the loop plant with its trays sized, the same
+    /// names.
+    fn trays() -> Self {
+        Screen::load(
+            "crude_unit_trays.toml",
+            "furnace",
+            "transfer_line",
+            &[
+                "naphtha_draw",
+                "kerosene_draw",
+                "diesel_draw",
+                "gas_oil_draw",
+                "residue_draw",
+            ],
+        )
+    }
+
+    /// The trays the column names flooding and weeping (stages, top down);
+    /// empty while none does.
+    fn trays_named(&self) -> (Vec<u64>, Vec<u64>) {
+        let op = self.column_node()["column_operation"].clone();
+        let named = |key: &str| -> Vec<u64> {
+            op[key]
+                .as_array()
+                .map(|l| l.iter().map(|x| x.as_u64().unwrap()).collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            op["trays"].as_array().map(Vec::len),
+            Some(12),
+            "a tray per stage above the reboiler"
+        );
+        (named("trays_flooding"), named("trays_weeping"))
+    }
+
     /// `_set_loops_flow`: every loop at `share` of its file's flow.
     fn send_loops_flow(&mut self, share: f64) {
         let column = self.column;
@@ -732,7 +767,17 @@ fn slow_the_loop_plant_timeline() {
 /// The loop plant settled at its file's state, then its four keys sent at once
 /// (the region's one-jump route), run `ticks` on: whether it ran.
 fn loops_jump_runs(furnace: f64, reflux: f64, flow: f64, ret: f64, ticks: i64) -> bool {
-    let mut screen = Screen::loops();
+    loop_plant_jump_runs(Screen::loops(), [furnace, reflux, flow, ret], ticks)
+}
+
+/// A loop plant (`Screen::loops` or `::trays`) settled at its file's state,
+/// then its four keys — furnace MW, reflux, loops' flow share, return K — sent
+/// at once (the regions' one-jump route), run `ticks` on: whether it ran.
+fn loop_plant_jump_runs(
+    mut screen: Screen,
+    [furnace, reflux, flow, ret]: [f64; 4],
+    ticks: i64,
+) -> bool {
     screen.run_to(1000);
     let (furnace_id, column) = (screen.furnace, screen.column);
     screen.send(&format!(
@@ -774,4 +819,124 @@ fn slow_the_loop_units_region_is_the_columns() {
             "{furnace} MW, reflux {reflux}, flow {flow}, return {outside:+} K"
         );
     }
+}
+
+/// **The tray plant** (`AUTO_TRAYS`, M73.4, DESIGN §78.11): the loop plant on
+/// sized trays, the furnace at the file's 20 MW. The reflux down to 1.5 at 600
+/// and the middle trays weep; up to 6 at 1 500 and the top four flood; to 10 at
+/// 2 400 and all twelve flood while the column runs as set, the pressure over
+/// it less than the drops it reads (capped at flood, §78.9); back to 2 at
+/// 3 300, every tray inside its window. The loops' flow to 200 % at 3 600 and
+/// their return 20 K colder at 3 900 flood the trays their liquid runs down;
+/// the reflux to 1 at 4 200 and the top two weep while 9 and 10 still flood;
+/// their return to +40 K at 4 500 and every tray weeps; the return key pressed
+/// to +60 K at 4 800 is past the table's edge, which the reflux at 2.0 clears —
+/// the screen holds it, and the column runs on.
+#[test]
+fn slow_the_tray_plant_timeline() {
+    let mut screen = Screen::trays();
+    let none: Vec<u64> = vec![];
+    let all: Vec<u64> = (1..=12).collect();
+    let column = screen.column;
+    let reflux = |screen: &mut Screen, ratio: f64| {
+        screen.send(&format!(
+            r#"{{"cmd":"set_reflux_ratio","node":{column},"reflux_ratio":{ratio:?}}}"#
+        ))
+    };
+    screen.run_to(600);
+    assert_eq!(
+        screen.trays_named(),
+        (none.clone(), none.clone()),
+        "the file's"
+    );
+
+    reflux(&mut screen, 1.5);
+    screen.run_to(1500);
+    assert_eq!(screen.trays_named(), (none.clone(), (3..=8).collect()));
+
+    reflux(&mut screen, 6.0);
+    screen.run_to(2400);
+    assert_eq!(screen.trays_named(), ((1..=4).collect(), none.clone()));
+
+    reflux(&mut screen, 10.0);
+    screen.run_to(3300);
+    assert_eq!(screen.trays_named(), (all.clone(), none.clone()));
+    assert_eq!(screen.reading().2, 10.0, "flooded, the column runs as set");
+    let trays = screen.column_node()["column_operation"]["trays"].clone();
+    let trays = trays.as_array().unwrap();
+    let span =
+        trays[11]["pressure_pa"].as_f64().unwrap() - trays[0]["pressure_pa"].as_f64().unwrap();
+    let read: f64 = trays[..11]
+        .iter()
+        .map(|t| t["pressure_drop_pa"].as_f64().unwrap())
+        .sum();
+    assert!(span < read, "capped: {span} Pa over {read} Pa read");
+
+    reflux(&mut screen, 2.0);
+    screen.run_to(3600);
+    assert_eq!(screen.trays_named(), (none.clone(), none.clone()));
+
+    screen.send_loops_flow(2.0);
+    screen.run_to(3900);
+    assert_eq!(screen.trays_named(), ((9..=11).collect(), none.clone()));
+
+    screen.send_loops_return(-20.0);
+    screen.run_to(4200);
+    assert_eq!(screen.trays_named(), ((9..=12).collect(), none.clone()));
+
+    reflux(&mut screen, 1.0);
+    screen.run_to(4500);
+    assert_eq!(
+        screen.trays_named(),
+        ((9..=10).collect(), (1..=2).collect())
+    );
+
+    screen.send_loops_return(40.0);
+    screen.run_to(4800);
+    assert_eq!(screen.trays_named(), (none.clone(), all.clone()));
+
+    let region = region("trays");
+    assert!(region_allows(&region, [20.0, 1.0, 2.0, 40.0]));
+    assert!(!region_allows(&region, [20.0, 1.0, 2.0, 60.0]));
+    assert!(region_allows(&region, [20.0, 2.0, 2.0, 60.0]));
+    assert!(!region_allows(&region, [20.0, 1.5, 2.0, 60.0]));
+    screen.run_to(5100);
+    assert_eq!(screen.reading().2, 1.0);
+}
+
+/// **The tray plant's region is the column's** (M73.4, DESIGN §78.11): the
+/// table holds the file's own setting, and on either side of its edge the
+/// column does what the table says — at 20 MW and a reflux of 2, the loops
+/// returning 60 K warm run at 125 % of their flow and not at 100 % (the loop
+/// plant needs 150 % there: the one place below 25 MW the trays moved the
+/// edge); at 0 MW and a reflux of 1, at half their flow they run returning as
+/// declared and not 20 K warmer. A failing jump fails on its first tick
+/// (every one measured did), so a short run decides it.
+#[test]
+fn slow_the_tray_units_region_is_the_columns() {
+    let trays = region("trays");
+    assert!(
+        region_allows(&trays, [20.0, 4.0, 1.0, 0.0]),
+        "the file's setting"
+    );
+    for (inside, outside) in [
+        ([20.0, 2.0, 1.25, 60.0], [20.0, 2.0, 1.0, 60.0]),
+        ([0.0, 1.0, 0.5, 0.0], [0.0, 1.0, 0.5, 20.0]),
+    ] {
+        assert!(region_allows(&trays, inside), "{inside:?}");
+        assert!(!region_allows(&trays, outside), "{outside:?}");
+        assert!(
+            loop_plant_jump_runs(Screen::trays(), inside, 100),
+            "{inside:?} runs"
+        );
+        assert!(
+            !loop_plant_jump_runs(Screen::trays(), outside, 100),
+            "{outside:?} does not"
+        );
+    }
+    let loops = region("loops");
+    assert!(
+        !region_allows(&loops, [20.0, 2.0, 1.25, 60.0]),
+        "the loop plant's edge"
+    );
 }
