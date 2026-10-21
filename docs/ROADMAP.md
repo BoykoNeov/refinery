@@ -10846,7 +10846,7 @@ Key 6 plays the loop plant. Its keys are the furnace (5 MW steps), the
 reflux, the loops' flow (E/D, 0–200 % of the file's) and their return
 temperatures (R/F, −60 to +60 K); the three loops move together (the user's
 decision), so the table has four keys. Measured by C19's routes in five
-batches of under an hour, about 2 h 20 min in all
+batches of under an hour, about 3 h 10 min in all
 (`tools/steptime/prototypes/m72_6/`): 16 183 of 17 010 settings allowed, all
 reachable. A low reflux needs the loops running, more of them the warmer they
 return; the jumps fail the same at every furnace duty, the walks a step more

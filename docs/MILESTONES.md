@@ -44,7 +44,7 @@ trays, and key 6 on the column screen.
   `tools/steptime/prototypes/m72_6/`): the furnace, the reflux, the loops'
   flow and return temperatures moved together (the user's decision); 16 183 of
   17 010 settings allowed, measured in five batches of under an hour (about
-  2 h 20 min); 36 edge settings ran 20 000 ticks; the timeline runs two coolers
+  3 h 10 min); 36 edge settings ran 20 000 ticks; the timeline runs two coolers
   at their limit and holds a warmer return past the edge.
 - **Every shipped plant byte-identical** through M72 on both fidelities; one
   plant added (68).

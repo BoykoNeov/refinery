@@ -29515,7 +29515,7 @@ steps, the reflux 0.5–15 in 0.5, the flow 0–200 % in 25 %, the return −60 
 the reflux, the flow, then the return walked to −60 and to +60); loops first
 (the flow, the return, then the reflux walked to 0.5 and to 15); a press
 every 300 ticks. `tools/steptime/prototypes/m72_6/` (`FINDINGS.md`): five
-batches on 14 threads, each under an hour, about 2 h 20 min in all — the first
+batches on 14 threads, each under an hour (the longest 57 minutes), about 3 h 10 min in all — the first
 jump batch was stopped four minutes in, its estimate past the hour, and split.
 
 **Measured** (the shipped engine):

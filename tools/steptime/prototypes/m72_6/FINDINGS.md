@@ -36,12 +36,14 @@ on reaching it, kept where reachable from the file's by single steps.
 
 ## Machine time
 
-The first jump batch was stopped 4 minutes in (773 runs kept), when its
+The first jump batch was stopped 3.4 minutes in (773 runs kept), when its
 estimate came to about 75 minutes, and the rest was split. Five batches on 14
-threads, each under an hour: jumps 773 + 8 118 + 8 119 (about 4, 38 and 40
-minutes), walks 3 042 + 2 952 (about 54 and 36 minutes); the long check 1
-minute. About 2 h 20 min in all, against the 1 h 40 min first estimated from a
-sample. The raw output (~6 MB) is not kept; the counts are below.
+threads, each under an hour (from the output files' creation and last-write
+times): jumps 773 + 8 118 + 8 119 (3.4, 38.5 and 38.8 minutes), walks 3 042 +
+2 952 (53.8 and 56.8 minutes — the second, 36 minutes by the first's pace,
+came within 3 minutes of the hour; why it ran slower was not traced); the
+long check 1 minute. About 3 h 10 min in all, against the 1 h 40 min first
+estimated from a sample. The raw output (~6 MB) is not kept; the counts are below.
 
 ## Measured
 

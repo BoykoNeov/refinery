@@ -6,7 +6,7 @@
 //! with the scene's own command text, on the shipped engine. Put this file in
 //! `crates/godot-ext/tests/`, register it in `suite.rs`, and run the release
 //! test binary with `m72_6_grid --nocapture --test-threads 1` and, as env vars:
-//! PLANT (`crude`, `stripped`, `cold`), WARM (ticks before the first move,
+//! PLANT (`crude`, `stripped`, `cold`, `loops`), WARM (ticks before the first move,
 //! default 1000), GAP (ticks between moves, default 3000), RUN (ticks after
 //! the last move, default 6000), JOBS (runs in parallel, default 8) and SPECS
 //! (or SPECS_FILE, a file holding them):
