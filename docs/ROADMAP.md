@@ -10915,8 +10915,9 @@ M73.1's fixture, every stage at its own pressure (checked on every tick): at
 the file's settings the bottom 5.5 K hotter and every product within 0.16
 points; along the reflux line 0.5–15 the bottom +3.7 to +15.4 K with the drop
 as it reads, +7.5 K at most capped at 100 % of flood; every setting ran in
-every mode. Lagged a tick, the column is wrong on the tick a key moves (up to
-9.9 K at the bottom) and after every load, and its answer hangs on the tick
+every mode. Lagged a tick, the column is wrong for the few ticks after a key moves
+(up to 9.9 K at the bottom on the first, under 1 mbar by the third) and
+after every load, and its answer hangs on the tick
 before; solved within the tick it lands on the same column at 3–5 solves when
 a key moves, one when steady (2.4–5.3 ms a moved tick, 0.5 ms steady), and
 needs no hand-over at the cold start. Refusing past flood halts the column

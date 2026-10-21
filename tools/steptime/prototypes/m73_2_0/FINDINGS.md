@@ -61,20 +61,25 @@ changed.
    1.5, one at 2–2.5).
 3. **Every mode ran every setting.** No solve refused anywhere on 0.5–15, at
    one pressure or fed back, lagged or solved, raw or capped.
-4. **Lag and solve land on the same column; the lag is wrong only on the
-   tick a key moves** (`analysis_lag.txt`): from the second tick after a jump
-   the two agree to 0.1 mbar. On the jump tick the lagged column runs at the
-   OLD drops — up to 238 mbar and 9.9 K at the bottom off on a jump to 15
-   raw, 47 mbar and 2.0 K capped, 44 mbar and 2.1 K going down to 0.5. No
-   ringing: the drops settle in 1–2 ticks. **After every load** (no history)
+4. **Lag and solve land on the same column; the lag is wrong for a few
+   ticks after a key moves** (`analysis_lag.txt`): on the jump tick the
+   lagged column runs at the OLD drops — up to 238 mbar and 9.9 K at the
+   bottom off on a jump to 15 raw, 47 mbar and 2.0 K capped, 44 mbar and
+   2.1 K going down to 0.5 — and its error then shrinks about 15 times a
+   tick, the solve's re-solving spread over ticks: at 15 raw 238 → 15.8 →
+   0.8 → 0.0 mbar, within 1 mbar by the third tick; capped within 0.3 mbar
+   by the next. No ringing. **After every load** (no history)
    the lagged column's first tick is at one pressure and its second 5.5 K
    hotter at the bottom. The plant itself drifts 40–150 ticks after a jump
    (the loops' coolers, the coil) in every mode, the solved one included.
 5. **Solved within the tick, the drops settle fast**: 3–5 solves on a tick
    a key moves (each re-solve cuts the drops' error 10–15 times: 23.8 kPa
    off → 0.5 Pa in five at 15), ONE on a steady tick (the last tick's drops
-   are the first guess; the answer is the same within 0.5 Pa from any start,
-   so the seed contract `separation_is_start_insensitive` gates still holds).
+   are the first guess). The answer does not hang on that guess: from cold,
+   started from no drops (9 solves) and from the settled ones (E1b, 6), the
+   first tick lands within 0.11 Pa a tray and 0.0003 K at the bottom — inside
+   the 0.5 Pa tolerance — so the seed contract `separation_is_start_
+   insensitive` gates still holds (gated in M73.2).
    Coupled this weakly, putting the pressures inside Newton (one unknown per
    stage, about a third more Jacobian columns) buys nothing the re-solve
    does not.

@@ -29973,14 +29973,18 @@ liquid as it is). From cold at the file's settings, and the reflux line
    at 150–170 mbar once the trays pass flood (from about 6). The purities
    move 0.52 points at most raw, 0.23 capped. Weeping as at one pressure.
 3. **Every mode ran every setting**; no solve refused on 0.5–15.
-4. **Lagged and solved land on the same column**, to 0.1 mbar from the second
-   tick after a jump. On the jump tick the lag runs at the old drops — up to
-   238 mbar and 9.9 K at the bottom off (to 15, raw), 47 mbar and 2.0 K
-   capped; no ringing. After every load its first tick is at one pressure,
+4. **Lagged and solved land on the same column**, the lag a few ticks late:
+   on the jump tick it runs at the old drops — up to 238 mbar and 9.9 K at
+   the bottom off (to 15, raw), 47 mbar and 2.0 K capped — and its error
+   shrinks about 15 times a tick (238 → 15.8 → 0.8 mbar at 15 raw, within
+   1 mbar by the third tick; capped within 0.3 mbar by the next); no
+   ringing. After every load its first tick is at one pressure,
    the next 5.5 K hotter at the bottom. And the lag makes a pass's answer
    depend on the tick before — against `ColumnPass::seed`'s contract (the
    same fixed point whatever the history holds), which the solved mode keeps:
-   the last tick's drops are only its first guess.
+   the last tick's drops are only its first guess — from cold, started from
+   no drops and from the settled ones, it lands within 0.11 Pa a tray and
+   0.0003 K at the bottom, inside its 0.5 Pa tolerance.
 5. **Solved, 3–5 solves on a tick a key moves, one on a steady tick**; each
    re-solve cuts the drops' error 10–15 times. Coupled this weakly, the
    pressures inside Newton (an unknown per stage) buy nothing the re-solve
