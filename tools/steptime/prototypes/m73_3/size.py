@@ -10,7 +10,9 @@ downcomer's chord (so the liquid does too): the rated pass is the side pass —
 its weir the chord of a segment s/n of the column, its apron that chord, the
 downcomer it feeds from s/n of the column. One pass is the old tray exactly.
 
-The sizing rules (Kister §6.12, §6.16, §6.19): four passes (above 12 ft);
+The sizing rules (Kister §6.12, §6.16, §6.19): four passes on every section
+($M73_PASSES=2 tries two: only the top section, 1–2, meets every rule on two,
+and one count is kept down the column — §78.10);
 each section's diameter its widest tray's at 80 % of jet flood on At(1 − s);
 the narrowest (s, hole share) with every tray's downcomer backup at 80 % of
 its limit or under, the liquid's loss under the apron at 1.5 in (38.1 mm) or
@@ -21,8 +23,8 @@ more. A 50 mm weir, the clearance 45 mm, 5 mm holes.
 
 Usage: size.py [spacing_m]   (default 0.76; reads $M73_OUT/base_loops.out,
 default W:/temp/claude/m73_0/out — re-made by M73.0's 8-minute sweep)
-Printed at 0.76: the table in §78.10. At 0.61: no section holds its
-downcomers under 80 % (the finding that set 0.76).
+Printed at 0.76: the table in §78.10. At 0.61: only the top section meets
+every rule (the finding that set 0.76).
 """
 import itertools
 import math
@@ -41,7 +43,7 @@ MIN_WEEP = 1.2
 SIDE_FLOOR = 0.045
 FT = 0.3048
 SECTIONS = [(1, 2), (3, 5), (6, 8), (9, 10), (11, 11), (12, 12)]
-PASSES = 4
+PASSES = int(os.environ.get("M73_PASSES", "4"))
 CLEARANCE = 0.045
 
 

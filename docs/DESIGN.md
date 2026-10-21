@@ -30190,8 +30190,12 @@ untouched. **Refused by name**: a side downcomer under 4.5 % of the column
   the layout's areas and the split are the sources' design rule.
 
 **The sizing rules** (`tools/steptime/prototypes/m73_3/size.py`, on M73.0's
-saved loads, then checked in the engine): four passes (above 12 ft across, [K]
-guideline 3), each section's diameter its widest tray's at 80 % of jet flood,
+saved loads, then checked in the engine): four passes on every section — [K]
+admits four above 10–12 ft (guideline 3) and has the fewest passes used
+(guidelines 1, 4); on two, only the top section (1–2) meets every rule below
+(6.0 m, against 5.9 m on four), and one count is kept down the column, as a
+change of passes wants a transition tray 1.5–2 ft taller than the rest ([K]
+§6.13) — a choice, not a rule; each section's diameter its widest tray's at 80 % of jet flood,
 and the narrowest design with every tray's downcomer at 80 % of its limit or
 under, the liquid's loss under the apron at 1.5 in (38 mm) or under ([K]
 §6.19), the weir load at 13 gpm/in or under ([K] guideline 2), the clear
