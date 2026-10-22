@@ -1,0 +1,144 @@
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index 2dd68ed..73b47c9 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -898,6 +898,7 @@ impl HeatBalanceCascade {
+         };
+         // Each tray's hydraulics at the converged loads, on a column that
+         // declares its trays (M73.1, docs/DESIGN.md §78.3).
++        probe_trays_clear();
+         let trays = if spec.trays.is_empty() {
+             Vec::new()
+         } else {
+@@ -913,6 +914,7 @@ impl HeatBalanceCascade {
+                 &profile.free_water,
+             )?
+         };
++        probe_record(slate, &profile, &k, &draws, &setup.pressures);
+         let (condenser_duty, reboiler_duty) = column_duties(
+             slate,
+             thermo,
+@@ -6084,3 +6086,86 @@ mod loop_tests {
+         );
+     }
+ }
++
++// ---- M74.0 PROBE (not for commit): each converged column's stage flows,
++// compositions and K-values, and each tray's liquid held, kept per thread so a
++// parallel driver reads its own run's last answer. On only with PROBE_HOLDUP.
++thread_local! {
++    static PROBE_LAST: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
++    static PROBE_TRAYS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
++}
++
++fn probe_on() -> bool {
++    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ON.get_or_init(|| std::env::var("PROBE_HOLDUP").is_ok())
++}
++
++pub(crate) fn probe_tray(line: String) {
++    if probe_on() {
++        PROBE_TRAYS.with(|cell| cell.borrow_mut().push(line));
++    }
++}
++
++fn probe_trays_clear() {
++    if probe_on() {
++        PROBE_TRAYS.with(|cell| cell.borrow_mut().clear());
++    }
++}
++
++fn probe_vec(v: &[f64]) -> String {
++    let parts: Vec<String> = v.iter().map(|x| format!("{x:?}")).collect();
++    format!("[{}]", parts.join(","))
++}
++
++fn probe_record(
++    slate: &Slate,
++    profile: &Profile,
++    k: &[Vec<f64>],
++    draws: &[DrawState],
++    pressures: &[Pascal],
++) {
++    if !probe_on() {
++        return;
++    }
++    let n = profile.temperatures.len();
++    let f = &profile.flows;
++    let mut stages = Vec::with_capacity(n);
++    for j in 0..n {
++        let pick = |v: &Vec<f64>| v.get(j).copied().unwrap_or(0.0);
++        stages.push(format!(
++            "{{\"T\":{:?},\"P\":{:?},\"x\":{},\"K\":{},\"V\":{:?},\"Lin\":{:?},\"Ldown\":{:?},\"Ldrawn\":{:?},\"Cin\":{:?},\"Cout\":{:?}}}",
++            profile.temperatures[j],
++            pressures[j].value(),
++            probe_vec(&profile.liquid[j]),
++            probe_vec(&k[j]),
++            pick(&f.vapour),
++            pick(&f.liquid_in),
++            pick(&f.liquid_down),
++            pick(&f.liquid_drawn),
++            pick(&f.circulation_in),
++            pick(&f.circulation_out),
++        ));
++    }
++    let mw: Vec<f64> = (0..slate.len()).map(|c| slate.get(c).molar_mass.value()).collect();
++    let cp: Vec<f64> = (0..slate.len()).map(|c| slate.get(c).cp.value()).collect();
++    let rho: Vec<f64> = (0..slate.len())
++        .map(|c| slate.get(c).density.map_or(0.0, |d| d.value()))
++        .collect();
++    let top = probe_vec(draws[0].moles.fractions());
++    let trays = PROBE_TRAYS.with(|cell| cell.borrow().join(","));
++    let line = format!(
++        "{{\"R\":{:?},\"reflux\":{:?},\"top_x\":{top},\"mw\":{},\"cp\":{},\"rho\":{},\"stages\":[{}],\"trays\":[{trays}]}}",
++        profile.reflux_ratio,
++        f.reflux,
++        probe_vec(&mw),
++        probe_vec(&cp),
++        probe_vec(&rho),
++        stages.join(",")
++    );
++    PROBE_LAST.with(|cell| *cell.borrow_mut() = Some(line));
++}
++
++/// M74.0 probe: the last converged column answer on this thread, as JSON.
++pub fn probe_last_holdup() -> Option<String> {
++    PROBE_LAST.with(|cell| cell.borrow().clone())
++}
+diff --git a/crates/solvers/src/trays.rs b/crates/solvers/src/trays.rs
+index 27d79ef..f0cbc6d 100644
+--- a/crates/solvers/src/trays.rs
++++ b/crates/solvers/src/trays.rs
+@@ -500,6 +500,32 @@ pub(crate) fn column_trays(
+             )));
+         }
+         let geometry = TrayGeometry::of(section);
++        {
++            // ---- M74.0 PROBE: each tray's liquid held, deck and downcomer.
++            let tray = sieve_tray(&geometry, &load);
++            let d = section.diameter.value();
++            let column = std::f64::consts::PI * d * d / 4.0;
++            let dca = section.downcomer_share * column;
++            let active = column - 2.0 * dca;
++            crate::heat_balance::probe_tray(format!(
++                "{{\"stage\":{stage},\"active\":{active:?},\"dca\":{dca:?},\"hw\":{:?},\"crest\":{:?},\"backup\":{:?},\"rho_l\":{:?},\"rho_v\":{:?},\"liq_kg_s\":{:?},\"vap_kg_s\":{:?},\"mw_l\":{liquid_molar_mass:?},\"flood\":{:?},\"weep\":{:?},\"total\":{:?},\"dry\":{:?},\"resid\":{:?},\"hdc\":{:?},\"lw\":{:?},\"passes\":{}}}",
++                section.weir_height.value(),
++                tray.weir_crest.value(),
++                tray.backup.value(),
++                load.liquid_density.value(),
++                vapour_density,
++                liquid_mass,
++                vapour_mass,
++                tray.net_velocity.value() / tray.flood_velocity.value(),
++                tray.hole_velocity.value() / tray.weep_velocity.value(),
++                tray.total_head.value(),
++                tray.dry_head.value(),
++                tray.residual_head.value(),
++                tray.downcomer_loss.value(),
++                geometry.weir_length.value(),
++                geometry.passes,
++            ));
++        }
+         let reading = sieve_tray(&geometry, &load).reading(
+             stage,
+             pressures[j],
