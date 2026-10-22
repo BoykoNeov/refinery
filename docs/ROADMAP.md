@@ -11045,3 +11045,9 @@ weirs, the level loops from the start-of-tick levels. Slices: M74.1 the
 holdup declared and its state on the snapshot; M74.2 the step; M74.3 the
 level loops, the toggle and the products' flows; M74.4 the plant, the screen's
 key 8 and its table; then the start from empty, its own probe.
+
+**B run, after the decision** (M74.1.0 findings 9–12): its base swings hard
+(−69 to +73 % of its normal holdup on moderate moves, on Kister's 5 minutes)
+and with the reboiler held some settings empty it whatever its size. Put
+back to the user: **B kept, the base 20 minutes of the bottoms, physical
+limits (not errors) at an empty or full drum or base** (DESIGN §79.1–§79.2).

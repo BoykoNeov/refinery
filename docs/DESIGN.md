@@ -30481,6 +30481,12 @@ residue feeds the vacuum unit's). Even A overfills its base at a reflux of 15.
 So the decision is put back to the user with these numbers: the default
 scheme, the base's size, and what an empty or full base or drum does.
 
+**Decided again (2026-10-22), the user, with these numbers**: **B kept** as
+the new plant's start (the bottom running dry a thing to manage), the toggle
+to A kept; **the base 20 minutes** of the bottoms at its normal level (within
+Ludwig's 30 for a drum feeding a furnace) — the drum stays on Kister's; and
+**physical limits, not errors**, at an empty or full drum or base (§79.2).
+
 ### 79.2 The design — a column that stores mass, specified before building
 
 **Where the state lives.** As a furnace's coil (§37) and a catalyst bed
@@ -30498,8 +30504,11 @@ holdup = { drum_m3 = 20.0, base_m3 = 30.0, reboiler = "held" }   # sizes illustr
 
 - `drum_m3`, `base_m3`: the reflux drum's and the base's working volumes
   [m³] (decision 2; rule 4: a volume, not minutes). Normal level is half.
-  The new plant's from Kister's rules on its settled flows (§79.0 finding 1:
-  about 4.5 minutes of the distillate held at the normal level).
+  The new plant's drum on Kister's rules on its settled flows (§79.0
+  finding 1: about 4.5 minutes of the distillate at the normal level), its
+  base 20 minutes of the bottoms at the normal level (§79.1, decided).
+- Declaring `holdup.reboiler` beside the block's `reboiler_duty_mw` is
+  refused: one declaration of a held reboiler.
 - `reboiler`: `"held"` starts the column in scheme B, `"free"` in A
   (§79.1, the user's decision: the plant file says which).
 - The state, written by the engine: each stage's liquid held [kg] and its
@@ -30552,11 +30561,26 @@ residual tolerance; the property tests gain the column's inventory.
 `Σ splitᵢ = 1` and "mass-neutral identically" (§7, `traits.rs`,
 `graph.rs`) stay true of every column without holdup and say so.
 
+**An empty or full drum or base — physical limits** (§79.1, decided): an
+empty base boils only what reaches it — the reboiler's duty falls to that,
+the base read "dry"; an empty drum returns as reflux and distillate only what
+condenses into it, "dry"; a full one passes its excess on with its product
+(the bottoms, the distillate), read "full". The level loops' integrals stop
+while their stream is pinned (no wind-up).
+
+**The toggle**: holding or freeing the reboiler hands the base's level to
+the other stream with its loop's integral set so that stream does not jump.
+
 **Refused at load, for now**: holdup on a column without trays (the trays'
 sizes give their liquid, decision 3), with free water or steam (C22's
-ground), or without the heat-balance cascade. **At run time**: a drum or a
-base past full or empty is an `Err` naming it — the empty column is the
-second part's.
+ground), or without the heat-balance cascade. **At run time, an `Err`**:
+a stage whose vapour its energy balance puts at zero or below, naming the
+stage (a cold reflux slug on the top tray; the bubble-point stage cannot be
+a stage that does not boil — the second part's); a step whose Newton does
+not converge — no fall back to the settled solve mid-run (rule 5).
+
+**The snapshot stays byte-identical** on every column without holdup: each
+new field on `ColumnOperation` and `DrawSeparation` skipped when empty.
 
 **Snapshot**: on `ColumnOperation`, each stage's liquid held [kg], the drum's
 and the base's levels [share of their volume], which scheme runs, and what
@@ -30576,5 +30600,6 @@ the level loops set (the distillate, the bottoms, the reboiler's duty).
   weirs; under A every key lands on today's settled answer.
 - **M74.4** — `scenarios/crude_unit_holdup.toml` (the tray plant copied, in
   B), the corpus, the column screen's key 8 with a reboiler key, and its
-  measured table within the hour's budget.
+  measured table within the hour's budget — a reboiler axis, each run
+  settling 8 000–24 000 ticks: a coarser grid, planned before launching.
 - Then the start from empty: its own probe.
