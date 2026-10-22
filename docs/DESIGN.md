@@ -30466,3 +30466,101 @@ toggle to A.**
   second question) is B by construction: the bottoms takes the base's level
   while the reboiler is held (the user's answer). The plant file says which
   it starts in; the new plant starts in B.
+
+### 79.2 The design — a column that stores mass, specified before building
+
+**Where the state lives.** As a furnace's coil (§37) and a catalyst bed
+(§62.1): on the plant graph, set at load (empty), read by the sweep at the
+start of the tick, the end of the tick written back once by the engine with
+every other state (`Engine::tick` step 5). So every re-solve of a tick — the
+line-flash passes (M55), the pressure re-solve (M73.2), a retried cold start,
+the dropped guess (M71) — reads the same start-of-tick holdups. On the
+cascade block, optional, absent on every shipped column (then not
+serialized, so every plant stays byte-identical):
+
+```toml
+holdup = { drum_m3 = 20.0, base_m3 = 30.0, reboiler = "held" }   # sizes illustrative; M74.4 sizes the plant's
+```
+
+- `drum_m3`, `base_m3`: the reflux drum's and the base's working volumes
+  [m³] (decision 2; rule 4: a volume, not minutes). Normal level is half.
+  The new plant's from Kister's rules on its settled flows (§79.0 finding 1:
+  about 4.5 minutes of the distillate held at the normal level).
+- `reboiler`: `"held"` starts the column in scheme B, `"free"` in A
+  (§79.1, the user's decision: the plant file says which).
+- The state, written by the engine: each stage's liquid held [kg] and its
+  composition (mass fractions), the drum's likewise, and each level loop's
+  integral. `None` until the first tick fills it.
+
+**Tick 0 — the column starts full.** The first tick solves the column as
+today (the settled answer, every aid as today), then fills the state from
+it: each tray holds what its weir and downcomer hold at its loads (M73's
+heads, §79.0), the drum and the base half full of their stage's liquid. A
+column declared `"held"` holds its reboiler from then on at the duty that
+first tick closed on. The empty start is the milestone's second part.
+
+**Each tick after — one step from the last.** Given the start-of-tick
+state and this tick's feed:
+
+1. **The liquid off each tray** from what it holds: Sinnott's heads (M73,
+   `trays.rs`) inverted, `M(L) = ρL·[A_a·(h_w + h_ow) + A_dc·(h_w + h_ow +
+   h_t + h_dc)]`, at the start-of-tick vapour and holdup — explicit: a tray
+   answers its flow in 5–7 s (M74.1.0 finding 1), fifty ticks. The side draws
+   and loop draws come off it at their set flows; a tray short of them gives
+   what it has, the draws first, then nothing goes down.
+2. **The level loops**, from the start-of-tick levels: the drum's sets the
+   distillate; the base's sets the bottoms (B, the reboiler held at its duty)
+   or the reboiler's duty (A, the bottoms at its share of the feed).
+   Proportional-integral on the level's departure from half, the output a
+   multiple of the flow (or duty) the first tick settled on: gain 2,
+   integral 300 s — GAME VALUES (M74.1.0 finding 4). The reflux is the
+   reflux ratio times the distillate.
+3. **The stages solved implicitly** (implicit Euler, §79.0 finding 4): per
+   component, `H_j'·x_j' − H_j·x_j = dt·(in − out)` at the end-of-tick
+   compositions, `H_j' = H_j + dt·(in − out)` in total — the Thomas sweep with
+   the holdup on its diagonal; each stage at its bubble point; each stage's
+   energy balance with the liquid it stores carried at its own enthalpy and
+   the heat its liquid stores as its temperature moves left out (§79.0
+   finding 7): `Σ in·(h_in − h_j) − V_j·(H_j − h_j) − Q_j = 0`. Unknowns: each
+   stage's temperature and vapour, the loops' molar flows; no reflux unknown,
+   no draw-ratio rows, no closure — the reboiler's duty is given (held, or
+   the level loop's). Newton as M61's, from last tick's temperatures and
+   vapours: one or two steps a tick.
+4. **The drum** (a total condenser): the top vapour condenses into it; the
+   reflux and the distillate leave it at its composition.
+5. **The products' flows** are this step's, not shares of the feed: the
+   separation reports each draw's flow, and the engine writes it on the draw
+   line (§7's `splitᵢ·ṁ_feed` stays for every column without holdup).
+
+**Conservation**: the column holds mass, so I7 at a holdup column is
+`feed − products = Δ(liquid held)`, per component, each tick, to the
+residual tolerance; the property tests gain the column's inventory.
+`Σ splitᵢ = 1` and "mass-neutral identically" (§7, `traits.rs`,
+`graph.rs`) stay true of every column without holdup and say so.
+
+**Refused at load, for now**: holdup on a column without trays (the trays'
+sizes give their liquid, decision 3), with free water or steam (C22's
+ground), or without the heat-balance cascade. **At run time**: a drum or a
+base past full or empty is an `Err` naming it — the empty column is the
+second part's.
+
+**Snapshot**: on `ColumnOperation`, each stage's liquid held [kg], the drum's
+and the base's levels [share of their volume], which scheme runs, and what
+the level loops set (the distillate, the bottoms, the reboiler's duty).
+
+**Slices.**
+
+- **M74.1** — the holdup declared, refused where it cannot run, the state
+  on the graph filled at tick 0 and on the snapshot; the column still
+  quasi-steady (so the new plant's columns read as the tray plant's).
+- **M74.2** — the step (3–4 above) in `solvers`, the draws' flows given:
+  a settled column held at its own flows stays put; per-component
+  conservation with accumulation; a reference against a hand calculation (a
+  single stage with holdup, its first-order response).
+- **M74.3** — the level loops and the toggle (hold is B, free is A), the
+  products' flows written by the engine, the trays' liquid from their
+  weirs; under A every key lands on today's settled answer.
+- **M74.4** — `scenarios/crude_unit_holdup.toml` (the tray plant copied, in
+  B), the corpus, the column screen's key 8 with a reboiler key, and its
+  measured table within the hour's budget.
+- Then the start from empty: its own probe.

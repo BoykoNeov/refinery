@@ -11036,3 +11036,12 @@ the drum's level, the bottoms the base's, the player sets the reboiler's heat
 (Kister Fig. 16.4a, the more realistic) — with a live toggle to A (the
 reboiler holds the base's level, today's keys): today's hold and free
 reboiler commands; the new plant starts in B.
+
+Specified (DESIGN §79.2): the holdup on the cascade block (the drum's and
+base's volumes, the scheme it starts in), its state on the plant graph
+committed once a tick; tick 0 solved as today and the column filled from it;
+each tick after one implicit step from the last, the trays' liquid from their
+weirs, the level loops from the start-of-tick levels. Slices: M74.1 the
+holdup declared and its state on the snapshot; M74.2 the step; M74.3 the
+level loops, the toggle and the products' flows; M74.4 the plant, the screen's
+key 8 and its table; then the start from empty, its own probe.
