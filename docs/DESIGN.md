@@ -30410,7 +30410,8 @@ sized once on the file's settings and held as masses:
    response; the holdup term outweighs a tray's flows about a hundredfold.
 5. **The heat a running column's liquid stores** as its temperatures move:
    under 1 MW over ten minutes against 45–110 MW of duty — left out of the
-   running column. It is the whole story of a start from empty.
+   running column. It is the whole story of a start from empty. **Reversed
+   by M74.2 (§79.4)**: over one tick it decides the vapour, and is in.
 6. **A start from empty by hand**: 60 t to fill, 10 minutes of feed; about
    48 GJ to warm the liquid and an estimated 77 t of steel from 20 °C,
    40 minutes at the furnace's 20 MW. Kister §12.8: the column is often
@@ -30544,7 +30545,9 @@ state and this tick's feed:
    the holdup on its diagonal; each stage at its bubble point; each stage's
    energy balance with the liquid it stores carried at its own enthalpy and
    the heat its liquid stores as its temperature moves left out (§79.0
-   finding 7): `Σ in·(h_in − h_j) − V_j·(H_j − h_j) − Q_j = 0`. Unknowns: each
+   finding 7): `Σ in·(h_in − h_j) − V_j·(H_j − h_j) − Q_j = 0`. **Reversed
+   building it (§79.4): the stored heat is in — leaving it out, the step
+   diverged.** Unknowns: each
    stage's temperature and vapour, the loops' molar flows; no reflux unknown,
    no draw-ratio rows, no closure — the reboiler's duty is given (held, or
    the level loop's). Newton as M61's, from last tick's temperatures and
@@ -30643,3 +30646,82 @@ its probe's offline sum to 0.5 % (under 0.03 % on ten); the drum's
 composition the naphtha draw's to the bit, the kerosene tray's the
 kerosene draw's; thirty ticks with and without holdup equal to the bit but
 for the holdup key. Mutations: twelve, all caught.
+
+### 79.4 M74.2 built — the step, and two reversals found building it
+
+`solvers::column_step` (`ColumnStep::step`), called by the heat-balance
+cascade on a column whose holdup state is filled (`stepped_pass`; such a
+column bypasses the held-reboiler decline and the wet pass-through). As
+§79.2, with what building it changed:
+
+- **The level loops are in the step** (§79.2 step 2; the engine's toggle
+  and the physical limits are M74.3's): the distillate on the drum's level,
+  the base on the reboiler (A, the reboiler free) or the bottoms (B, the
+  reboiler held — today's hold command), each `settled × max(0, 1 + 2·e +
+  I)`, `e` the level's departure from half full as a share of the normal
+  holdup, `I` integrating at `2·e/300 s` and held while its stream is pinned
+  at zero (`LEVEL_GAIN`, `LEVEL_INTEGRAL_S`, game values).
+- **Reversal 1 — the heat the liquid stores is IN.** §79.0 finding 7 left it
+  out, on the strength of its being under 1 MW over ten minutes. Over one
+  0.1 s tick it is the other way round: with the liquid flows fixed for the
+  tick, each stage's vapour is what its energy balance leaves, and the
+  balances amplify a small imbalance up the column (×1.4–3.6 a stage, about
+  ×300 from the feed tray to the top); a column at rest rang and diverged in
+  three ticks. Each stage's balance now carries `(H'·h' − H·h)/dt` — its
+  moles and enthalpy at the end of the tick against the start's — and the
+  condenser's duty the drum's likewise.
+- **Reversal 2 — the stages' pressures lag the trays' drops by 2 s**
+  (`PRESSURE_LAG_S`, a game value). Each stage solving at the pressure its
+  trays' drops ask within the tick (M73.2) made the vapour hang on its own
+  rate of change: a vapour swing moves the drops, the drops the bottom
+  stages' pressures by a few hundred pascals, their boiling points by about
+  0.1 K, and warming the base's ~50 000 mol by that within a 0.1 s tick
+  takes tens of megawatts — a shorter tick diverged faster (0.01 s), a
+  longer one less (1 s). A real column cushions it with the vapour it holds
+  between its trays: about 1 700 mol in each 0.76 m of the tray plant at
+  1.9 bar, through which about 1 000 mol/s passes, 1.7 s. So each tray's
+  drop moves toward what its loads ask by `dt/(2 s + dt)` a tick, solved
+  within the tick (implicit); the drops are state (`HoldupState::
+  tray_drops`). The user's M73.2 decision — the drops fed back — stands,
+  behind the lag. Columns without holdup converge their drops within the
+  tick exactly as before.
+- **Each tray's liquid answers within the tick**: the start-of-tick flow
+  off it plus its hydraulic slope `dL/dM` times what it comes to hold more —
+  backward Euler on the tray, top down. (Lagged a tick, the first fault
+  looked like this; it was reversal 1. Mutation: the slope at zero survives
+  — at 0.1 s it moves a tray's flow by under 2 % of its change within the
+  tick — kept as the scheme's stability, argued.)
+- **The products and the state from the sweep's own amounts**, so every
+  component closes to round-off; a draw its loop has shut carries nothing,
+  its line the liquid it would draw.
+
+**The open question, measured** (§79.2, the user's side note): the screen's
+biggest one-press moves (`column_holdup.rs`, `m74_2_measure_the_big_moves`,
+run with `M74_MEASURE`), under A and B, ten minutes to an hour: **no stage's
+vapour came near zero** — the least 216–578 mol/s, every stage settling on
+the tray plant's own (the reflux to 0.5: stage 12 at 225.5 against 225.1
+mol/s). The distillate on the drum's level holds the reflux near what the
+vapour brings (the reflux to 15: the drum −32 %). Under B, the reflux to 0.5
+and the loops stopped shut the bottoms and drain the base (−56 %, −81 % of
+its normal holdup in 20 minutes): M74.3's limits.
+
+**The pace**: the reflux 4 → 5 under A closes on the tray plant's settled
+column about an e-fold every 40 minutes (the reboiler 90.6 MW at 10
+minutes, 96.1 at 60, 97.25 at 120 against 97.55) — three times §79.0's
+frozen-K estimate. Neither the level loops' tuning (4 times faster: within
+0.6 MW at every reading) nor the drum's size (10 or 20 m³) moves it: it is
+the column's own, set by the 45 t its trays hold. Cost: 1.3–2.1 ms a tick
+against the tray plant's 0.6.
+
+**Left for M74.3**, besides the loops' wiring: a column that holds liquid
+with no feed takes `fractionate_at`'s idle return before the step, so its
+state would freeze and its products read share × 0 — it should go on
+boiling and draining; with the draws' flows written by the engine
+(`DrawSeparation` a flow, not a share of the feed).
+
+Tests (`column_holdup.rs`): at rest with the tray plant (3 000 ticks: 0.4 %,
+0.8 K, the duties 0.2 %, closing); each component conserved every tick from
+the engine's own pipes (9e-11 kg/s); the heat closed every tick (4.6 W); more
+reflux, more liquid on the trays; the level loops hold their levels under A
+and B; A lands on the tray plant (slow). Mutations: ten, nine caught, one
+argued (above).

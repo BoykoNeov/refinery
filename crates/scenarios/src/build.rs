@@ -4724,12 +4724,13 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                                  the duty its first tick settles on (docs/DESIGN.md §79.2)."
                             )));
                         }
-                        Some(refinery_core::graph::ColumnHoldup {
+                        Some(Box::new(refinery_core::graph::ColumnHoldup {
                             drum_volume: CubicMeter(holdup.drum_m3),
                             base_volume: CubicMeter(holdup.base_m3),
                             start_held,
+                            tick: refinery_core::units::Seconds(scenario.simulation.dt),
                             state: None,
-                        })
+                        }))
                     }
                 };
                 if !def.pumparounds.is_empty() && scenario.fidelity.separation != "heat_balance" {

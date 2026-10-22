@@ -451,6 +451,16 @@ fn surface_tension(slate: &Slate, liquid: &[f64], temperature: f64) -> f64 {
     }
 }
 
+/// The section a stage's tray is in (one-based from the top), or a refusal
+/// naming the stage (M74, docs/DESIGN.md §79.2).
+pub(crate) fn section_for(spec: &CascadeSpec, stage: u32) -> Result<&TraySection, SimError> {
+    section_of(&spec.trays, stage).ok_or_else(|| {
+        SimError::Scenario(format!(
+            "tray hydraulics: stage {stage} is in no tray section (docs/DESIGN.md §78.2)."
+        ))
+    })
+}
+
 /// The section a stage's tray is in, by the loader's ordering (sections top
 /// down, contiguous).
 fn section_of(trays: &[TraySection], stage: u32) -> Option<&TraySection> {
@@ -653,6 +663,111 @@ pub(crate) fn column_liquid(
             }
         })
         .collect()
+}
+
+/// The vapour rising into each tray at a converged column's answer, top tray
+/// first: its mass flow [kg/s] and density [kg/m³] — what a column that holds
+/// liquid keeps to read its trays' liquid against next tick (M74, §79.2).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn tray_vapour_loads(
+    slate: &Slate,
+    spec: &CascadeSpec,
+    pressures: &[Pascal],
+    temperatures: &[f64],
+    liquid: &[Vec<f64>],
+    k: &[Vec<f64>],
+    flows: &Flows,
+    water_vapour: &[f64],
+    free_water: &[f64],
+) -> Result<Vec<(KgPerSec, KgPerM3)>, SimError> {
+    Ok(tray_loads(
+        slate,
+        spec,
+        pressures,
+        temperatures,
+        liquid,
+        k,
+        flows,
+        water_vapour,
+        free_water,
+    )?
+    .iter()
+    .map(|tray| (tray.load.vapour, tray.load.vapour_density))
+    .collect())
+}
+
+/// Bisections on a tray's liquid load in [`liquid_off_tray`]: 2^-60 of the
+/// bracket, under an `f64`'s spacing at it.
+const LIQUID_BISECTIONS: u32 = 60;
+/// Doublings of the bracket's top before a tray's liquid is refused as more
+/// than any load holds.
+const LIQUID_DOUBLINGS: u32 = 60;
+
+/// The liquid leaving a tray [kg/s] that holds `held` (M74, docs/DESIGN.md
+/// §79.2): the load at which [`tray_liquid`] holds it, at the tray's vapour
+/// (`vapour`, `vapour_density`) and its liquid's (`liquid` mole fractions at
+/// `temperature`) — the same function the column's first tick filled the tray
+/// with, inverted, so a column at rest stays at rest. The liquid held rises
+/// with the load (the crest over the weir and the loss under the apron do), so
+/// the load is found by bisection, a fixed count (deterministic). A tray that
+/// holds no more than its weir does at no load passes nothing.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn liquid_off_tray(
+    slate: &Slate,
+    section: &TraySection,
+    held: Kg,
+    liquid: &[f64],
+    temperature: Kelvin,
+    vapour: KgPerSec,
+    vapour_density: KgPerM3,
+) -> Result<KgPerSec, SimError> {
+    let liquid_density = KgPerM3(liquid_density(slate, liquid, temperature.value()));
+    let surface_tension = NewtonPerMeter(surface_tension(slate, liquid, temperature.value()));
+    let geometry = TrayGeometry::of(section);
+    let holds = |load: f64| {
+        let tray = sieve_tray(
+            &geometry,
+            &TrayLoad {
+                vapour,
+                vapour_density,
+                liquid: KgPerSec(load),
+                liquid_density,
+                surface_tension,
+            },
+        );
+        tray_liquid(section, &tray, liquid_density).value()
+    };
+    let target = held.value();
+    if !target.is_finite() {
+        return Err(SimError::Numerical(format!(
+            "a tray holds {target} kg (docs/DESIGN.md §79.2)."
+        )));
+    }
+    if target <= holds(0.0) {
+        return Ok(KgPerSec(0.0));
+    }
+    let mut top = 1.0;
+    let mut doublings = 0;
+    while holds(top) < target {
+        top *= 2.0;
+        doublings += 1;
+        if doublings > LIQUID_DOUBLINGS {
+            return Err(SimError::Numerical(format!(
+                "a tray holds {target:.1} kg, more than any liquid load over its weir holds \
+                 (docs/DESIGN.md §79.2)."
+            )));
+        }
+    }
+    let mut bottom = 0.0;
+    for _ in 0..LIQUID_BISECTIONS {
+        let middle = 0.5 * (bottom + top);
+        if holds(middle) < target {
+            bottom = middle;
+        } else {
+            top = middle;
+        }
+    }
+    Ok(KgPerSec(0.5 * (bottom + top)))
 }
 
 /// A stage's liquid density, hot [kg/m³] — the trays' own estimate

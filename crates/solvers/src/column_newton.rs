@@ -785,7 +785,7 @@ impl ColumnEquations<'_> {
 /// *Matrix Computations*, 4th ed., alg. 3.4.1) — at most ~25 unknowns on a
 /// shipped column, so dense and by hand. `None` on a singular matrix or a
 /// non-finite answer.
-fn solve_dense(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+pub(crate) fn solve_dense(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
     let n = b.len();
     for column in 0..n {
         let pivot =

@@ -11067,3 +11067,27 @@ ticks equal to the bit but for the holdup key. Mutations: twelve, all
 caught. Every shipped plant byte-identical, 69 of 69 on both fidelities.
 Next: M74.2, the step — the screen's biggest reflux jumps measured first
 (DESIGN §79.2, open).
+
+### M74.2 — **DONE** 2026-10-22: the step — a column that stores mass, tick by tick
+
+Built (DESIGN §79.4, `solvers::column_step`): from the second tick a column
+that holds liquid steps from its state — implicit Euler on each stage's
+moles and heat, the drum a row above the top stage, each tray's liquid off
+it from what it holds (answering within the tick), the level loops (the
+distillate on the drum; the reboiler on the base under A, the bottoms under
+B, the reboiler held), Newton on the stages' temperatures and vapours; the
+state and the products off the sweep's own amounts. Two reversals found
+building it: the heat the liquid stores is in (left out, a column at rest
+diverged in three ticks), and the stages' pressures lag their trays' drops
+by 2 s, the vapour held between trays (solved within the tick, they swung
+the vapour until it diverged; the drops are still fed back). **The user's
+side note measured**: on the screen's biggest one-press moves no stage's
+vapour comes near zero (the least 216 mol/s), each settling on the tray
+plant's own; under B the reflux to 0.5 or the loops stopped drain the base
+(M74.3's limits). Under A a reflux move closes on the tray plant's settled
+column about an e-fold every 40 minutes, three times the probe's estimate,
+whatever the level loops' tuning or the drum's size. 1.3–2.1 ms a tick.
+Each component conserved every tick to 9e-11 kg/s, the heat to 4.6 W.
+Mutations: ten, nine caught, one argued. Every shipped plant byte-identical,
+69 of 69 on both fidelities. Next: M74.3 — the toggle, the limits, the
+products' flows written by the engine, a column with no feed.

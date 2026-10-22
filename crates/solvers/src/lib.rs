@@ -29,6 +29,7 @@ pub mod boiloff;
 pub mod bubble;
 pub mod cascade;
 mod column_newton;
+mod column_step;
 pub mod control;
 pub mod elements;
 pub mod enthalpy;

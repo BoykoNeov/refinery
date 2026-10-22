@@ -105,7 +105,11 @@ answer a key, then the start from an empty column. No engine code changed.
    key moves the stage temperatures (up to 12 K at a reflux of 2), the trays'
    and base's liquid stores or gives up 150–560 MJ — under 1 MW spread over
    10 minutes, against 45–110 MW of condenser and reboiler duty. Leaving it
-   out keeps each stage's energy balance as it is today.
+   out keeps each stage's energy balance as it is today. **Wrong for the
+   step (M74.2, DESIGN §79.4)**: over one 0.1 s tick the stored heat
+   decides each stage's vapour, and without it the step diverged — it is in.
+   And the pace (finding 2) is a frozen-K estimate: the built column closes
+   on its settled answer about three times slower.
 8. **The cost, estimated**: the probe's ticks ran 0.65 ms each at the file's
    settings and 0.8 ms on the furnace steps, where the column re-solves a
    slowly drifting feed for many minutes — the nearest thing today to a

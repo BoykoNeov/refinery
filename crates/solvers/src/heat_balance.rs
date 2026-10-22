@@ -43,9 +43,20 @@ use crate::cascade::{
     DrawState, Flows, COMPONENT_RESIDUAL_KG_PER_S,
 };
 use crate::column_newton::{ColumnEquations, Solved, Specification, Start, Unsolved};
+use crate::column_step::{ColumnStep, StepStart};
 use crate::flash::{flash_isothermal, FlashResult};
 use crate::line_flash::flash_on_the_line;
 use crate::molar::MoleFractions;
+
+/// How far a column that holds liquid lets its trays' pressure drops lag what
+/// their loads ask [s] (M74, docs/DESIGN.md §79.4): the time the vapour held
+/// between two trays takes to pass — on the tray plant about 1 700 mol of
+/// vapour in each 0.76 m of a 7–8 m column at 1.9 bar, against about
+/// 1 000 mol/s rising, 1.7 s. **A GAME VALUE** of that size. Without it the
+/// stages' pressures answer the vapour within the tick, their boiling points
+/// with them, and the heat the liquid stores as they move — over a 0.1 s tick
+/// tens of megawatts — swung the vapour tick to tick until the step diverged.
+const PRESSURE_LAG_S: f64 = 2.0;
 
 /// Outer iterations on a COLD start whose draws' molar masses come from a sharp
 /// split of the feed by boiling order rather than from the iterate.
@@ -409,6 +420,16 @@ impl SeparationModel for HeatBalanceCascade {
         pass: &ColumnPass<'_>,
         thermo: &dyn ThermoModel,
     ) -> Result<Separation, SimError> {
+        // A column that holds liquid steps from its state, its reboiler's
+        // duty given whether held or set by its level loop (M74,
+        // docs/DESIGN.md §79.2): no decline, no pass-through.
+        let stepping = pass
+            .cascade
+            .and_then(|spec| spec.holdup.as_ref())
+            .is_some_and(|holdup| holdup.state.is_some());
+        if stepping {
+            return self.fractionate(pass, thermo, true);
+        }
         match self.hold_or_decline(pass, thermo) {
             Ok(separation) => Ok(separation),
             Err(refusal) => flooded_pass_through(pass, thermo, refusal),
@@ -507,6 +528,23 @@ impl HeatBalanceCascade {
             .map(|profile| profile.tray_drops.clone())
             .filter(|drops| drops.len() == trays)
             .unwrap_or_else(|| vec![Pascal(0.0); trays]);
+        // A column that holds liquid, past its first tick: each tray's drop
+        // follows what its loads ask behind the vapour held between the trays
+        // ([`PRESSURE_LAG_S`], M74, docs/DESIGN.md §79.4), from the drops its
+        // last tick left — solved within the tick (implicit), so the stages'
+        // pressures answer this tick's vapour.
+        let lagged = spec
+            .holdup
+            .as_ref()
+            .and_then(|holdup| holdup.state.as_ref().map(|state| (holdup, state)))
+            .filter(|(_, state)| state.tray_drops.len() == trays)
+            .map(|(holdup, state)| {
+                let dt = holdup.tick.value();
+                (state.tray_drops.clone(), dt / (PRESSURE_LAG_S + dt))
+            });
+        if let Some((previous, _)) = &lagged {
+            drops = previous.clone();
+        }
         let mut latest: Option<CascadeProfile> = None;
         let mut change = f64::INFINITY;
         for _ in 0..MAX_DROP_SOLVES {
@@ -528,18 +566,31 @@ impl HeatBalanceCascade {
                 .iter()
                 .map(|tray| tray.fed_back_drop)
                 .collect();
-            change = fed
+            // The drops the next solve takes: what the loads ask, or on a
+            // column that holds liquid the lag's step toward it.
+            let next: Vec<Pascal> = match &lagged {
+                None => fed,
+                Some((previous, weight)) => previous
+                    .iter()
+                    .zip(&fed)
+                    .map(|(from, to)| Pascal(from.value() + weight * (to.value() - from.value())))
+                    .collect(),
+            };
+            change = next
                 .iter()
                 .zip(&drops)
                 .map(|(read, used)| (read.value() - used.value()).abs())
                 .fold(0.0, f64::max);
             if change < DROP_TOLERANCE.value() {
                 if let Some(profile) = separation.profile.as_mut() {
-                    profile.tray_drops = fed;
+                    profile.tray_drops = next.clone();
+                }
+                if let Some(state) = separation.holdup.as_mut() {
+                    state.tray_drops = next;
                 }
                 return Ok(separation);
             }
-            drops = fed;
+            drops = next;
             latest = separation.profile;
         }
         Err(SimError::Numerical(format!(
@@ -797,6 +848,16 @@ impl HeatBalanceCascade {
             pressures,
         };
 
+        // A column that holds liquid, past its first tick: one step from the
+        // state its last tick left (M74, docs/DESIGN.md §79.2).
+        if let Some((holdup, state)) = spec
+            .holdup
+            .as_ref()
+            .and_then(|holdup| holdup.state.as_ref().map(|state| (holdup, state)))
+        {
+            return stepped_pass(&setup, holdup, state, feed_vapour_fraction);
+        }
+
         let profile = match self.method {
             Method::FixedPoint => self.solve_by_fixed_point(&setup, warm)?,
             Method::Newton => self.solve_by_newton(&setup, warm)?,
@@ -952,6 +1013,11 @@ impl HeatBalanceCascade {
                 &k,
                 draws[0].moles.fractions(),
                 condenser_t,
+                Settled {
+                    distillate: KgPerSec(profile.ratios[0] * setup.feed_mass),
+                    bottoms: KgPerSec(profile.ratios[profile.ratios.len() - 1] * setup.feed_mass),
+                    reboiler: reboiler_duty,
+                },
             )?),
             _ => None,
         };
@@ -983,11 +1049,21 @@ impl HeatBalanceCascade {
     }
 }
 
+/// The flows a column that holds liquid settled on its first tick, which its
+/// level loops' outputs are multiples of (M74, docs/DESIGN.md §79.2).
+struct Settled {
+    distillate: KgPerSec,
+    bottoms: KgPerSec,
+    reboiler: Watt,
+}
+
 /// What a column that holds liquid holds on its first tick (M74,
 /// docs/DESIGN.md §79.2): each tray what its weir and downcomers hold at its
 /// settled loads (`trays::column_liquid`), the base (the reboiler's stage) and
 /// the reflux drum half full of their liquid, hot; each at its settled
-/// composition. `distillate` is the drum's mole fractions, at `condenser`.
+/// composition and temperature, the trays' vapour loads beside them, and the
+/// flows it settled on. `distillate` is the drum's mole fractions, at
+/// `condenser`.
 #[allow(clippy::too_many_arguments)]
 fn starting_holdup(
     slate: &Slate,
@@ -998,6 +1074,7 @@ fn starting_holdup(
     k: &[Vec<f64>],
     distillate: &[f64],
     condenser: Kelvin,
+    settled: Settled,
 ) -> Result<HoldupState, SimError> {
     let stages = profile.temperatures.len();
     let mut stage_liquid = crate::trays::column_liquid(
@@ -1011,6 +1088,19 @@ fn starting_holdup(
         &profile.water_vapour,
         &profile.free_water,
     )?;
+    let (tray_vapour, tray_vapour_density) = crate::trays::tray_vapour_loads(
+        slate,
+        spec,
+        pressures,
+        &profile.temperatures,
+        &profile.liquid,
+        k,
+        &profile.flows,
+        &profile.water_vapour,
+        &profile.free_water,
+    )?
+    .into_iter()
+    .unzip();
     let base = stages - 1;
     let base_density = crate::trays::hot_liquid_density(
         slate,
@@ -1031,6 +1121,190 @@ fn starting_holdup(
         stage_composition,
         drum_liquid: Kg(0.5 * declared.drum_volume.value() * drum_density.value()),
         drum_composition: MoleFractions::from_amounts(distillate)?.to_mass(slate)?,
+        stage_temperature: profile.temperatures.iter().copied().map(Kelvin).collect(),
+        drum_temperature: condenser,
+        tray_vapour,
+        tray_vapour_density,
+        // Filled by `fractionate` once the drops settle.
+        tray_drops: Vec::new(),
+        settled_distillate: settled.distillate,
+        settled_bottoms: settled.bottoms,
+        settled_reboiler: settled.reboiler,
+        drum_integral: 0.0,
+        base_integral: 0.0,
+    })
+}
+
+/// One tick of a column that holds liquid (M74, docs/DESIGN.md §79.2): the
+/// step from the state its last tick left (`column_step`), published as a
+/// pass — every draw's flow, its trays' readings and loops, and the state
+/// the engine writes back.
+fn stepped_pass(
+    setup: &ColumnSetup<'_>,
+    holdup: &ColumnHoldup,
+    state: &HoldupState,
+    feed_vapour_fraction: f64,
+) -> Result<Separation, SimError> {
+    let pass = setup.pass;
+    let slate = pass.slate;
+    let plan = &setup.plan;
+    let spec = setup.spec;
+    let n = plan.stages;
+    let latent = mixture_dh_vap(slate, setup.thermo, setup.feed.fractions(), setup.seed)?;
+    let step = ColumnStep {
+        plan,
+        spec,
+        holdup,
+        state,
+        slate,
+        thermo: setup.thermo,
+        pressure: pass.pressure,
+        stage_pressures: &setup.pressures,
+        feed: &setup.feed,
+        feed_mass: setup.feed_mass,
+        feed_molar: setup.feed_molar,
+        feed_enthalpy: setup.feed_enthalpy,
+        energy_scale: setup.feed_molar * latent,
+        tolerance: setup.tolerance,
+    };
+    // The last tick's answer is where Newton starts — a hint; failing one,
+    // the state's temperatures and the vapour its trays carried.
+    let seeded = pass
+        .seed
+        .filter(|seed| seed.temperatures.len() == n && seed.vapour.len() == n);
+    let (temperatures, vapour): (Vec<f64>, Vec<f64>) = match seeded {
+        Some(seed) => (
+            seed.temperatures.iter().map(|t| t.value()).collect(),
+            seed.vapour.clone(),
+        ),
+        None => {
+            let mut vapour = Vec::with_capacity(n);
+            let top = state.settled_distillate.value() * (spec.reflux_ratio + 1.0)
+                / crate::cascade::molar_mass(
+                    slate,
+                    MoleFractions::from_mass(&state.drum_composition, slate)?.fractions(),
+                );
+            vapour.push(top);
+            for j in 1..n {
+                let below = MoleFractions::from_mass(&state.stage_composition[j], slate)?;
+                vapour.push(
+                    state.tray_vapour[j - 1].value()
+                        / crate::cascade::molar_mass(slate, below.fractions()),
+                );
+            }
+            (
+                state.stage_temperature.iter().map(|t| t.value()).collect(),
+                vapour,
+            )
+        }
+    };
+    let stepped = step.step(&StepStart {
+        temperatures: &temperatures,
+        vapour: &vapour,
+    })?;
+
+    let mut next = stepped.state;
+    let (tray_vapour, tray_vapour_density) = crate::trays::tray_vapour_loads(
+        slate,
+        spec,
+        &setup.pressures,
+        &stepped.temperatures,
+        &stepped.liquid,
+        &stepped.k,
+        &stepped.flows,
+        &[],
+        &[],
+    )?
+    .into_iter()
+    .unzip();
+    next.tray_vapour = tray_vapour;
+    next.tray_vapour_density = tray_vapour_density;
+
+    let throughput = pass.throughput().value();
+    let mut draws = Vec::with_capacity(plan.locations.len());
+    let mut ratios = Vec::with_capacity(plan.locations.len());
+    for (i, location) in plan.locations.iter().enumerate() {
+        let masses = &stepped.draw_masses[i];
+        let mass: f64 = masses.iter().sum();
+        ratios.push(mass / setup.feed_mass);
+        // A draw its level loop has shut carries nothing: its line holds the
+        // liquid it would draw.
+        let composition = if mass > 0.0 {
+            Composition::from_weights(masses)?
+        } else {
+            let liquid = match location {
+                DrawLocation::Condenser => &stepped.drum_liquid,
+                DrawLocation::Stage(j) => &stepped.liquid[*j],
+            };
+            MoleFractions::from_amounts(liquid)?.to_mass(slate)?
+        };
+        draws.push(DrawSeparation {
+            split: mass / throughput,
+            composition,
+            temperature: match location {
+                DrawLocation::Condenser => stepped.drum_temperature,
+                DrawLocation::Stage(j) => Kelvin(stepped.temperatures[*j]),
+            },
+        });
+    }
+    let profile = Profile {
+        temperatures: stepped.temperatures,
+        liquid: stepped.liquid,
+        flows: stepped.flows,
+        reflux_ratio: spec.reflux_ratio,
+        water_vapour: Vec::new(),
+        free_water: Vec::new(),
+        saturation: Vec::new(),
+        ratios,
+        cut_back: stepped.cut_back.iter().map(|(i, _)| *i).collect(),
+    };
+    let runs = loop_runs(plan, spec, slate, &profile)?;
+    let stage_liquid = if spec.loops.is_empty() {
+        Vec::new()
+    } else {
+        profile.flows.liquid_down.clone()
+    };
+    let trays = crate::trays::column_trays(
+        slate,
+        spec,
+        &setup.pressures,
+        &profile.temperatures,
+        &profile.liquid,
+        &stepped.k,
+        &profile.flows,
+        &[],
+        &[],
+    )?;
+    Ok(Separation {
+        draws,
+        profile: Some(CascadeProfile {
+            temperatures: profile.temperatures.iter().copied().map(Kelvin).collect(),
+            liquid: profile.liquid,
+            vapour: profile.flows.vapour.clone(),
+            free_water: Vec::new(),
+            reflux_ratio: Some(spec.reflux_ratio),
+            cut_back: Vec::new(),
+            // Filled by `fractionate` once the drops settle.
+            tray_drops: Vec::new(),
+        }),
+        condenser_duty: Some(Watt(stepped.condenser_duty)),
+        reboiler_duty: Some(Watt(stepped.reboiler_duty)),
+        feed_vapour_fraction: Some(feed_vapour_fraction),
+        reflux_ratio: Some(spec.reflux_ratio),
+        reboiler_declined: None,
+        cut_back: stepped
+            .cut_back
+            .iter()
+            .map(|(draw, of_declared)| CutBackDraw {
+                draw: *draw,
+                of_declared: *of_declared,
+            })
+            .collect(),
+        water_flooded: None,
+        loops: runs,
+        stage_liquid,
+        trays,
+        holdup: Some(next),
     })
 }
 

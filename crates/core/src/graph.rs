@@ -907,7 +907,7 @@ pub struct CascadeSpec {
     /// column that predates it, and then not serialized, which keeps every
     /// such plant byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub holdup: Option<ColumnHoldup>,
+    pub holdup: Option<Box<ColumnHoldup>>,
 }
 
 /// One section of sieve trays on a heat-balance cascade (M73.1, docs/DESIGN.md
@@ -955,6 +955,10 @@ pub struct ColumnHoldup {
     /// the base's level (§79.1's scheme B) — or free, the reboiler holding it
     /// (scheme A). The file's `reboiler = "held"` or `"free"`.
     pub start_held: bool,
+    /// The tick the holdup advances by [s]: the plant's fixed timestep,
+    /// copied from `[simulation] dt` by the loader (the timestep never changes
+    /// after load).
+    pub tick: Seconds,
     /// The liquid held: a STATE, `None` until the column's first tick fills it
     /// from its settled loads, then written back by the engine at the end of
     /// every tick that moves it (as a furnace's coil, §37).
@@ -975,6 +979,30 @@ pub struct HoldupState {
     /// The reflux drum's liquid composition: the distillate's and the
     /// reflux's.
     pub drum_composition: Composition,
+    /// Each stage's temperature [K], in the same order.
+    pub stage_temperature: Vec<Kelvin>,
+    /// The drum's temperature [K]: its liquid's bubble point.
+    pub drum_temperature: Kelvin,
+    /// The vapour rising into each tray from the stage below [kg/s], top
+    /// tray first — what the tray's liquid is read against next tick (its
+    /// dry-plate head in the downcomer's backup).
+    pub tray_vapour: Vec<KgPerSec>,
+    /// That vapour's density [kg/m³], in the same order.
+    pub tray_vapour_density: Vec<KgPerM3>,
+    /// The pressure drop each tray fed back to the stage below this tick [Pa],
+    /// top tray first: lagged behind what the trays' loads ask by the vapour
+    /// the column holds between its trays.
+    pub tray_drops: Vec<Pascal>,
+    /// The flows the first tick settled on, which the level loops' outputs
+    /// are multiples of: the distillate [kg/s], the bottoms [kg/s] and the
+    /// reboiler's duty [W].
+    pub settled_distillate: KgPerSec,
+    pub settled_bottoms: KgPerSec,
+    pub settled_reboiler: Watt,
+    /// The drum's and the base's level loops' integral terms [-], each a
+    /// share of its settled output.
+    pub drum_integral: f64,
+    pub base_integral: f64,
 }
 
 /// A pumparound loop on a heat-balance cascade (M72, docs/DESIGN.md §77.1):
