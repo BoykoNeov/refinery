@@ -4,6 +4,8 @@ Headless, deterministic oil-refinery simulation engine in Rust with swappable
 fidelity (game ↔ research), consumed by a Godot 4 game, a CLI batch runner,
 and future dashboards.
 
+- **Play:** double-click `Refinery.cmd` — it builds the simulator library,
+  opens Godot (4.7+, on PATH) and offers a menu of screens
 - **Start here:** [CLAUDE.md](CLAUDE.md) — project rules and conventions; the
   latest milestone's close-out is at the top of [docs/MILESTONES.md](docs/MILESTONES.md)
 - **Architecture & physics:** [docs/DESIGN.md](docs/DESIGN.md) — every design
