@@ -29,8 +29,8 @@
 use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;
 use refinery_core::graph::{CascadeSpec, ColumnHoldup, HoldupState};
-use refinery_core::traits::ThermoModel;
-use refinery_core::units::{Kelvin, Kg, Pascal};
+use refinery_core::traits::{HoldupReading, LevelLimit, ThermoModel};
+use refinery_core::units::{Kelvin, Kg, KgPerSec, Pascal, Watt};
 
 use crate::bubble::bubble_temperature_unnormalized;
 use crate::cascade::{mixture_dh_vap, CascadePlan, DrawLocation, Flows};
@@ -47,6 +47,15 @@ pub(crate) const LEVEL_GAIN: f64 = 2.0;
 
 /// The level loops' integral time [s]. **A GAME VALUE**, with [`LEVEL_GAIN`].
 pub(crate) const LEVEL_INTEGRAL_S: f64 = 300.0;
+
+/// The level under which a drum's reflux pump loses its suction, or a base's
+/// reboiler tubes uncover, as a share of its working volume [-]: below it
+/// each sends out in proportion to the level left (M74, docs/DESIGN.md §79.2,
+/// the user's physical limits). **A GAME VALUE**: a low-level trip sits at
+/// about a tenth of a vessel's working range (Kister 1990, §15.14: the
+/// portion below the low-level alarm, 2 minutes of product, about a tenth of
+/// the drum the table sizes).
+pub(crate) const LOW_LEVEL: f64 = 0.1;
 
 /// The most a stage temperature may move in one Newton step [K] — a damping
 /// bound, not physics (`column_newton`'s value).
@@ -122,6 +131,8 @@ pub(crate) struct Stepped {
     /// The side draws a tray short of liquid cut back, as plan indices, and
     /// the share of their set flow each ran at.
     pub(crate) cut_back: Vec<(usize, f64)>,
+    /// The levels and limits the tick read, and which stream held the base.
+    pub(crate) reading: HoldupReading,
     /// The state the tick leaves, but for the trays' vapour loads, which the
     /// caller reads off the trays (`trays::tray_vapour_loads`).
     pub(crate) state: HoldupState,
@@ -150,6 +161,14 @@ struct SetFlows {
     reboiler: f64,
     /// Each side draw's share of its set flow it ran at, where under one.
     cut_back: Vec<(usize, f64)>,
+    /// The levels and limits the tick started at, and which stream held the
+    /// base.
+    reading: HoldupReading,
+    /// The base's level loop's integral this tick ran on — the state's, or
+    /// on a tick the hold changed, the hand-over's.
+    base_integral: f64,
+    /// The bottoms [kg/s].
+    bottoms_mass: f64,
 }
 
 /// One evaluation of the residuals.
@@ -350,42 +369,86 @@ impl ColumnStep<'_> {
             .map(|l| l.mass_flow * loop_share[l.draw] / mean(&stage_x[l.draw]))
             .collect();
 
-        // The level loops (§79.2 step 2): each level's departure from half
-        // full, as a share of its normal holdup.
+        // The level loops (§79.2 step 2): each level its liquid over its
+        // working volume, its departure from half full a share of its normal
+        // holdup.
         let level = |mass: Kg, x: &[f64], t: Kelvin, volume: f64| {
             let density = crate::trays::hot_liquid_density(self.slate, x, t).value();
-            mass.value() / (density * volume) / 0.5 - 1.0
+            mass.value() / (density * volume)
         };
-        let drum_error = level(
+        let drum_volume = self.holdup.drum_volume.value();
+        let base_volume = self.holdup.base_volume.value();
+        let drum_level = level(
             state.drum_liquid,
             &drum_x,
             state.drum_temperature,
-            self.holdup.drum_volume.value(),
+            drum_volume,
         );
-        let base_error = level(
+        let base_level = level(
             state.stage_liquid[n - 1],
             &stage_x[n - 1],
             state.stage_temperature[n - 1],
-            self.holdup.base_volume.value(),
+            base_volume,
         );
+        let (drum_error, base_error) = (drum_level / 0.5 - 1.0, base_level / 0.5 - 1.0);
         let output = |error: f64, integral: f64| (1.0 + LEVEL_GAIN * error + integral).max(0.0);
-        let distillate_mass =
-            state.settled_distillate.value() * output(drum_error, state.drum_integral);
-        let (bottoms_mass, reboiler) = match self.spec.reboiler_duty {
+        let held = self.spec.reboiler_duty.is_some();
+        // A hold changed since the last tick hands the base's level to the
+        // other stream from where that stream stood (§79.2, the toggle): its
+        // loop's integral set so its output is what it last ran at.
+        let base_integral = if held == state.held {
+            state.base_integral
+        } else {
+            let (now, settled) = if held {
+                (state.last_bottoms.value(), state.settled_bottoms.value())
+            } else {
+                (state.last_reboiler.value(), state.settled_reboiler.value())
+            };
+            now / settled - 1.0 - LEVEL_GAIN * base_error
+        };
+        let dt = self.holdup.tick.value();
+        let controlled = state.settled_distillate.value() * output(drum_error, state.drum_integral);
+        let mut overflow = 0.0;
+        let (mut bottoms_mass, mut reboiler) = match self.spec.reboiler_duty {
             // Scheme B: the reboiler held, the bottoms holds the base's level.
-            Some(held) => (
-                state.settled_bottoms.value() * output(base_error, state.base_integral),
-                held.value(),
+            Some(duty) => (
+                state.settled_bottoms.value() * output(base_error, base_integral),
+                duty.value(),
             ),
             // Scheme A: the reboiler holds the base's level, the bottoms at its
             // share of the feed.
             None => (
                 plan.mass_ratios[last] * self.feed_mass,
-                state.settled_reboiler.value() * output(base_error, state.base_integral),
+                state.settled_reboiler.value() * output(base_error, base_integral),
             ),
         };
+        // The physical limits (§79.2): a drum low enough that the reflux
+        // pump loses its suction sends out only what that leaves, reflux and
+        // distillate alike; a base low enough that the reboiler's tubes
+        // uncover boils only in proportion; a drum or base past full passes
+        // its excess on with its product within the tick.
+        let mut drum_limit = LevelLimit::Normal;
+        let mut base_limit = LevelLimit::Normal;
+        let mut drum_out_share = 1.0;
+        if drum_level < LOW_LEVEL {
+            drum_out_share = (drum_level / LOW_LEVEL).max(0.0);
+            drum_limit = LevelLimit::Dry;
+        }
+        if base_level < LOW_LEVEL {
+            reboiler *= (base_level / LOW_LEVEL).max(0.0);
+            base_limit = LevelLimit::Dry;
+        }
+        if drum_level > 1.0 {
+            overflow = state.drum_liquid.value() * (1.0 - 1.0 / drum_level) / dt;
+            drum_limit = LevelLimit::Full;
+        }
+        if base_level > 1.0 {
+            bottoms_mass += state.stage_liquid[n - 1].value() * (1.0 - 1.0 / base_level) / dt;
+            base_limit = LevelLimit::Full;
+        }
         drawn[n - 1] = bottoms_mass / mean(&stage_x[n - 1]);
-        let distillate = distillate_mass / mean(&drum_x);
+        let distillate = (controlled * drum_out_share + overflow) / mean(&drum_x);
+        let reflux = self.spec.reflux_ratio * controlled * drum_out_share / mean(&drum_x);
         let enthalpy = (0..n)
             .map(|j| liquid_enthalpy(self.slate, &stage_x[j], state.stage_temperature[j]))
             .collect();
@@ -398,9 +461,18 @@ impl ColumnStep<'_> {
             drawn,
             loops,
             distillate,
-            reflux: self.spec.reflux_ratio * distillate,
+            reflux,
             reboiler,
             cut_back,
+            reading: HoldupReading {
+                held,
+                drum_level,
+                base_level,
+                drum_limit,
+                base_limit,
+            },
+            base_integral,
+            bottoms_mass,
         })
     }
 
@@ -688,7 +760,6 @@ impl ColumnStep<'_> {
         set: &SetFlows,
     ) -> Result<Stepped, SimError> {
         let plan = self.plan;
-        let slate = self.slate;
         let n = plan.stages;
         let dt = self.holdup.tick.value();
         let mw = self.molar_masses();
@@ -721,33 +792,14 @@ impl ColumnStep<'_> {
         }
 
         // The level loops' integrals, each held while its stream is pinned at
-        // zero and the level would push it lower (no wind-up).
+        // zero and the level would push it lower, or while its level is past
+        // a limit (no wind-up).
         let state = self.state;
-        let drum_x = MoleFractions::from_amounts(
-            &self.moles_of(state.drum_liquid, &state.drum_composition),
-        )?;
-        let base_x = MoleFractions::from_amounts(
-            &self.moles_of(state.stage_liquid[n - 1], &state.stage_composition[n - 1]),
-        )?;
-        let level = |mass: Kg, x: &[f64], t: Kelvin, volume: f64| {
-            let density = crate::trays::hot_liquid_density(slate, x, t).value();
-            mass.value() / (density * volume) / 0.5 - 1.0
-        };
-        let drum_error = level(
-            state.drum_liquid,
-            drum_x.fractions(),
-            state.drum_temperature,
-            self.holdup.drum_volume.value(),
-        );
-        let base_error = level(
-            state.stage_liquid[n - 1],
-            base_x.fractions(),
-            state.stage_temperature[n - 1],
-            self.holdup.base_volume.value(),
-        );
-        let integrate = |integral: f64, error: f64| {
+        let reading = set.reading;
+        let integrate = |integral: f64, level: f64, limit: LevelLimit| {
+            let error = level / 0.5 - 1.0;
             let pinned = 1.0 + LEVEL_GAIN * error + integral <= 0.0 && error < 0.0;
-            if pinned {
+            if pinned || limit != LevelLimit::Normal {
                 integral
             } else {
                 integral + dt * LEVEL_GAIN / LEVEL_INTEGRAL_S * error
@@ -766,8 +818,11 @@ impl ColumnStep<'_> {
             settled_distillate: state.settled_distillate,
             settled_bottoms: state.settled_bottoms,
             settled_reboiler: state.settled_reboiler,
-            drum_integral: integrate(state.drum_integral, drum_error),
-            base_integral: integrate(state.base_integral, base_error),
+            drum_integral: integrate(state.drum_integral, reading.drum_level, reading.drum_limit),
+            base_integral: integrate(set.base_integral, reading.base_level, reading.base_limit),
+            held: reading.held,
+            last_bottoms: KgPerSec(set.bottoms_mass),
+            last_reboiler: Watt(set.reboiler),
         };
         Ok(Stepped {
             temperatures: u[..n].to_vec(),
@@ -782,6 +837,7 @@ impl ColumnStep<'_> {
             reboiler_duty: set.reboiler,
             condenser_duty: evaluation.condenser_duty,
             cut_back: set.cut_back.clone(),
+            reading,
             state: next,
         })
     }

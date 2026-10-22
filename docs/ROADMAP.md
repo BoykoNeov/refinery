@@ -11092,3 +11092,30 @@ Each component conserved every tick to 9e-11 kg/s, the heat to 4.6 W.
 Mutations: ten, nine caught, one argued. Every shipped plant byte-identical,
 69 of 69 on both fidelities. Next: M74.3 — the toggle, the limits, the
 products' flows written by the engine, a column with no feed.
+
+### M74.3 — **IN PROGRESS** 2026-10-22: the toggle, the physical limits, the products' flows, a column with no feed
+
+Built so far (DESIGN §79.5), gates green (FULL tier, clippy, every shipped
+plant byte-identical on both fidelities), not yet tested on its own:
+- **The toggle**: a column declared `reboiler = "held"` holds its reboiler
+  from its first tick at the duty that tick settled on (the engine's commit);
+  a tick that finds the hold changed hands the base's level to the other
+  stream with its loop's integral set so that stream starts where it stood
+  (`HoldupState::held`, `last_bottoms`, `last_reboiler`).
+- **The physical limits** (`column_step::LOW_LEVEL`, a tenth of the working
+  volume, a game value): below it the drum sends out reflux and distillate
+  in proportion to its level, the base's reboiler boils in proportion;
+  past full the excess passes on with the product within the tick; the
+  loops' integrals held at a limit.
+- **The products' flows written by the engine** (`Separation::draw_flows`,
+  in both draw writes) on a column that holds liquid.
+- **A column with no feed** steps from its state instead of the idle return
+  (its energy scale the settled reboiler's duty).
+- **The snapshot's reading**: `ColumnOperation::holdup` — the reboiler held
+  or free, the drum's and base's levels, `"normal" | "dry" | "full"`.
+
+Left: tests for each (the toggle's hand-over without a jump; the base under
+B running dry settling on its throttled reboiler, the B reflux-to-0.5 run
+past 20 minutes; a drum or base past full; the feed shut off; the reading),
+the targeted mutation pass, DESIGN §79.5, then M74.4 (the plant, key 8, its
+table).

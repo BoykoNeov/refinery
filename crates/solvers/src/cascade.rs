@@ -468,6 +468,8 @@ impl SeparationModel for StageCascade {
                 stage_liquid: Vec::new(),
                 trays: Vec::new(),
                 holdup: None,
+                holdup_reading: None,
+                draw_flows: Vec::new(),
             });
         }
 
@@ -703,6 +705,8 @@ impl SeparationModel for StageCascade {
             stage_liquid: Vec::new(),
             trays: Vec::new(),
             holdup: None,
+            holdup_reading: None,
+            draw_flows: Vec::new(),
         })
     }
 }

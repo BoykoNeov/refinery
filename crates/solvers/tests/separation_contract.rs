@@ -55,6 +55,8 @@ impl SeparationModel for ShortSplitter {
             stage_liquid: Vec::new(),
             trays: Vec::new(),
             holdup: None,
+            holdup_reading: None,
+            draw_flows: Vec::new(),
         })
     }
 }
@@ -245,6 +247,8 @@ fn a_short_draw_list_is_refused_by_the_composition_reader() {
             stage_liquid: Vec::new(),
             trays: Vec::new(),
             holdup: None,
+            holdup_reading: None,
+            draw_flows: Vec::new(),
         },
     );
 
@@ -311,6 +315,8 @@ impl SeparationModel for Recorder {
             stage_liquid: Vec::new(),
             trays: Vec::new(),
             holdup: None,
+            holdup_reading: None,
+            draw_flows: Vec::new(),
         })
     }
 }
@@ -396,6 +402,8 @@ impl SeparationModel for RunningRecorder {
             stage_liquid: Vec::new(),
             trays: Vec::new(),
             holdup: None,
+            holdup_reading: None,
+            draw_flows: Vec::new(),
         })
     }
 }

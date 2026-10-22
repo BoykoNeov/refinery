@@ -14,7 +14,7 @@ use crate::graph::{
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, ColumnOperation, Command, ComponentSnapshot, ControlSnapshot,
-    DrawCutBack, EdgeSnapshot, LoopOperation, NodeSnapshot, PumpSuctionSnapshot,
+    DrawCutBack, EdgeSnapshot, HoldupOperation, LoopOperation, NodeSnapshot, PumpSuctionSnapshot,
     PumpTwoPhaseSnapshot, ReboilerDeclined, RestartBar, Snapshot, SupplyBoiling, TrayOperation,
     TripSnapshot, TripStop,
 };
@@ -1682,7 +1682,13 @@ impl Engine {
                         draws.len()
                     ))
                 })?;
-                let drawn = sign_out * cut.split * feed_into;
+                // A column that holds liquid draws its own flows (M74,
+                // docs/DESIGN.md §79.2); every other a share of its feed.
+                let drawn = sign_out
+                    * match separation.draw_flows.get(idx) {
+                        Some(flow) => flow.value(),
+                        None => cut.split * feed_into,
+                    };
                 draw_writes.push((eid, drawn));
                 // A draw LINE carries the draw on every pipe to its store, each
                 // declared from upstream (M62.4b, docs/DESIGN.md §67.13) — the
@@ -2762,6 +2768,11 @@ impl Engine {
             } = &mut self.graph.node_mut(nid).kind
             {
                 if let Some(holdup) = &mut spec.holdup {
+                    // A column declared to start held holds its reboiler from
+                    // its first tick at the duty that tick settled on (§79.2).
+                    if holdup.state.is_none() && holdup.start_held {
+                        spec.reboiler_duty = Some(held.settled_reboiler);
+                    }
                     holdup.state = Some(held.clone());
                 }
             }
@@ -4107,6 +4118,13 @@ impl Engine {
                                 .collect(),
                             trays_flooding: named(crate::traits::TrayHydraulics::flooding),
                             trays_weeping: named(crate::traits::TrayHydraulics::weeping),
+                            holdup: s.holdup_reading.map(|reading| HoldupOperation {
+                                reboiler_held: reading.held,
+                                drum_level: reading.drum_level,
+                                base_level: reading.base_level,
+                                drum_limit: reading.drum_limit,
+                                base_limit: reading.base_limit,
+                            }),
                         })
                     }),
                     // Absent wherever the criterion does not apply, which is

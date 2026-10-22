@@ -39,6 +39,11 @@ fn fixture() -> String {
     with_line(TRAY_PLANT, HOLDUP)
 }
 
+/// The fixture with its reboiler free: scheme A, today's settled answers.
+fn fixture_free() -> String {
+    with_line(TRAY_PLANT, &HOLDUP.replace("\"held\"", "\"free\""))
+}
+
 fn engine_of(src: &str) -> Result<Engine, String> {
     let file = load_str(src).map_err(|e| e.to_string())?;
     build_engine(&file).map_err(|e| e.to_string())
@@ -485,7 +490,7 @@ fn set_reflux(engine: &mut Engine, reflux_ratio: f64) {
 /// answer — each stage's vapour and temperature, the duties.
 #[test]
 fn a_column_at_rest_stays_with_the_tray_plant() {
-    let with = run(&mut engine_of(&fixture()).unwrap(), 3000);
+    let with = run(&mut engine_of(&fixture_free()).unwrap(), 3000);
     let without = run(&mut engine_of(TRAY_PLANT).unwrap(), 3000);
     let read = |s: &Snapshot| {
         let node = s.nodes.iter().find(|n| n.name == "column").unwrap();
@@ -664,7 +669,8 @@ fn more_reflux_puts_more_liquid_on_the_trays() {
 fn slow_scheme_a_lands_on_the_settled_column() {
     let small = HOLDUP
         .replace("drum_m3 = 20.0", "drum_m3 = 10.0")
-        .replace("base_m3 = 60.0", "base_m3 = 30.0");
+        .replace("base_m3 = 60.0", "base_m3 = 30.0")
+        .replace("\"held\"", "\"free\"");
     let mut without = engine_of(TRAY_PLANT).unwrap();
     run(&mut without, 100);
     set_reflux(&mut without, 5.0);
@@ -690,19 +696,11 @@ fn reboiler_w(snapshot: &Snapshot) -> f64 {
 #[test]
 fn the_level_loops_hold_their_levels() {
     for held in [false, true] {
-        let mut engine = engine_of(&fixture()).unwrap();
-        let column = engine.graph.find_node("column").unwrap();
+        let src = if held { fixture() } else { fixture_free() };
+        let mut engine = engine_of(&src).unwrap();
         let first = run(&mut engine, 1);
         let normal = state(&engine).unwrap();
         let duty = reboiler_w(&first);
-        if held {
-            engine
-                .apply(Command::SetReboilerDuty {
-                    node: column,
-                    duty: Some(refinery_core::units::Watt(duty)),
-                })
-                .unwrap();
-        }
         run(&mut engine, 99);
         set_reflux(&mut engine, 5.0);
         let (mut drum, mut base, mut reboiler_moved): (f64, f64, f64) = (0.0, 0.0, 0.0);

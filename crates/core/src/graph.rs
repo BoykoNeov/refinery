@@ -1003,6 +1003,13 @@ pub struct HoldupState {
     /// share of its settled output.
     pub drum_integral: f64,
     pub base_integral: f64,
+    /// Whether the reboiler was held this tick (scheme B, the bottoms on the
+    /// base's level) or free (A), and the bottoms [kg/s] and reboiler's duty
+    /// [W] it ran at: a tick that finds the hold changed hands the base's
+    /// level to the other stream from where that stream stood.
+    pub held: bool,
+    pub last_bottoms: KgPerSec,
+    pub last_reboiler: Watt,
 }
 
 /// A pumparound loop on a heat-balance cascade (M72, docs/DESIGN.md §77.1):

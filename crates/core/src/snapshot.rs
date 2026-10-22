@@ -7,7 +7,7 @@ use crate::graph::{
     NodeKind, TankState, TripDirection, TripId, TripReset, TripState,
 };
 use crate::stream::Stream;
-use crate::traits::SolveDiagnostics;
+use crate::traits::{LevelLimit, SolveDiagnostics};
 use crate::units::{Kelvin, KgPerSec, Pascal, Seconds, SquareMeter, Watt};
 use serde::{Deserialize, Serialize};
 
@@ -765,6 +765,29 @@ pub struct ColumnOperation {
     /// from `trays` by `TrayHydraulics::weeping`. Absent while none weeps.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trays_weeping: Vec<u32>,
+    /// What a column that holds liquid read this tick (M74, docs/DESIGN.md
+    /// §79.2). Absent, and not serialized, on every other column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holdup: Option<HoldupOperation>,
+}
+
+/// A column's liquid held, as it ran this tick (M74, docs/DESIGN.md §79.2):
+/// its drum's and base's levels and the limits they ran into, and which
+/// stream holds the base.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct HoldupOperation {
+    /// The reboiler held, the bottoms holding the base's level (§79.1's
+    /// scheme B); or free, holding it itself (A).
+    pub reboiler_held: bool,
+    /// The drum's and the base's liquid over their working volumes [-]; half
+    /// at their normal levels.
+    pub drum_level: f64,
+    pub base_level: f64,
+    /// `"dry"` where a drum's reflux pump or a base's reboiler runs short,
+    /// `"full"` where the excess passes on with the product, else
+    /// `"normal"`.
+    pub drum_limit: LevelLimit,
+    pub base_limit: LevelLimit,
 }
 
 /// One tray's hydraulics — see `ColumnOperation::trays`.

@@ -2271,7 +2271,13 @@ pub fn resolve_node_states(
                                         graph.node(id).name
                                     ))
                                 })?;
-                                let drawn = cut.split * feed_flow;
+                                // A column that holds liquid draws its own
+                                // flows, not shares of this tick's feed (M74,
+                                // docs/DESIGN.md §79.2).
+                                let drawn = match pass.draw_flows.get(*index) {
+                                    Some(flow) => flow.value(),
+                                    None => cut.split * feed_flow,
+                                };
                                 line_writes.extend(line.iter().map(|&edge| (edge, drawn)));
                             }
                             // Each loop's line carries its circulation, the

@@ -31,8 +31,8 @@ use refinery_core::energy::T_REF;
 use refinery_core::error::SimError;
 use refinery_core::graph::{CascadeSpec, ColumnHoldup, HoldupState, Pumparound};
 use refinery_core::traits::{
-    CascadeProfile, ColumnPass, CutBackDraw, DeclinedHold, DrawSeparation, LoopRun, Separation,
-    SeparationModel, ThermoModel,
+    CascadeProfile, ColumnPass, CutBackDraw, DeclinedHold, DrawSeparation, HoldupReading,
+    LevelLimit, LoopRun, Separation, SeparationModel, ThermoModel,
 };
 use refinery_core::units::{Kelvin, Kg, KgPerSec, Pascal, Watt};
 
@@ -672,6 +672,36 @@ impl HeatBalanceCascade {
         // a bubble point or a flash may not be able to evaluate. No flash share:
         // a share of nothing is not a number the model produced, so the
         // snapshot's `column_operation` is absent while the column is idle.
+        // A column that holds liquid goes on boiling and draining with no
+        // feed (M74, docs/DESIGN.md §79.2): it steps from its state.
+        if feed_flow == 0.0 {
+            if let Some((holdup, state)) = spec
+                .holdup
+                .as_ref()
+                .and_then(|holdup| holdup.state.as_ref().map(|state| (holdup, state)))
+            {
+                let at_feed = &state.stage_composition[plan.feed_stage];
+                let setup = ColumnSetup {
+                    pass,
+                    thermo,
+                    spec,
+                    feed: MoleFractions::from_mass(at_feed, slate)?,
+                    feed_composition: at_feed.clone(),
+                    feed_mass: 0.0,
+                    seed: state.stage_temperature[plan.feed_stage],
+                    feed_molar: 0.0,
+                    feed_enthalpy: 0.0,
+                    tolerance: (COMPONENT_RESIDUAL_KG_PER_S / state.settled_bottoms.value())
+                        .clamp(1.0e-12, 1.0e-6),
+                    water: None,
+                    continuation,
+                    sharp_seed: SHARP_SEED_ITERATIONS,
+                    pressures,
+                    plan,
+                };
+                return stepped_pass(&setup, holdup, state, 0.0);
+            }
+        }
         if feed_flow == 0.0 {
             let mut draws: Vec<DrawSeparation> = plan
                 .mass_ratios
@@ -706,6 +736,8 @@ impl HeatBalanceCascade {
                 stage_liquid: Vec::new(),
                 trays: Vec::new(),
                 holdup: None,
+                holdup_reading: None,
+                draw_flows: Vec::new(),
             });
         }
 
@@ -1044,7 +1076,15 @@ impl HeatBalanceCascade {
             loops: runs,
             stage_liquid,
             trays,
+            holdup_reading: holdup.as_ref().map(|state| HoldupReading {
+                held: state.held,
+                drum_level: 0.5,
+                base_level: 0.5,
+                drum_limit: LevelLimit::Normal,
+                base_limit: LevelLimit::Normal,
+            }),
             holdup,
+            draw_flows: Vec::new(),
         })
     }
 }
@@ -1132,6 +1172,9 @@ fn starting_holdup(
         settled_reboiler: settled.reboiler,
         drum_integral: 0.0,
         base_integral: 0.0,
+        held: declared.start_held,
+        last_bottoms: settled.bottoms,
+        last_reboiler: settled.reboiler,
     })
 }
 
@@ -1150,7 +1193,13 @@ fn stepped_pass(
     let plan = &setup.plan;
     let spec = setup.spec;
     let n = plan.stages;
-    let latent = mixture_dh_vap(slate, setup.thermo, setup.feed.fractions(), setup.seed)?;
+    // The energy balances' scale: the feed's latent heat flow, or with no
+    // feed the duty the column settled on.
+    let energy_scale = if setup.feed_molar > 0.0 {
+        setup.feed_molar * mixture_dh_vap(slate, setup.thermo, setup.feed.fractions(), setup.seed)?
+    } else {
+        state.settled_reboiler.value()
+    };
     let step = ColumnStep {
         plan,
         spec,
@@ -1164,7 +1213,7 @@ fn stepped_pass(
         feed_mass: setup.feed_mass,
         feed_molar: setup.feed_molar,
         feed_enthalpy: setup.feed_enthalpy,
-        energy_scale: setup.feed_molar * latent,
+        energy_scale,
         tolerance: setup.tolerance,
     };
     // The last tick's answer is where Newton starts — a hint; failing one,
@@ -1222,11 +1271,17 @@ fn stepped_pass(
 
     let throughput = pass.throughput().value();
     let mut draws = Vec::with_capacity(plan.locations.len());
+    let mut draw_flows = Vec::with_capacity(plan.locations.len());
     let mut ratios = Vec::with_capacity(plan.locations.len());
     for (i, location) in plan.locations.iter().enumerate() {
         let masses = &stepped.draw_masses[i];
         let mass: f64 = masses.iter().sum();
-        ratios.push(mass / setup.feed_mass);
+        draw_flows.push(KgPerSec(mass));
+        ratios.push(if setup.feed_mass > 0.0 {
+            mass / setup.feed_mass
+        } else {
+            0.0
+        });
         // A draw its level loop has shut carries nothing: its line holds the
         // liquid it would draw.
         let composition = if mass > 0.0 {
@@ -1239,7 +1294,13 @@ fn stepped_pass(
             MoleFractions::from_amounts(liquid)?.to_mass(slate)?
         };
         draws.push(DrawSeparation {
-            split: mass / throughput,
+            // A share of the feed for whatever reads one; the engine writes
+            // `draw_flows`.
+            split: if throughput > 0.0 {
+                mass / throughput
+            } else {
+                0.0
+            },
             composition,
             temperature: match location {
                 DrawLocation::Condenser => stepped.drum_temperature,
@@ -1305,6 +1366,8 @@ fn stepped_pass(
         stage_liquid,
         trays,
         holdup: Some(next),
+        holdup_reading: Some(stepped.reading),
+        draw_flows,
     })
 }
 
@@ -2811,6 +2874,8 @@ fn oil_free_feed(
         stage_liquid: Vec::new(),
         trays: Vec::new(),
         holdup: None,
+        holdup_reading: None,
+        draw_flows: Vec::new(),
     })
 }
 
@@ -3006,6 +3071,8 @@ fn flooded_pass_through(
             stage_liquid: Vec::new(),
             trays: Vec::new(),
             holdup: None,
+            holdup_reading: None,
+            draw_flows: Vec::new(),
         });
     }
     let mut draws: Vec<DrawSeparation> = (0..plan.mass_ratios.len())
@@ -3044,6 +3111,8 @@ fn flooded_pass_through(
         stage_liquid: Vec::new(),
         trays: Vec::new(),
         holdup: None,
+        holdup_reading: None,
+        draw_flows: Vec::new(),
     })
 }
 
@@ -3278,6 +3347,8 @@ fn water_only_inflow(
         stage_liquid: Vec::new(),
         trays: Vec::new(),
         holdup: None,
+        holdup_reading: None,
+        draw_flows: Vec::new(),
     })
 }
 

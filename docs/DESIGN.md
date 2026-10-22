@@ -30728,3 +30728,16 @@ the engine's own pipes (9e-11 kg/s); the heat closed every tick (4.6 W); more
 reflux, more liquid on the trays; the level loops hold their levels under A
 and B; A lands on the tray plant (slow). Mutations: ten, nine caught, one
 argued (above).
+
+### 79.5 M74.3, in progress — the toggle, the limits, the flows, no feed
+
+Built as §79.2 says (the record of what is built and what is left is the
+roadmap's M74.3 entry): the hold at the first tick for a column declared
+held; the hand-over without a jump; the limits — `LOW_LEVEL`, a tenth of the
+working volume (a game value: about the portion under a drum's low-level
+alarm in Kister's Table 15.2 sizing), under which the drum's outflow and the
+base's reboiler scale with the level, and past full the excess leaving with
+the product within the tick; `Separation::draw_flows`, written by the engine
+in place of `split·feed`; the step with no feed; the snapshot's
+`ColumnOperation::holdup`. Its tests, its mutation pass and its findings are
+still to come.

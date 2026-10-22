@@ -819,6 +819,43 @@ pub struct Separation {
     /// declares holdup, filled from its settled loads. `None` from every
     /// other pass — the state stands as it was.
     pub holdup: Option<HoldupState>,
+    /// What a column that holds liquid read this pass (M74, docs/DESIGN.md
+    /// §79.2): its drum's and base's levels, which stream holds the base, and
+    /// the limits it ran into. `None` from every column without holdup.
+    pub holdup_reading: Option<HoldupReading>,
+    /// Each draw's flow this pass [kg/s], in the draws' order, where a draw is
+    /// not a share of this tick's feed — a column that holds liquid, whose
+    /// products are its level loops' and its trays' (M74, §79.2). Empty from
+    /// every other column: there each draw is `split` times the feed.
+    pub draw_flows: Vec<KgPerSec>,
+}
+
+/// What a column that holds liquid read on a pass (M74, docs/DESIGN.md
+/// §79.2).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HoldupReading {
+    /// Whether the reboiler is held, the bottoms holding the base's level
+    /// (§79.1's scheme B), or free, holding it itself (scheme A).
+    pub held: bool,
+    /// The drum's and the base's liquid over their working volumes [-]; half
+    /// at their normal levels.
+    pub drum_level: f64,
+    pub base_level: f64,
+    /// The limit each ran into, if any.
+    pub drum_limit: LevelLimit,
+    pub base_limit: LevelLimit,
+}
+
+/// A drum's or a base's level against its limits (M74, docs/DESIGN.md
+/// §79.2): low enough that what it feeds runs short — the reflux pump's
+/// suction, the reboiler's tubes uncovering — or past full, the excess
+/// passing on with its product.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LevelLimit {
+    Normal,
+    Dry,
+    Full,
 }
 
 /// How one sieve tray ran this pass (M73.1, docs/DESIGN.md §78.3, §78.4.1):
