@@ -11021,3 +11021,18 @@ at the furnace's 20 MW). No engine code changed.
 Next: M74.1.0, a second probe — which stream holds each level (the user's
 decision, Kister ch. 16), the trays' liquid against their flow, and the
 column's stored mass on each key move.
+
+### M74.1.0 — **PROBED** 2026-10-22: which stream holds each level — decided: B, with a live toggle to A
+
+Probed (`tools/steptime/prototypes/m74_1_0/`, `FINDINGS.md`, DESIGN §79.1):
+total moles per stage, each tray's liquid out over its weir from what it
+holds (M73's heads inverted), scheme A's level loops (Kister Fig. 16.4e). A
+tray answers its flow in 5–7 s; a key move stores or gives up 3.5–7 t of the
+column's 60 t; A runs at every tuning tried and lands on the settled flows,
+the drum and base swinging about ±20 % of their normal holdup and the
+reboiler 0.4–1.9 times its settled duty, settled in 17–38 minutes. No engine
+code changed. **Decided (2026-10-22), the user**: B — the distillate holds
+the drum's level, the bottoms the base's, the player sets the reboiler's heat
+(Kister Fig. 16.4a, the more realistic) — with a live toggle to A (the
+reboiler holds the base's level, today's keys): today's hold and free
+reboiler commands; the new plant starts in B.

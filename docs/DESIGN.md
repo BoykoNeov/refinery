@@ -30433,3 +30433,36 @@ candidates, for the user with M74.1.0's numbers:
 - **(B) The usual scheme** — Kister's Fig. 16.4a: the distillate holds the
   drum's level, the bottoms the base's, the reflux and the reboiler set. The
   settled products move, and the keys mean something else.
+
+**Probed** (M74.1.0, `tools/steptime/prototypes/m74_1_0/`, `FINDINGS.md`):
+total moles per stage, each tray's liquid out over its weir from what it
+holds (Sinnott's heads inverted), the vapour without holdup, scheme A's level
+loops at three tunings: a tray answers its flow in 5–7 s (77 s down the
+twelve); a key move stores or gives up 3.5–7 t of the column's 60 t; A runs at
+every tuning and lands on the settled flows; at gain 2 and 300 s the drum
+swings −17 to +22 % of its normal holdup, the base −17 to +26 %, the
+reboiler 0.40–1.94 times its settled duty, the flows settled in 17–38
+minutes. B's level loops would behave as A's; what differs is what the keys
+mean and where the column settles. (An earlier reading, that B would need a
+settled solve the engine lacks and so be the larger build, was wrong: with
+holdup each tick is a step from the last tick's state, the same step under
+either scheme; both start from today's settled answer at the file's
+settings.)
+
+**Decided (2026-10-22), the user, after the difference was explained** —
+which is more realistic: B (Kister marks its kind the most common; a real
+crude column holds its base's level with the residue): **B, with a live
+toggle to A.**
+
+- **B**: the distillate holds the drum's level, the bottoms the base's; the
+  player sets the reboiler's heat; the side draws at their declared shares;
+  the reflux the reflux ratio times the distillate (the key keeps its
+  meaning in both — ratio control on reflux is real practice too). The
+  products' amounts float with the settings.
+- **A**: the reboiler holds the base's level, the bottoms at its share —
+  today's keys and settled answers.
+- **The toggle is today's hold and free commands** (M64, M66): holding the
+  reboiler at a duty is B, freeing it A — so "a held reboiler under A" (the
+  second question) is B by construction: the bottoms takes the base's level
+  while the reboiler is held (the user's answer). The plant file says which
+  it starts in; the new plant starts in B.
