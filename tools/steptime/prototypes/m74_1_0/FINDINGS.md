@@ -68,18 +68,51 @@ one scheme's level loops. No engine code changed.
    in 8–15 minutes). The level loops and the compositions both shape what the
    player sees; the build measures them together.
 6. **No tray ran short of its draws** in any run.
-7. **Not probed: scheme B** (Kister Fig. 16.4a: the bottoms holds the base's
-   level, the reflux and the reboiler set). Its level loops would behave as
-   A's. What differs is what the keys mean and where the column settles: the
-   player would set the reflux flow and the reboiler's duty, and the
-   distillate and bottoms would fall out, every product moving with every
-   key. The engine has no solve that settles a column on a set reflux flow
-   and a set reboiler duty; under A every settled answer is today's.
+7. **Scheme B, first argued and not run** ("its level loops would behave as
+   A's") — **wrong; run below** (findings 9–12). What differs besides: the
+   player sets the reflux ratio and the reboiler's duty, and the distillate
+   and bottoms fall out, every product moving with every key.
 8. **A held reboiler under A**: the reboiler held by command (M66, any
    column) leaves the base's level with no stream holding it. Either the
    bottoms takes the base's level while the reboiler is held (Kister's
    Fig. 16.4a pairing for the base), or holding the reboiler is refused on a
    column with holdup. The tray plant's screen key has no reboiler key.
+
+## Scheme B run, and the screen's biggest jumps (added the same day)
+
+The advisor doubted finding 7: under A the base is put right by the boilup,
+hundreds of kg/s; under B by the bottoms, about 29 kg/s, while a key move
+stores or gives up several tonnes within a minute or two. `levels.py` now runs
+both schemes (`[scheme]`, the level loops' outputs a multiple of the flows
+before the move, as §79.2's "the flow the first tick settled on"); B holds
+the reboiler's boilup at its value before the move, and its end point is
+approximate (the flows after the move are A's closure). The driver re-run
+with the screen's biggest one-tick jumps (`steps_big.out`: the reflux to 0.5,
+1, 8, 15, the loops' flow to 0 and 2, their return ±60 K; 8 runs, about 20 s).
+Outputs `levels_AB_base5.txt` (both schemes, two tunings, Kister's 5-minute
+base), `levels_B_base10.txt`, `levels_B_base20.txt` (B, gain 2 and 300 s).
+
+9. **Under B the base swings hard.** Kister's 5-minute base, gain 2 and
+   300 s: the moderate moves swing it −69 to +73 % of its normal holdup (the
+   loops' flow ×1.5, the reflux to 2), the bottoms pinned at zero for part of
+   the way; the big ones empty it. A at the same base and tuning: within
+   ±21 % on every moderate move.
+10. **Some settings have no steady state under B.** With the reboiler held
+    and the reflux cut to 0.5 or 1, or the loops stopped, more boils off the
+    base than reaches it: the base empties whatever its size (the run's
+    "stored" −145 to −317 t after an hour). Real: the column dries from the
+    bottom unless the reboiler is turned down. The engine needs a rule for an
+    empty base (and drum), not an error.
+11. **A larger base tames B's moderate moves**: 10 minutes of the bottoms,
+    within ±42 % (the loops' flow ×2 −72 %, the reflux to 8 empties); 20
+    minutes, within ±38 % (the reflux to 8 −63 %). Ludwig's rules: 5–10
+    minutes for a product feeding another unit, 30 minutes half-full for a
+    drum feeding a furnace (Vol. 1, p. xxiv) — a real crude column's residue
+    feeds the vacuum unit's furnace.
+12. **A too has a limit**: the reflux to 15 (every tray flooded) stores 46 t,
+    the reboiler pinned at zero, and the base fills past full. A faster tuning
+    (gain 4, 150 s) halves A's swings and barely moves B's (the bottoms is
+    pinned at zero).
 
 ## Not checked
 

@@ -119,7 +119,7 @@ class Tray:
         return (self.mass(L + e) - self.mass(L - e)) / (2 * e)
 
 
-def simulate(b4, af, kc, ti, verbose=False):
+def simulate(b4, af, kc, ti, scheme="A"):
     fa, fb = stage_arrays(af), stage_arrays(b4)
     n = len(fa["V"])
     F = feed_of(fa)
@@ -137,17 +137,28 @@ def simulate(b4, af, kc, ti, verbose=False):
     HD = drum_norm
     D_after = fa["V"][0] - fa["reflux"]
     Vreb_after = fa["V"][-1]
-    # level loops, bumpless from the BEFORE flows
-    iD = D_before / D_after - 1.0
-    iB = fb["V"][-1] / Vreb_after - 1.0
+    # level loops: the output a multiple of the BEFORE (settled) flow, as the
+    # design's "the flow the first tick settled on"; the integrals start at 0.
+    iD = 0.0
+    iB = 0.0
+    Vreb_before = fb["V"][-1]
+    B_before = fb["Ldrawn"][-1]
     draws = fa["Ldrawn"][:-1] + fa["Cout"][:-1]
     steps = int(T_END / DT)
     rec = []
     for k in range(steps + 1):
         eD = (HD - drum_norm) / drum_norm
         eB = (H[-1] - base_norm) / base_norm
-        D = max(0.0, D_after * (1.0 + kc * eD + iD))
-        Vreb = max(0.0, Vreb_after * (1.0 + kc * eB + iB))
+        D = max(0.0, D_before * (1.0 + kc * eD + iD))
+        if scheme == "A":
+            Vreb = max(0.0, Vreb_before * (1.0 + kc * eB + iB))
+            B = B_fix
+        else:
+            # B: the reboiler held at its duty before the move (its boilup held,
+            # an approximation: the duty's vapour moves with the stage's
+            # enthalpies); the bottoms holds the base's level.
+            Vreb = Vreb_before
+            B = max(0.0, B_before * (1.0 + kc * eB + iB))
         reflux = fa["R"] * D
         V = fa["V"] + (Vreb - Vreb_after)
         Lout = np.zeros(n)
@@ -159,11 +170,11 @@ def simulate(b4, af, kc, ti, verbose=False):
         for j in range(n - 1):
             lin = reflux if j == 0 else down[j - 1]
             dH[j] = lin + V[j + 1] - V[j] + fa["Cin"][j] + F[j] - Lout[j]
-        dH[-1] = down[-1] + F[-1] - B_fix - V[-1]
+        dH[-1] = down[-1] + F[-1] - B - V[-1]
         dHD = V[0] - reflux - D
         if k % 50 == 0:
             mass = float(np.dot(H, fa["mwl"])) + HD * fa["mw_top"]
-            rec.append((k * DT, eD, eB, D / D_after, Vreb / Vreb_after, mass, cut.sum() / max(draws.sum(), 1e-9)))
+            rec.append((k * DT, eD, eB, D / D_before, (Vreb / Vreb_before) if scheme == "A" else (B / B_before), mass, cut.sum() / max(draws.sum(), 1e-9)))
         H = H + DT * dH
         HD = HD + DT * dHD
         iD += DT * kc / ti * eD
@@ -186,15 +197,29 @@ for t, T in zip(ref["trays"], tr):
     L = t["liq_kg_s"]
     print(f"{t['stage']:4d} {L:8.1f} {T.mass(L):9.0f} {T.lag(L):7.1f}")
 print(f"down the trays, sum of lags {sum(T.lag(t['liq_kg_s']) for t, T in zip(ref['trays'], tr)):.0f} s")
-for kc, ti in ((1.0, 600.0), (2.0, 300.0), (0.5, 1200.0)):
-    print(f"\n== level loops: gain {kc} (a share of the flow per share of the level), integral {ti:g} s")
-    for spec in ("reflux=3", "reflux=5", "reflux=2", "furnace=25", "flow=0.5", "flow=1.5", "ret=-30"):
-        d = runs[spec]
-        rec, trays, fa = simulate(d["BEFORE"], d["AFTER"], kc, ti)
-        t, eD, eB, D, Vr, mass, cut = rec.T
-        m0 = mass[0]
-        print(f"{spec:11s} drum {eD.min()*100:+5.0f}..{eD.max()*100:+4.0f}% base {eB.min()*100:+5.0f}..{eB.max()*100:+4.0f}% "
-              f"| D {D.min():.2f}..{D.max():.2f} reb {Vr.min():.2f}..{Vr.max():.2f} of settled "
-              f"| stored {(mass[-1]-m0)/1000:+.1f} t (peak {(mass.max()-m0)/1000:+.1f}/{(mass.min()-m0)/1000:+.1f}) "
-              f"| settled 1%: D {settle(t, D-1, 0.01)/60:.0f} reb {settle(t, Vr-1, 0.01)/60:.0f} min "
-              f"| end D {D[-1]:.4f} reb {Vr[-1]:.4f}{' CUT' if cut.min() < 0.999 else ''}")
+SPECS = [x for x in sys.argv[4].split(",")] if len(sys.argv) > 4 else list(runs)
+TUNINGS = [(2.0, 300.0)] if len(sys.argv) > 5 else [(2.0, 300.0), (4.0, 150.0)]
+for scheme in ((sys.argv[5],) if len(sys.argv) > 5 else ("A", "B")):
+    for kc, ti in TUNINGS:
+        print(f"\n== scheme {scheme}: the drum's level by the distillate, the base's by the "
+              f"{'reboiler' if scheme == 'A' else 'bottoms'}; gain {kc}, integral {ti:g} s"
+              f"{'' if scheme == 'A' else ' (B ends approximately: the flows after the move are A closure)'}")
+        print("   levels as a share of the normal holdup: -100 % empty, +100 % full (normal = half)")
+        for spec in SPECS:
+            d = runs.get(spec)
+            if not d or "BEFORE" not in d or spec == "reflux=4":
+                continue
+            rec, trays, fa = simulate(d["BEFORE"], d["AFTER"], kc, ti, scheme)
+            t, eD, eB, D, X, mass, cut = rec.T
+            m0 = mass[0]
+            flag = ""
+            if eD.max() > 1 or eB.max() > 1:
+                flag += " FULL"
+            if eD.min() < -1 or eB.min() < -1:
+                flag += " EMPTY"
+            if cut.min() < 0.999:
+                flag += " CUT"
+            xname = "reb" if scheme == "A" else "bot"
+            print(f"{spec:11s} drum {eD.min()*100:+5.0f}..{eD.max()*100:+4.0f}% base {eB.min()*100:+5.0f}..{eB.max()*100:+4.0f}% "
+                  f"| D {D.min():.2f}..{D.max():.2f} {xname} {X.min():.2f}..{X.max():.2f} of before "
+                  f"| stored {(mass[-1]-m0)/1000:+.1f} t (peak {(mass.max()-m0)/1000:+.1f}/{(mass.min()-m0)/1000:+.1f}){flag}")

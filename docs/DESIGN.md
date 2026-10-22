@@ -30443,7 +30443,8 @@ every tuning and lands on the settled flows; at gain 2 and 300 s the drum
 swings −17 to +22 % of its normal holdup, the base −17 to +26 %, the
 reboiler 0.40–1.94 times its settled duty, the flows settled in 17–38
 minutes. B's level loops would behave as A's; what differs is what the keys
-mean and where the column settles. (An earlier reading, that B would need a
+mean and where the column settles. **That last claim was wrong — B was not
+run until after the decision; see "B run" below.** (An earlier reading, that B would need a
 settled solve the engine lacks and so be the larger build, was wrong: with
 holdup each tick is a step from the last tick's state, the same step under
 either scheme; both start from today's settled answer at the file's
@@ -30466,6 +30467,19 @@ toggle to A.**
   second question) is B by construction: the bottoms takes the base's level
   while the reboiler is held (the user's answer). The plant file says which
   it starts in; the new plant starts in B.
+
+**B run** (after the decision, at the advisor's doubt; M74.1.0 findings
+9–12): under B the base is put right by the bottoms, about 29 kg/s, against
+several tonnes a key move stores or gives up within a minute or two. On
+Kister's 5-minute base the moderate moves swing it −69 to +73 % of its
+normal holdup (A: ±21 %), and the big ones empty it; with the reboiler held
+and the reflux cut to 0.5 or 1, or the loops stopped, more boils off the base
+than reaches it and it empties whatever its size — no steady state. A 10-
+minute base holds the moderate moves within ±42 %, 20 minutes within ±38 %
+(Ludwig: up to 30 minutes for a drum feeding a furnace; a real crude column's
+residue feeds the vacuum unit's). Even A overfills its base at a reflux of 15.
+So the decision is put back to the user with these numbers: the default
+scheme, the base's size, and what an empty or full base or drum does.
 
 ### 79.2 The design — a column that stores mass, specified before building
 
