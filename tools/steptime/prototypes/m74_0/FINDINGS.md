@@ -21,59 +21,81 @@ answer a key, then the start from an empty column. No engine code changed.
   ticks, one key moved, 20 000 ticks more: the reflux 4 → 2, 3, 5 (and 4, a
   control), the furnace 20 → 15, 25 MW, the loops' flow ×0.5, ×1.5, their
   return temperatures ±30 K. Ten runs, 19 s (`steps.out`, `steps_results.txt`).
-- `analyze.py <steps.out> [base s] [drum s] [deck scale]`: per component, the
-  composition model with holdup, `H_j·dx_j/dt = in − out`, linear, the
-  AFTER state's flows and K-values frozen; one state per stage and one for
-  the reflux drum (a total condenser: the drum's liquid is the reflux and the
-  distillate). The feed is the AFTER state's steady residual per stage — it
-  lands on stage 11 alone (the feed tray), which checks the flows read.
-  The slowest time constant per component, and the products' response from
-  the BEFORE compositions, exact and by implicit Euler at dt = 0.1 s, the
-  time to 90 % and 99 % of the move.
-- Holdups: a tray holds its clear liquid on the deck, `ρL·A_active·(h_w +
-  h_ow)` — Sinnott's head, the one M73's pressure drop uses — plus its
-  downcomer's backup, `ρL·A_dc·h_b`. The base and the reflux drum hold
-  5 minutes of the liquid leaving them (Ludwig Vol. 1, 4th ed., "Rules of
-  thumb: summary", p. xix, towers rule 12: "Reflux drums usually are
-  horizontal, with a liquid holdup of 5 min half-full"; p. xxiv, vessels rule
-  5: 5 min for reflux drums, 5–10 min for a product feeding another tower).
-- `startup.py <steps.out>`: hand estimates for a start from empty, and the
-  heat a running column's liquid stores as its temperatures move.
+- `analyze.py <steps.out> [base s] [drum s] [deck scale] [total|distillate]`:
+  per component, the composition model with holdup, `H_j·dx_j/dt = in −
+  out`, linear, the AFTER state's flows and K-values frozen; one state per
+  stage and one for the reflux drum (a total condenser: the drum's liquid is
+  the reflux and the distillate). The feed is the AFTER state's steady
+  residual per stage — it lands on stage 11 alone (the feed tray), which
+  checks the flows read. The slowest time constant per component, and the
+  products' response from the BEFORE compositions, exact and by implicit
+  Euler at dt = 0.1 s, the time to 90 % and 99 % of the move.
+- Holdups, **sized once on the file's settings** (the control run's BEFORE)
+  **and held as masses for every run**: real trays, base and drum are a fixed
+  size. (A first pass sized them on each run's own flows, so the drum shrank
+  at a low reflux and grew at a high one; the advisor caught it.) A tray holds
+  its clear liquid on the deck, `ρL·A_active·(h_w + h_ow)` — Sinnott's head,
+  the one M73's pressure drop uses — plus its downcomer's backup,
+  `ρL·A_dc·h_b`. The base holds 5 minutes of the bottoms. The reflux drum
+  holds 5 minutes of either the distillate or the reflux and distillate it
+  passes — the two readings of the rules:
+  - Ludwig Vol. 1, 4th ed., "Rules of thumb: summary", p. xix, towers rule 12:
+    "Reflux drums usually are horizontal, with a liquid holdup of 5 min
+    half-full" (no flow named); p. xxiv, vessels rule 5.
+  - Kister, *Distillation Operation* (1990), §15.14, Table 15.2 p. 482: the
+    surge between the low and high level alarms, for tower reflux, 5 minutes
+    of the product (or 2 of the reflux plus product, the author's own
+    preference); p. 483: below the low-level alarm, 2 minutes of the
+    product. At its normal level, mid-band, the drum holds about 4.5 minutes
+    of the distillate on the first, 2 of distillate plus 1 of reflux and
+    distillate on the second: 6–10 t here. And: "Unnecessarily large reflux
+    drum residence times should be avoided. These … incur an excessive
+    composition lag that interferes with column control."
+- `startup.py <steps.out>`: hand estimates for a start from empty (the drum
+  at Kister's 5 minutes of distillate), and the heat a running column's
+  liquid stores as its temperatures move.
 
 ## Findings
 
 1. **What the column holds** (`analysis_*.txt`, first table): each tray
    2.0–4.8 t (deck 1.0–2.6 t, downcomer 0.9–3.3 t), 14–23 s of its liquid
-   load; the twelve trays 44.8 t. The base 8.7 t and the reflux drum 34.2 t
-   at 5 minutes each (the drum carries the reflux too: at a reflux of 4 it
-   passes five times the distillate). 87.7 t in all, 14 minutes of feed.
-2. **How slowly the products answer a key** (`analysis_base300_drum300.txt`):
-   the side products move first — 90 % of the way in 1–4 minutes after a
-   reflux or loop-return move, 99 % in 20–50 — and the top product last: 90 %
-   in 23–43 minutes, 99 % in about 1–2 hours. A move of the loops' flow is
-   slower on the kerosene draw (90 % in 18–20 minutes), the tray the top
-   loop draws from too. The slowest time constant is
-   16 minutes at a reflux of 2, 27 at 4 and 32 at 5, on the light cuts.
-3. **The reflux drum sets the top product's pace.** The drum's liquid leaves
-   the column only as distillate, a fifth of what passes through it at a reflux
-   of 4, so its 34 t turn over in about 25 minutes. With 1-minute drum
-   and base (`analysis_base60_drum60.txt`) the slowest time constant falls to
-   12–14 minutes, set by the trays and the loops' recirculation; at 10 minutes
-   (`analysis_base600_drum600.txt`) it is 41–61. Half the deck liquid
-   (`analysis_deck_half.txt`, an aerated deck holds less clear liquid than
-   Sinnott's head) moves the slowest time constant by about 2 %, because the
-   drum dominates. **So the drum and base sizes are the choice that matters**;
-   the tray holdup comes out of M73's geometry and barely matters.
+   load; the twelve trays 44.8 t; the base 8.7 t. The drum 6.8 t on 5
+   minutes of the distillate (Kister), 34.2 t on 5 minutes of all it passes
+   (at a reflux of 4 it passes five times the distillate). 60 t in all on
+   Kister's drum, 10 minutes of feed.
+2. **How slowly the products answer a key** — the drum on Kister's basis
+   (`analysis_drum5_distillate.txt`): the side products first, 90 % of the
+   way in 1–4 minutes after a reflux or loop-return move; the top product 90 %
+   in 8–15 minutes, 99 % in 20–42; the bottoms 90 % in 1–6. A move of the
+   loops' flow is slower on the kerosene draw (90 % in 14–17 minutes), the
+   tray the top loop draws from too. The slowest time constant 13 minutes at
+   every setting, set by the trays and the loops' recirculation.
+3. **The reflux drum sets the top product's pace.** Its liquid leaves the
+   column only as distillate, so a drum sized on all it passes (34 t,
+   `analysis_drum5_total.txt`) turns over in about 25 minutes: the top
+   product 90 % in 27–40 minutes, 99 % in 1–1.6 hours, the slowest time
+   constant 26.5 minutes. A 1-minute drum on all it passes is Kister's drum
+   again (6.8 t, `analysis_drum1_total.txt`, the base 1 minute: the same 13
+   minutes). Ten minutes of the distillate (`analysis_drum10_distillate.txt`,
+   13.7 t, base 17.4 t): the top product 90 % in 16–18 minutes. Half the
+   deck liquid (`analysis_deck_half.txt`, an aerated deck holds less clear
+   liquid than Sinnott's head) moves the slowest time constant by about 2 %
+   with the large drum. **So the drum's size is the choice that matters**;
+   the trays' holdup comes out of M73's geometry and matters less.
 4. **The furnace moves no product** on this reboiled column (under 0.1 points;
    the reboiler makes up the difference, as M73.0 found for the trays).
 5. **The settled column is today's.** The model with holdup settles on the
    AFTER state to 2e-6 or better in mole fraction (to 2e-11 on the furnace
    steps): holdup changes the path, not where it ends. So the shipped plants'
-   steady answers, and the screen's measured tables, carry over — a check, not
-   an assumption, for the building slices.
+   steady answers carry over — a check, not an assumption, for the building
+   slices. The screen's measured tables carry over in their end states, but
+   measuring them on a plant with holdup costs about ten times the ticks:
+   "1 000 ticks after the last move" no longer means settled (8 000–24 000
+   do), and the path between can differ — a draw cut back while the
+   compositions lag.
 6. **The tick is fine-grained enough.** Implicit Euler at 0.1 s against the
    exact response: at most 1.1e-4 in mole fraction, against time constants
-   of 4–60 minutes. The holdup term `H/dt` outweighs a tray's flows about a
+   of 4–27 minutes. The holdup term `H/dt` outweighs a tray's flows about a
    hundredfold, so each tick's composition step is small and well
    conditioned.
 7. **Heat stored in the liquid can be left out of a running column.** As a
@@ -86,11 +108,11 @@ answer a key, then the start from an empty column. No engine code changed.
    slowly drifting feed for many minutes — the nearest thing today to a
    column whose compositions drift every tick. Measured when built.
 9. **A start from empty, by hand** (`startup.py`, `startup.txt`):
-   - filling the column's 88 t at the 104 kg/s feed: 14 minutes (the trays
+   - filling the column's 60 t at the 104 kg/s feed: 10 minutes (the trays
      alone 7);
-   - warming it from 20 °C: the liquid about 37 GJ, the steel (77 t: a 15 mm
+   - warming it from 20 °C: the liquid about 36 GJ, the steel (77 t: a 15 mm
      shell on the file's diameters, decks at 60 kg/m², a game estimate) about
-     12 GJ — 41 minutes at the furnace's 20 MW, 8–9 minutes at the reboiler's
+     12 GJ — 40 minutes at the furnace's 20 MW, 7–9 minutes at the reboiler's
      87–107 MW. Real start-ups are paced by their operators, and slower.
    - **the order** (Kister, *Distillation Operation*, 1990, §12.1 pp. 313–314;
      §12.8 pp. 329–330): pressure up, heat, feed, the heating and cooling

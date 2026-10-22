@@ -21,7 +21,9 @@ for tr in a["trays"]:
     tray_kg.append(tr["rho_l"] * (tr["active"] * (tr["hw"] + tr["crest"]) + tr["dca"] * tr["backup"]))
 mwl = lambda j: float(np.dot(st[j]["x"], mw))
 base_kg = 300.0 * st[-1]["Ldrawn"] * mwl(len(st) - 1)
-drum_kg = 300.0 * st[0]["V"] * float(np.dot(a["top_x"], mw))
+# the drum: 5 minutes of the distillate at its normal level (Kister 1990,
+# Table 15.2 p. 482 and p. 483), as analyze.py's "distillate" basis.
+drum_kg = 300.0 * (st[0]["V"] - a["reflux"]) * float(np.dot(a["top_x"], mw))
 liquid = sum(tray_kg) + base_kg + drum_kg
 feed = 103.57
 print(f"liquid held: trays {sum(tray_kg)/1e3:.1f} t, base {base_kg/1e3:.1f} t, drum {drum_kg/1e3:.1f} t, all {liquid/1e3:.1f} t")

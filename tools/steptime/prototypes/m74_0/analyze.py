@@ -38,6 +38,9 @@ path = sys.argv[1]
 TAU_BASE = float(sys.argv[2]) if len(sys.argv) > 2 else 300.0
 TAU_DRUM = float(sys.argv[3]) if len(sys.argv) > 3 else 300.0
 DECK_SCALE = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
+# What the drum's minutes are of: "total" the reflux and distillate it passes,
+# "distillate" the distillate alone.
+DRUM_BASIS = sys.argv[5] if len(sys.argv) > 5 else "total"
 
 runs = {}
 for line in open(path, encoding="utf-8"):
@@ -49,25 +52,34 @@ for line in open(path, encoding="utf-8"):
                 runs.setdefault(spec, {})[tag] = json.loads(js)
 
 
-def holdups(s):
-    """Moles held per stage (trays, then the base) and in the drum."""
+def masses(s):
+    """Mass held per stage (trays, then the base) and in the drum [kg], sized
+    once on the file's settings (the reference run) and held for every run:
+    real trays, sump and drum are a fixed size."""
     st = s["stages"]
     n = len(st)
     mw = np.array(s["mw"])
-    h = np.zeros(n)
+    m = np.zeros(n)
     detail = []
     for tr in s["trays"]:
         j = tr["stage"] - 1
         deck = tr["rho_l"] * tr["active"] * (tr["hw"] + tr["crest"]) * DECK_SCALE
         dc = tr["rho_l"] * tr["dca"] * tr["backup"]
-        mwl = float(np.dot(st[j]["x"], mw))
-        h[j] = (deck + dc) / mwl
+        m[j] = deck + dc
         detail.append((tr["stage"], deck, dc, tr["liq_kg_s"], (deck + dc) / max(tr["liq_kg_s"], 1e-9)))
-    base_out = st[-1]["Ldrawn"]
-    h[-1] = TAU_BASE * base_out
-    drum_out = st[0]["V"]  # total condenser: reflux + distillate = V_top
-    h_drum = TAU_DRUM * drum_out
-    return h, h_drum, detail
+    mwl = lambda j: float(np.dot(st[j]["x"], mw))
+    m[-1] = TAU_BASE * st[-1]["Ldrawn"] * mwl(n - 1)
+    drum_moles = st[0]["V"] if DRUM_BASIS == "total" else st[0]["V"] - s["reflux"]
+    m_drum = TAU_DRUM * drum_moles * float(np.dot(s["top_x"], mw))
+    return m, m_drum, detail
+
+
+def holdups(s, m, m_drum):
+    """The fixed masses as moles at this state's compositions."""
+    st = s["stages"]
+    mw = np.array(s["mw"])
+    h = np.array([m[j] / float(np.dot(st[j]["x"], mw)) for j in range(len(st))])
+    return h, m_drum / float(np.dot(s["top_x"], mw))
 
 
 def model(s, h, h_drum):
@@ -134,24 +146,22 @@ def products(s, Xstate):
     return out
 
 
-print(f"tau_base {TAU_BASE:g} s, tau_drum {TAU_DRUM:g} s, deck scale {DECK_SCALE:g}, dt {DT}")
+print(f"tau_base {TAU_BASE:g} s, tau_drum {TAU_DRUM:g} s of the {DRUM_BASIS}, deck scale {DECK_SCALE:g}, dt {DT}; sized on the file's settings")
+REF_M, REF_DRUM, REF_DETAIL = masses(runs["reflux=4"]["BEFORE"])
 first = True
 for spec, d in runs.items():
     if "AFTER" not in d:
         print(spec, "no AFTER")
         continue
     a = d["AFTER"]
-    h, h_drum, detail = holdups(a)
+    h, h_drum = holdups(a, REF_M, REF_DRUM)
     if first:
         first = False
         print("tray  deck_kg  downcomer_kg  liquid_kg/s  residence_s")
-        for stg, deck, dc, lq, tau in detail:
+        for stg, deck, dc, lq, tau in REF_DETAIL:
             print(f"{stg:4d} {deck:8.0f} {dc:12.0f} {lq:11.1f} {tau:11.1f}")
-        mw = np.array(a["mw"])
-        mwl = [float(np.dot(x["x"], mw)) for x in a["stages"]]
-        tray_kg = sum(h[j] * mwl[j] for j in range(len(h) - 1))
-        print(f"trays {tray_kg/1000:.1f} t, base {h[-1]*mwl[-1]/1000:.1f} t, "
-              f"drum {h_drum*np.dot(a['top_x'], mw)/1000:.1f} t")
+        print(f"trays {REF_M[:-1].sum()/1000:.1f} t, base {REF_M[-1]/1000:.1f} t, "
+              f"drum {REF_DRUM/1000:.1f} t")
     As, bs, feed, dist, drum_resid = model(a, h, h_drum)
     fs = np.abs(feed).sum(axis=1)
     feed_stages = [j for j in range(len(fs)) if fs[j] > 1e-6 * fs.max()]

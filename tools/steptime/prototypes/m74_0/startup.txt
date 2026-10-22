@@ -1,9 +1,9 @@
-liquid held: trays 44.8 t, base 8.7 t, drum 34.2 t, all 87.7 t
-  = 14.1 min of feed at 103.57 kg/s; trays alone 7.2 min
-steel (estimate) 77 t; heat to running temperature: liquid 37 GJ, steel 12 GJ
-  at 20 MW: 41 min
+liquid held: trays 44.8 t, base 8.7 t, drum 6.8 t, all 60.3 t
+  = 9.7 min of feed at 103.57 kg/s; trays alone 7.2 min
+steel (estimate) 77 t; heat to running temperature: liquid 36 GJ, steel 12 GJ
+  at 20 MW: 40 min
   at 87 MW: 9 min
-  at 107 MW: 8 min
+  at 107 MW: 7 min
 reflux=2: stage temperatures move -11.2..+2.7 K; heat stored -559 MJ = -0.93 MW over 10 min
 reflux=5: stage temperatures move -0.7..+3.5 K; heat stored +174 MJ = +0.29 MW over 10 min
 flow=0.5: stage temperatures move -11.7..+0.4 K; heat stored -374 MJ = -0.62 MW over 10 min
