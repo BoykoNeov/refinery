@@ -797,6 +797,25 @@ pub struct CascadeDef {
     /// "heat_balance"` reads them, to report each tray's hydraulics.
     #[serde(default)]
     pub trays: Vec<TraySectionDef>,
+    /// The liquid the column holds (M74, docs/DESIGN.md §79.2):
+    /// `holdup = { drum_m3 = 20.0, base_m3 = 30.0, reboiler = "held" }`.
+    /// Absent, the column is quasi-steady. Only `separation =
+    /// "heat_balance"` models it, on a column with trays.
+    #[serde(default)]
+    pub holdup: Option<HoldupDef>,
+}
+
+/// A column's liquid held: the reflux drum's and the base's working volumes
+/// [m³], each half full at its normal level, and whether the column starts
+/// with its reboiler `"held"` (the bottoms holding the base's level) or
+/// `"free"` (the reboiler holding it). **`deny_unknown_fields`**: a key the
+/// column does not read is refused rather than ignored.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HoldupDef {
+    pub drum_m3: f64,
+    pub base_m3: f64,
+    pub reboiler: String,
 }
 
 /// One section of sieve trays: `{ from = 1, to = 4, diameter_m = 6.5,

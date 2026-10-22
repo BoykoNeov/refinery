@@ -11051,3 +11051,19 @@ key 8 and its table; then the start from empty, its own probe.
 and with the reboiler held some settings empty it whatever its size. Put
 back to the user: **B kept, the base 20 minutes of the bottoms, physical
 limits (not errors) at an empty or full drum or base** (DESIGN §79.1–§79.2).
+
+### M74.1 — **DONE** 2026-10-22: the holdup declared, the column filled on its first tick
+
+Built (DESIGN §79.3): `holdup = { drum_m3, base_m3, reboiler = "held" |
+"free" }` on the cascade block, refused by name off the heat-balance
+cascade, without trays, on a wet or steamed column, with `reboiler_duty_mw`
+beside it, or with a volume that is not a positive number; its state on the
+plant graph (and so on the snapshot), filled on the first tick from the
+settled loads — each tray its deck's and downcomers' liquid at its loads
+(Sinnott's heads, `trays::tray_liquid`), the base and the drum half full —
+and carried unchanged; the column otherwise as before. On the tray plant
+with a holdup line inline: each tray its probe's offline sum to 0.5 %; thirty
+ticks equal to the bit but for the holdup key. Mutations: twelve, all
+caught. Every shipped plant byte-identical, 69 of 69 on both fidelities.
+Next: M74.2, the step — the screen's biggest reflux jumps measured first
+(DESIGN §79.2, open).

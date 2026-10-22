@@ -901,6 +901,13 @@ pub struct CascadeSpec {
     /// byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trays: Vec<TraySection>,
+    /// The liquid the column holds (M74, docs/DESIGN.md §79.2), or `None`: the
+    /// column is quasi-steady, as every column before M74. Only the
+    /// heat-balance cascade reads it, on a column with trays; absent on every
+    /// column that predates it, and then not serialized, which keeps every
+    /// such plant byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holdup: Option<ColumnHoldup>,
 }
 
 /// One section of sieve trays on a heat-balance cascade (M73.1, docs/DESIGN.md
@@ -932,6 +939,42 @@ pub struct TraySection {
     pub clearance: Meter,
     /// The liquid's paths across the tray, 1 to 4.
     pub passes: u32,
+}
+
+/// The liquid a heat-balance cascade holds — on its trays, in its reflux drum
+/// and in its base (M74, docs/DESIGN.md §79.2). Declared on a column with
+/// trays, whose sizes give each tray's liquid; the drum's and the base's are
+/// declared here as volumes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ColumnHoldup {
+    /// The reflux drum's working volume [m³]; half full at its normal level.
+    pub drum_volume: CubicMeter,
+    /// The base's working volume [m³]; half full at its normal level.
+    pub base_volume: CubicMeter,
+    /// Whether the column starts with its reboiler held — the bottoms holding
+    /// the base's level (§79.1's scheme B) — or free, the reboiler holding it
+    /// (scheme A). The file's `reboiler = "held"` or `"free"`.
+    pub start_held: bool,
+    /// The liquid held: a STATE, `None` until the column's first tick fills it
+    /// from its settled loads, then written back by the engine at the end of
+    /// every tick that moves it (as a furnace's coil, §37).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<HoldupState>,
+}
+
+/// What a column holds at the end of a tick (M74, docs/DESIGN.md §79.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HoldupState {
+    /// Each stage's liquid [kg], top stage first: a tray's on its deck and in
+    /// its downcomer; the last, the reboiler's, the base's.
+    pub stage_liquid: Vec<Kg>,
+    /// Each stage's liquid composition, in the same order.
+    pub stage_composition: Vec<Composition>,
+    /// The reflux drum's liquid [kg].
+    pub drum_liquid: Kg,
+    /// The reflux drum's liquid composition: the distillate's and the
+    /// reflux's.
+    pub drum_composition: Composition,
 }
 
 /// A pumparound loop on a heat-balance cascade (M72, docs/DESIGN.md §77.1):

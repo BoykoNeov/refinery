@@ -29,12 +29,12 @@
 use refinery_core::components::{Composition, Slate};
 use refinery_core::energy::T_REF;
 use refinery_core::error::SimError;
-use refinery_core::graph::{CascadeSpec, Pumparound};
+use refinery_core::graph::{CascadeSpec, ColumnHoldup, HoldupState, Pumparound};
 use refinery_core::traits::{
     CascadeProfile, ColumnPass, CutBackDraw, DeclinedHold, DrawSeparation, LoopRun, Separation,
     SeparationModel, ThermoModel,
 };
-use refinery_core::units::{Kelvin, KgPerSec, Pascal, Watt};
+use refinery_core::units::{Kelvin, Kg, KgPerSec, Pascal, Watt};
 
 use crate::bubble::{bubble_temperature, bubble_temperature_unnormalized};
 use crate::cascade::{
@@ -654,6 +654,7 @@ impl HeatBalanceCascade {
                 loops: Vec::new(),
                 stage_liquid: Vec::new(),
                 trays: Vec::new(),
+                holdup: None,
             });
         }
 
@@ -939,6 +940,21 @@ impl HeatBalanceCascade {
                 of_declared: profile.ratios[*i] / plan.mass_ratios[*i],
             })
             .collect();
+        // A column that holds liquid starts full on its first tick, from these
+        // settled loads (M74, docs/DESIGN.md §79.2).
+        let holdup = match &spec.holdup {
+            Some(declared) if declared.state.is_none() => Some(starting_holdup(
+                slate,
+                spec,
+                declared,
+                &setup.pressures,
+                &profile,
+                &k,
+                draws[0].moles.fractions(),
+                condenser_t,
+            )?),
+            _ => None,
+        };
 
         Ok(Separation {
             draws: result,
@@ -962,8 +978,60 @@ impl HeatBalanceCascade {
             loops: runs,
             stage_liquid,
             trays,
+            holdup,
         })
     }
+}
+
+/// What a column that holds liquid holds on its first tick (M74,
+/// docs/DESIGN.md §79.2): each tray what its weir and downcomers hold at its
+/// settled loads (`trays::column_liquid`), the base (the reboiler's stage) and
+/// the reflux drum half full of their liquid, hot; each at its settled
+/// composition. `distillate` is the drum's mole fractions, at `condenser`.
+#[allow(clippy::too_many_arguments)]
+fn starting_holdup(
+    slate: &Slate,
+    spec: &CascadeSpec,
+    declared: &ColumnHoldup,
+    pressures: &[Pascal],
+    profile: &Profile,
+    k: &[Vec<f64>],
+    distillate: &[f64],
+    condenser: Kelvin,
+) -> Result<HoldupState, SimError> {
+    let stages = profile.temperatures.len();
+    let mut stage_liquid = crate::trays::column_liquid(
+        slate,
+        spec,
+        pressures,
+        &profile.temperatures,
+        &profile.liquid,
+        k,
+        &profile.flows,
+        &profile.water_vapour,
+        &profile.free_water,
+    )?;
+    let base = stages - 1;
+    let base_density = crate::trays::hot_liquid_density(
+        slate,
+        &profile.liquid[base],
+        Kelvin(profile.temperatures[base]),
+    );
+    stage_liquid.push(Kg(0.5
+        * declared.base_volume.value()
+        * base_density.value()));
+    let drum_density = crate::trays::hot_liquid_density(slate, distillate, condenser);
+    let stage_composition = profile
+        .liquid
+        .iter()
+        .map(|x| MoleFractions::from_amounts(x)?.to_mass(slate))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(HoldupState {
+        stage_liquid,
+        stage_composition,
+        drum_liquid: Kg(0.5 * declared.drum_volume.value() * drum_density.value()),
+        drum_composition: MoleFractions::from_amounts(distillate)?.to_mass(slate)?,
+    })
 }
 
 impl HeatBalanceCascade {
@@ -2468,6 +2536,7 @@ fn oil_free_feed(
         loops: Vec::new(),
         stage_liquid: Vec::new(),
         trays: Vec::new(),
+        holdup: None,
     })
 }
 
@@ -2662,6 +2731,7 @@ fn flooded_pass_through(
             loops: Vec::new(),
             stage_liquid: Vec::new(),
             trays: Vec::new(),
+            holdup: None,
         });
     }
     let mut draws: Vec<DrawSeparation> = (0..plan.mass_ratios.len())
@@ -2699,6 +2769,7 @@ fn flooded_pass_through(
         loops: Vec::new(),
         stage_liquid: Vec::new(),
         trays: Vec::new(),
+        holdup: None,
     })
 }
 
@@ -2932,6 +3003,7 @@ fn water_only_inflow(
         loops: Vec::new(),
         stage_liquid: Vec::new(),
         trays: Vec::new(),
+        holdup: None,
     })
 }
 
@@ -3692,6 +3764,7 @@ mod tests {
             reboiler_duty: None,
             loops: Vec::new(),
             trays: Vec::new(),
+            holdup: None,
         }
     }
 
@@ -4186,6 +4259,7 @@ mod start_tests {
             reboiler_duty: None,
             loops: Vec::new(),
             trays: Vec::new(),
+            holdup: None,
         };
         model.separate(
             &ColumnPass {
@@ -4278,6 +4352,7 @@ mod pumparound_tests {
             reboiler_duty: None,
             loops: Vec::new(),
             trays: Vec::new(),
+            holdup: None,
         }
     }
 
@@ -4556,6 +4631,7 @@ mod newton_tests {
                 reboiler_duty: None,
                 loops: Vec::new(),
                 trays: Vec::new(),
+                holdup: None,
             };
             let pass = ColumnPass {
                 slate: &slate,
@@ -4593,6 +4669,7 @@ mod newton_tests {
             reboiler_duty: None,
             loops: Vec::new(),
             trays: Vec::new(),
+            holdup: None,
         };
         let scorching = HeatBalanceCascade::new()
             .separate(
@@ -4654,6 +4731,7 @@ mod newton_tests {
             reboiler_duty: None,
             loops: Vec::new(),
             trays: Vec::new(),
+            holdup: None,
         };
         let at = |offset: f64, seed: Option<&CascadeProfile>| {
             HeatBalanceCascade::new()
@@ -4746,6 +4824,7 @@ mod newton_tests {
                 reboiler_duty: None,
                 loops: Vec::new(),
                 trays: Vec::new(),
+                holdup: None,
             }
         }
 
@@ -4825,6 +4904,7 @@ mod newton_tests {
             reboiler_duty: None,
             loops,
             trays: Vec::new(),
+            holdup: None,
         };
         (unit, spec)
     }
@@ -5433,6 +5513,7 @@ mod newton_tests {
                 reboiler_duty: None,
                 loops: Vec::new(),
                 trays: Vec::new(),
+                holdup: None,
             };
             HeatBalanceCascade::new()
                 .separate(
@@ -5550,6 +5631,7 @@ mod steam_tests {
             reboiler_duty: None,
             loops: Vec::new(),
             trays: Vec::new(),
+            holdup: None,
         };
         // 0.15 kg/s of steam at 400 °C, as its liquid-equivalent temperature.
         let latent = 40_650.0 / 0.018015 + (2000.0 - 4184.0) * 300.0;
@@ -5648,6 +5730,7 @@ mod loop_tests {
             reboiler_duty: None,
             loops,
             trays: Vec::new(),
+            holdup: None,
         }
     }
 

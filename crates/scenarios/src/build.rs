@@ -4686,6 +4686,52 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                         scenario.fidelity.separation
                     )));
                 }
+                if def.holdup.is_some() && scenario.fidelity.separation != "heat_balance" {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' declares holdup, but [fidelity] separation is \
+                         \"{}\": the liquid a column holds is integrated on the stage \
+                         balances only separation = \"heat_balance\" solves (docs/DESIGN.md \
+                         §79.2).",
+                        scenario.fidelity.separation
+                    )));
+                }
+                let holdup = match &def.holdup {
+                    None => None,
+                    Some(holdup) => {
+                        let start_held = match holdup.reboiler.as_str() {
+                            "held" => true,
+                            "free" => false,
+                            other => {
+                                return Err(SimError::Scenario(format!(
+                                    "column '{name}' declares holdup.reboiler = \"{other}\": \
+                                     it is \"held\" (the bottoms holds the base's level, the \
+                                     reboiler at its duty) or \"free\" (the reboiler holds the \
+                                     base's level) (docs/DESIGN.md §79.1)."
+                                )))
+                            }
+                        };
+                        if def.steam.is_some() {
+                            return Err(SimError::Scenario(format!(
+                                "column '{name}' declares holdup and steam: a column that \
+                                 holds liquid is a dry one for now (docs/DESIGN.md §79.2)."
+                            )));
+                        }
+                        if def.reboiler_duty_mw.is_some() {
+                            return Err(SimError::Scenario(format!(
+                                "column '{name}' declares both reboiler_duty_mw and \
+                                 holdup.reboiler: a column that holds liquid says whether its \
+                                 reboiler starts held in holdup.reboiler alone, and holds it at \
+                                 the duty its first tick settles on (docs/DESIGN.md §79.2)."
+                            )));
+                        }
+                        Some(refinery_core::graph::ColumnHoldup {
+                            drum_volume: CubicMeter(holdup.drum_m3),
+                            base_volume: CubicMeter(holdup.base_m3),
+                            start_held,
+                            state: None,
+                        })
+                    }
+                };
                 if !def.pumparounds.is_empty() && scenario.fidelity.separation != "heat_balance" {
                     return Err(SimError::Scenario(format!(
                         "column '{name}' declares pumparounds, but [fidelity] separation is \
@@ -4743,6 +4789,7 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                             passes: t.passes,
                         })
                         .collect(),
+                    holdup,
                 };
                 // One source of truth for the cascade's structural rules: the model
                 // that has to satisfy them. Duplicating them here would be two

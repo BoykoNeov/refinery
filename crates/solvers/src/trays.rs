@@ -33,7 +33,8 @@ use refinery_core::components::{Phase, Slate};
 use refinery_core::graph::{CascadeSpec, TraySection};
 use refinery_core::traits::TrayHydraulics;
 use refinery_core::units::{
-    KgPerM3, KgPerSec, Meter, MeterPerSec, NewtonPerMeter, Pascal, SquareMeter, G, R_GAS,
+    Kelvin, Kg, KgPerM3, KgPerSec, Meter, MeterPerSec, NewtonPerMeter, Pascal, SquareMeter, G,
+    R_GAS,
 };
 use refinery_core::SimError;
 
@@ -119,9 +120,11 @@ impl TrayGeometry {
     /// tray exactly.
     pub fn of(section: &TraySection) -> Self {
         let diameter = section.diameter.value();
-        let column = std::f64::consts::PI * diameter * diameter / 4.0;
-        let downcomer = section.downcomer_share * column;
-        let active = column - 2.0 * downcomer;
+        let SectionAreas {
+            column,
+            downcomer,
+            active,
+        } = SectionAreas::of(section);
         let side_share = section.downcomer_share / f64::from(section.passes);
         Self {
             spacing: section.spacing,
@@ -134,6 +137,28 @@ impl TrayGeometry {
             clearance: section.clearance,
             orifice_coefficient: orifice_coefficient(section.hole_area_share),
             passes: section.passes,
+        }
+    }
+}
+
+/// A section's areas [m²]: the column's, its trays' whole downcomer area
+/// (`DCA`, every tray has that much outlet downcomer and that much under its
+/// inlets) and the active area between, `A_c − 2·DCA` (§78.10).
+struct SectionAreas {
+    column: f64,
+    downcomer: f64,
+    active: f64,
+}
+
+impl SectionAreas {
+    fn of(section: &TraySection) -> Self {
+        let diameter = section.diameter.value();
+        let column = std::f64::consts::PI * diameter * diameter / 4.0;
+        let downcomer = section.downcomer_share * column;
+        Self {
+            column,
+            downcomer,
+            active: column - 2.0 * downcomer,
         }
     }
 }
@@ -321,6 +346,19 @@ pub fn sieve_tray(geometry: &TrayGeometry, load: &TrayLoad) -> SieveTray {
     }
 }
 
+/// The liquid a tray holds at its loads [kg] (M74, docs/DESIGN.md §79.2): the
+/// clear liquid on its deck, `ρL·A_a·(h_w + h_ow)` — the head on the tray its
+/// pressure drop counts ([S] eq. 11.90) — and in its downcomers,
+/// `ρL·DCA·h_b`, their backup ([S] eq. 11.91) over the tray's whole downcomer
+/// area. `A_a` is the active area, the column's less its downcomers in and
+/// out. On a flooded tray the heads read past their limits, and so does this.
+pub fn tray_liquid(section: &TraySection, tray: &SieveTray, liquid_density: KgPerM3) -> Kg {
+    let areas = SectionAreas::of(section);
+    let deck = areas.active * (section.weir_height.value() + tray.weir_crest.value());
+    let downcomers = areas.downcomer * tray.backup.value();
+    Kg(liquid_density.value() * (deck + downcomers))
+}
+
 /// Bisection steps on a flooded tray's vapour in [`capped_drop`]: 2^-60 of its
 /// load, under an `f64`'s spacing at it.
 const CAP_BISECTIONS: u32 = 60;
@@ -419,17 +457,23 @@ fn section_of(trays: &[TraySection], stage: u32) -> Option<&TraySection> {
     trays.iter().find(|s| s.from <= stage && stage <= s.to)
 }
 
-/// A converged column's loads on its trays, and each tray's hydraulics (§78.3).
-/// Tray `j` (zero-based, every stage but the reboiler) carries the vapour
-/// rising from stage `j + 1` — its oil at `y = K·x` and its water vapour, an
-/// ideal gas at that stage's temperature and pressure (M73.2) — and the liquid
-/// leaving stage `j`: down, drawn and into a loop, its oil and its free water.
-/// `pressures` is the one each stage solved at; each reading carries its
-/// stage's, and the drop it feeds back ([`capped_drop`]).
+/// One tray's loads at a converged column's answer: its stage (one-based
+/// from the top), its section and its loads.
+struct LoadedTray<'a> {
+    stage: u32,
+    section: &'a TraySection,
+    load: TrayLoad,
+}
+
+/// A converged column's loads on its trays (§78.3). Tray `j` (zero-based,
+/// every stage but the reboiler) carries the vapour rising from stage `j + 1`
+/// — its oil at `y = K·x` and its water vapour, an ideal gas at that stage's
+/// temperature and pressure (M73.2) — and the liquid leaving stage `j`: down,
+/// drawn and into a loop, its oil and its free water.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn column_trays(
+fn tray_loads<'a>(
     slate: &Slate,
-    spec: &CascadeSpec,
+    spec: &'a CascadeSpec,
     pressures: &[Pascal],
     temperatures: &[f64],
     liquid: &[Vec<f64>],
@@ -437,7 +481,7 @@ pub(crate) fn column_trays(
     flows: &Flows,
     water_vapour: &[f64],
     free_water: &[f64],
-) -> Result<Vec<TrayHydraulics>, SimError> {
+) -> Result<Vec<LoadedTray<'a>>, SimError> {
     let water_molar_mass = slate
         .free_water()
         .map_or(0.0, |index| slate.get(index).molar_mass.value());
@@ -499,6 +543,49 @@ pub(crate) fn column_trays(
                 "tray hydraulics: tray {stage}'s vapour has density {vapour_density} kg/m³."
             )));
         }
+        out.push(LoadedTray {
+            stage,
+            section,
+            load,
+        });
+    }
+    Ok(out)
+}
+
+/// A converged column's loads on its trays, and each tray's hydraulics (§78.3).
+/// `pressures` is the one each stage solved at; each reading carries its
+/// stage's, and the drop it feeds back ([`capped_drop`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn column_trays(
+    slate: &Slate,
+    spec: &CascadeSpec,
+    pressures: &[Pascal],
+    temperatures: &[f64],
+    liquid: &[Vec<f64>],
+    k: &[Vec<f64>],
+    flows: &Flows,
+    water_vapour: &[f64],
+    free_water: &[f64],
+) -> Result<Vec<TrayHydraulics>, SimError> {
+    let loaded = tray_loads(
+        slate,
+        spec,
+        pressures,
+        temperatures,
+        liquid,
+        k,
+        flows,
+        water_vapour,
+        free_water,
+    )?;
+    let mut out = Vec::with_capacity(loaded.len());
+    for LoadedTray {
+        stage,
+        section,
+        load,
+    } in loaded
+    {
+        let j = (stage - 1) as usize;
         let geometry = TrayGeometry::of(section);
         let reading = sieve_tray(&geometry, &load).reading(
             stage,
@@ -520,9 +607,102 @@ pub(crate) fn column_trays(
     Ok(out)
 }
 
+/// The liquid each tray holds at a converged column's loads [kg], top tray
+/// first ([`tray_liquid`]; M74, docs/DESIGN.md §79.2): what a column that
+/// holds liquid starts with on its first tick.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn column_liquid(
+    slate: &Slate,
+    spec: &CascadeSpec,
+    pressures: &[Pascal],
+    temperatures: &[f64],
+    liquid: &[Vec<f64>],
+    k: &[Vec<f64>],
+    flows: &Flows,
+    water_vapour: &[f64],
+    free_water: &[f64],
+) -> Result<Vec<Kg>, SimError> {
+    let loaded = tray_loads(
+        slate,
+        spec,
+        pressures,
+        temperatures,
+        liquid,
+        k,
+        flows,
+        water_vapour,
+        free_water,
+    )?;
+    loaded
+        .iter()
+        .map(|tray| {
+            let held = tray_liquid(
+                tray.section,
+                &sieve_tray(&TrayGeometry::of(tray.section), &tray.load),
+                tray.load.liquid_density,
+            );
+            if held.value().is_finite() && held.value() > 0.0 {
+                Ok(held)
+            } else {
+                Err(SimError::Scenario(format!(
+                    "tray {} holds {} kg at loads {:?} (docs/DESIGN.md §79.2).",
+                    tray.stage,
+                    held.value(),
+                    tray.load
+                )))
+            }
+        })
+        .collect()
+}
+
+/// A stage's liquid density, hot [kg/m³] — the trays' own estimate
+/// (`liquid_density`), for a drum or a base holding that stage's liquid
+/// (M74, docs/DESIGN.md §79.2). `liquid` is mole fractions.
+pub(crate) fn hot_liquid_density(slate: &Slate, liquid: &[f64], temperature: Kelvin) -> KgPerM3 {
+    KgPerM3(liquid_density(slate, liquid, temperature.value()))
+}
+
 /// A column's tray sections, checked against the stages and the ranges their
 /// correlations hold over (§78.2, §78.4.1). Called from `CascadePlan::new`, so
 /// the loader's `StageCascade::validate` refuses a bad file by name.
+/// A column's declared holdup (M74, docs/DESIGN.md §79.2), where it declares
+/// one: on a column with trays, whose sizes give each tray's liquid; on a dry
+/// column — a wet one's free water, decanted at its condenser, has no drum
+/// here yet (C22's ground); the drum's and the base's volumes positive and
+/// finite. `wet` says the column draws free water.
+pub(crate) fn validate_holdup(spec: &CascadeSpec, wet: bool) -> Result<(), SimError> {
+    let Some(holdup) = &spec.holdup else {
+        return Ok(());
+    };
+    let refuse = |message: String| Err(SimError::Scenario(format!("holdup: {message}")));
+    if wet {
+        return refuse(
+            "the column draws free water at its condenser; a column that holds liquid is a \
+             dry one for now (docs/DESIGN.md §79.2)."
+                .to_string(),
+        );
+    }
+    if spec.trays.is_empty() {
+        return refuse(
+            "the column declares no trays; a tray's liquid is what its weir and downcomers \
+             hold at its loads, so a column that holds liquid declares its trays \
+             (docs/DESIGN.md §79.2)."
+                .to_string(),
+        );
+    }
+    for (what, volume) in [
+        ("drum_m3", holdup.drum_volume.value()),
+        ("base_m3", holdup.base_volume.value()),
+    ] {
+        if !(volume.is_finite() && volume > 0.0) {
+            return refuse(format!(
+                "{what} = {volume}; a working volume is a positive number of cubic metres."
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate(spec: &CascadeSpec) -> Result<(), SimError> {
     if spec.trays.is_empty() {
         return Ok(());
@@ -696,6 +876,34 @@ mod tests {
         }
     }
 
+    /// **A tray holds its deck's clear liquid and its downcomers' backup**
+    /// (M74, docs/DESIGN.md §79.2), by hand on the fixture section: a 6 m
+    /// column, 28.274 m²; its downcomers 18 %, 5.089 m², in and out, so the
+    /// deck 28.274 − 2·5.089 = 18.096 m²; at 700 kg/m³ the deck holds
+    /// `18.096·(0.05 + h_ow)` and the downcomers `5.089·h_b`, the tray's own
+    /// heads. More liquid over the weir holds more.
+    #[test]
+    fn a_tray_holds_its_deck_and_its_downcomers() {
+        let column = std::f64::consts::PI * 36.0 / 4.0;
+        let (downcomers, deck) = (0.18 * column, column - 2.0 * 0.18 * column);
+        assert!((deck - 18.096).abs() < 1e-3 && (downcomers - 5.089).abs() < 1e-3);
+        for liquid in [20.0, 100.0, 300.0] {
+            let tray = sieve_tray(&TrayGeometry::of(&section(4)), &load(60.0, liquid));
+            let by_hand = 700.0
+                * (deck * (0.05 + tray.weir_crest.value()) + downcomers * tray.backup.value());
+            let held = tray_liquid(&section(4), &tray, KgPerM3(700.0)).value();
+            assert!(
+                (held / by_hand - 1.0).abs() < 1e-12,
+                "{held} against {by_hand}"
+            );
+        }
+        let held = |liquid| {
+            let tray = sieve_tray(&TrayGeometry::of(&section(4)), &load(60.0, liquid));
+            tray_liquid(&section(4), &tray, KgPerM3(700.0)).value()
+        };
+        assert!(held(100.0) > held(20.0) && held(300.0) > held(100.0));
+    }
+
     #[test]
     fn the_weir_is_the_downcomers_chord() {
         // Sinnott Fig. 11.31: 0.73 at a 10 % downcomer, 0.76–0.77 at 12 %.
@@ -853,6 +1061,7 @@ mod tests {
             reboiler_duty: None,
             loops: Vec::new(),
             trays: vec![section(1)],
+            holdup: None,
         };
         let flows = Flows {
             liquid_in: vec![300.0, 300.0],

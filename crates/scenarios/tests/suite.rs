@@ -35,6 +35,8 @@ mod choked_flow_reference;
 mod coil_cell_reference;
 #[path = "coil_trip_reference.rs"]
 mod coil_trip_reference;
+#[path = "column_holdup.rs"]
+mod column_holdup;
 #[path = "column_reference.rs"]
 mod column_reference;
 #[path = "column_steam_reference.rs"]

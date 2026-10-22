@@ -150,8 +150,9 @@ impl StageCascade {
         // The component count is not part of a column's geometry and nothing on
         // this path reads it — `CascadePlan::components` is for the solve. Passed
         // as 0 rather than invented, and the plan is discarded immediately.
-        let (oil, _) = split_water_draw(draws)?;
-        CascadePlan::new(spec, &oil, 0).map(|_| ())
+        let (oil, water) = split_water_draw(draws)?;
+        CascadePlan::new(spec, &oil, 0)?;
+        crate::trays::validate_holdup(spec, water.is_some())
     }
 }
 
@@ -466,6 +467,7 @@ impl SeparationModel for StageCascade {
                 loops: Vec::new(),
                 stage_liquid: Vec::new(),
                 trays: Vec::new(),
+                holdup: None,
             });
         }
 
@@ -700,6 +702,7 @@ impl SeparationModel for StageCascade {
             loops: Vec::new(),
             stage_liquid: Vec::new(),
             trays: Vec::new(),
+            holdup: None,
         })
     }
 }
@@ -1850,6 +1853,7 @@ mod tests {
             reboiler_duty: None,
             loops: Vec::new(),
             trays: Vec::new(),
+            holdup: None,
         }
     }
 

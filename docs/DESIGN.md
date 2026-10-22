@@ -30579,6 +30579,16 @@ stage (a cold reflux slug on the top tray; the bubble-point stage cannot be
 a stage that does not boil — the second part's); a step whose Newton does
 not converge — no fall back to the settled solve mid-run (rule 5).
 
+**Open, tested first in M74.2** (a side note, 2026-10-22, at the user's
+request): the screen moves the reflux 0.5–15 in one key press. With holdup the
+reboiler answers only through the base's level, over minutes, so a big jump
+puts far more reflux on the top tray than the vapour under it can heat — a
+stage that stops boiling, the `Err` above, where the user chose physical
+limits for the drum and base. Measured on the screen's biggest jumps before
+the step is built on; if they reach it, the user decides with the numbers:
+stages that can stop boiling (the second part's, brought forward) or a ramp
+on the reflux key (a real flow controller's setpoint ramp).
+
 **The snapshot stays byte-identical** on every column without holdup: each
 new field on `ColumnOperation` and `DrawSeparation` skipped when empty.
 
@@ -30603,3 +30613,33 @@ the level loops set (the distillate, the bottoms, the reboiler's duty).
   measured table within the hour's budget — a reboiler axis, each run
   settling 8 000–24 000 ticks: a coarser grid, planned before launching.
 - Then the start from empty: its own probe.
+
+### 79.3 M74.1 built — the holdup declared, the column filled on its first tick
+
+As §79.2 says, the column still quasi-steady:
+
+- **Declared**: `holdup = { drum_m3, base_m3, reboiler = "held" | "free" }` on
+  the cascade block (`schema::HoldupDef`, `deny_unknown_fields`) →
+  `CascadeSpec::holdup: Option<ColumnHoldup>` (`core::graph`), its volumes in
+  `CubicMeter`, `start_held`, and `state: Option<HoldupState>` — each stage's
+  liquid [kg] and composition, the drum's — skipped when absent, so every
+  shipped plant serializes as before.
+- **Refused at load**, each by name: not on the heat-balance cascade; a
+  reboiler neither `"held"` nor `"free"`; `reboiler_duty_mw` beside it; steam
+  (`build.rs`); and in the model's own check (`StageCascade::validate` →
+  `trays::validate_holdup`) a column that draws free water, one without trays,
+  a volume not a positive number.
+- **The first tick fills the state** (`heat_balance::starting_holdup`), from
+  the settled answer: each tray `trays::tray_liquid` at its loads — its deck's
+  clear liquid `ρL·A_a·(h_w + h_ow)` and its downcomers' backup `ρL·DCA·h_b`
+  (`tray_loads`, shared with the hydraulics, now builds every tray's loads
+  once) — the base and the drum half their volumes at the trays' hot
+  density of their liquid. `Separation::holdup` carries it to the engine,
+  which commits it with the coils and beds (step 5).
+- **Carried unchanged** after the first tick: the step is M74.2's.
+
+On the tray plant with a holdup line inline (`column_holdup.rs`): each tray
+its probe's offline sum to 0.5 % (under 0.03 % on ten); the drum's
+composition the naphtha draw's to the bit, the kerosene tray's the
+kerosene draw's; thirty ticks with and without holdup equal to the bit but
+for the holdup key. Mutations: twelve, all caught.

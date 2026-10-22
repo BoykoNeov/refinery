@@ -2750,6 +2750,22 @@ impl Engine {
                 coil.temperature = end;
             }
         }
+        //    A column's liquid held (M74, docs/DESIGN.md §79.2): its pass filled
+        //    or moved it from the start-of-tick state, committed here.
+        for (&nid, separation) in &node_states.column_separation {
+            let Some(held) = &separation.holdup else {
+                continue;
+            };
+            if let NodeKind::Column {
+                cascade: Some(spec),
+                ..
+            } = &mut self.graph.node_mut(nid).kind
+            {
+                if let Some(holdup) = &mut spec.holdup {
+                    holdup.state = Some(held.clone());
+                }
+            }
+        }
         //    Catalyst beds likewise (M57.1, docs/DESIGN.md §62.1): integrated
         //    on the sweep from the start-of-tick temperature, committed here.
         for (&nid, pass) in &node_states.bed {

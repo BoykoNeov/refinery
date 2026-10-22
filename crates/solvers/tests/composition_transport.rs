@@ -862,6 +862,7 @@ fn build_cascade_plant(inputs: &CascadeInputs) -> PlantGraph {
                 reboiler_duty: None,
                 loops: Vec::new(),
                 trays: Vec::new(),
+                holdup: None,
             }),
         },
     ));

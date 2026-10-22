@@ -8,7 +8,8 @@
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{
-    CascadeSpec, ColumnDraw, ControlAction, ControlledValue, EdgeId, NodeId, PlantGraph,
+    CascadeSpec, ColumnDraw, ControlAction, ControlledValue, EdgeId, HoldupState, NodeId,
+    PlantGraph,
 };
 use crate::units::{
     JPerKg, JPerKgK, JPerMol, Kelvin, Kg, KgPerM3, KgPerSec, Meter, Pascal, Seconds, Watt,
@@ -812,6 +813,12 @@ pub struct Separation {
     /// (`CascadeSpec::trays`); empty otherwise, and from a pass that did not
     /// fractionate.
     pub trays: Vec<TrayHydraulics>,
+    /// The liquid the column holds at the end of this pass (M74,
+    /// docs/DESIGN.md §79.2), for the engine to write back as the column's
+    /// state (`ColumnHoldup::state`): on the first tick of a column that
+    /// declares holdup, filled from its settled loads. `None` from every
+    /// other pass — the state stands as it was.
+    pub holdup: Option<HoldupState>,
 }
 
 /// How one sieve tray ran this pass (M73.1, docs/DESIGN.md §78.3, §78.4.1):
