@@ -30711,7 +30711,10 @@ minutes, 96.1 at 60, 97.25 at 120 against 97.55) — three times §79.0's
 frozen-K estimate. Neither the level loops' tuning (4 times faster: within
 0.6 MW at every reading) nor the drum's size (10 or 20 m³) moves it: it is
 the column's own, set by the 45 t its trays hold. Cost: 1.3–2.1 ms a tick
-against the tray plant's 0.6.
+against the tray plant's 0.6. **Decided (2026-10-22), the user: kept
+realistic** — a real crude unit lines out over hours; the column screen's
+speed key (about 50 times real time at this cost) covers it — over shrinking
+the trays' liquid by a game multiplier or a longer tick for the column.
 
 **Left for M74.3**, besides the loops' wiring: a column that holds liquid
 with no feed takes `fractionate_at`'s idle return before the step, so its

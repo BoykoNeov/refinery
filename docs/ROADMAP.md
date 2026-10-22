@@ -11086,7 +11086,8 @@ vapour comes near zero (the least 216 mol/s), each settling on the tray
 plant's own; under B the reflux to 0.5 or the loops stopped drain the base
 (M74.3's limits). Under A a reflux move closes on the tray plant's settled
 column about an e-fold every 40 minutes, three times the probe's estimate,
-whatever the level loops' tuning or the drum's size. 1.3–2.1 ms a tick.
+whatever the level loops' tuning or the drum's size — **kept realistic**
+(the user's decision, 2026-10-22). 1.3–2.1 ms a tick.
 Each component conserved every tick to 9e-11 kg/s, the heat to 4.6 W.
 Mutations: ten, nine caught, one argued. Every shipped plant byte-identical,
 69 of 69 on both fidelities. Next: M74.3 — the toggle, the limits, the
