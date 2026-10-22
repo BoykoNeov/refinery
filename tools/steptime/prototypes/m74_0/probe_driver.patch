@@ -1,0 +1,27 @@
+diff --git a/crates/godot-ext/Cargo.toml b/crates/godot-ext/Cargo.toml
+index 07a3574..6099ec3 100644
+--- a/crates/godot-ext/Cargo.toml
++++ b/crates/godot-ext/Cargo.toml
+@@ -41,6 +41,9 @@ thiserror.workspace = true
+ # with no useful message.
+ godot = { version = "0.5.5", features = ["api-4-7"], optional = true }
+ 
++[dev-dependencies]
++refinery-solvers.workspace = true
++
+ [features]
+ default = []
+ godot = ["dep:godot"]
+diff --git a/crates/godot-ext/tests/suite.rs b/crates/godot-ext/tests/suite.rs
+index 51d4671..14c15f9 100644
+--- a/crates/godot-ext/tests/suite.rs
++++ b/crates/godot-ext/tests/suite.rs
+@@ -5,6 +5,8 @@
+ //! rather than one file after another. Run one file's tests with a filter:
+ //! `cargo test -p refinery-godot-ext --test suite <module>::`.
+ 
++#[path = "m74_0_holdup.rs"]
++mod m74_0_holdup;
+ #[path = "bridge.rs"]
+ mod bridge;
+ #[path = "column_screen.rs"]
