@@ -30359,3 +30359,77 @@ do not worsen when the trays flood or weep (C23); sieve trays only, tuned
 (C24); trays on one plant only (C25); a wet or steamed column with trays not
 gated (C22); the reflux floor (C8) kept as the solve's aid beside real
 weeping.
+
+## 79. A column that holds liquid — the trays, the base and the reflux drum (M74) — specified before building
+
+C2 (§5, "Deferred from M7"): the cascade is quasi-steady each tick, so a key
+moves every product in one tick and a column cannot start from empty (§71.0
+finding 12). Asked after M73 as "what is next"; the user chose 1, holdup
+(2026-10-22), and for its scope **start from empty too**: the running column
+that takes time to answer a key first, then the column filling from empty.
+Probed (§79.0), then three decisions in plain words (2026-10-22):
+
+1. **Each tray's liquid follows the flow over it** (the weir), over a fixed
+   amount per tray. Chosen knowing it needs the start-from-empty machinery
+   first: the column stores and gives up mass as the keys move, so its
+   products can no longer each be a fixed share of this tick's feed (§7) —
+   something holds the levels.
+2. **The reflux drum's and the base's sizes are declared per plant** — the
+   new plant on Kister's — over one rule for every plant.
+3. **A new file copied from the tray plant** (`crude_unit_trays.toml`
+   untouched), the trays' sizes giving each tray's liquid, over also letting
+   a column without trays declare its liquid.
+
+### 79.0 Probed (2026-10-22)
+
+`tools/steptime/prototypes/m74_0/` (`FINDINGS.md`): the tray plant at its
+file's settings, one key moved (the reflux, the furnace, the loops' flow and
+return temperature), each converged column's stage flows, liquid
+compositions and K-values recorded before and after; per component the
+composition response with holdup, `H_j·dx_j/dt = in − out`, linear with the
+flows and K-values after the move held, exact and by implicit Euler. Holdups
+sized once on the file's settings and held as masses:
+
+1. **What it holds**: each tray its clear liquid on the deck and in its
+   downcomer, 2.0–4.8 t (Sinnott's heads, M73's); 44.8 t on the twelve.
+   The base 8.7 t (5 minutes of the bottoms). The reflux drum 6.8 t on
+   Kister's sizing (*Distillation Operation*, 1990, Table 15.2 p. 482 and
+   p. 483: about 4.5 minutes of the distillate at its normal level), 34 t on
+   5 minutes of all it passes (Ludwig Vol. 1, rules of thumb p. xix, names
+   no flow).
+2. **The pace**: the side products 90 % of the way in 1–4 minutes after a
+   reflux or loop-return move (the kerosene draw 14–17 after the loops'
+   flow); the top product 90 % in 8–15 minutes on Kister's drum, 27–40 on
+   the large one, which sets its pace — the drum's liquid leaves only as
+   distillate. Kister: "Unnecessarily large reflux drum residence times …
+   incur an excessive composition lag that interferes with column control."
+3. **The settled column is today's**, to 2e-6 in mole fraction — under a
+   fixed holdup. Under decision 1 it holds only if the streams that hold the
+   levels settle on today's specifications (§79.1).
+4. **The tick**: implicit Euler at 0.1 s within 1.1e-4 of the exact
+   response; the holdup term outweighs a tray's flows about a hundredfold.
+5. **The heat a running column's liquid stores** as its temperatures move:
+   under 1 MW over ten minutes against 45–110 MW of duty — left out of the
+   running column. It is the whole story of a start from empty.
+6. **A start from empty by hand**: 60 t to fill, 10 minutes of feed; about
+   48 GJ to warm the liquid and an estimated 77 t of steel from 20 °C,
+   40 minutes at the furnace's 20 MW. Kister §12.8: the column is often
+   started on total reflux, its levels set, then the feed and the product
+   flows begun.
+
+### 79.1 Open: which stream holds each level
+
+Decision 1 makes the column store mass, so each tick the products no longer
+sum to the feed: the reflux drum's and the base's levels must each be held
+by a stream. Kister's Table 16.1 (p. 497) lists the schemes in use; two
+candidates, for the user with M74.1.0's numbers:
+
+- **(A) Today's answers kept** — Kister's Fig. 16.4e: the distillate holds
+  the drum's level, the reboiler the base's; the bottoms and side draws at
+  their declared shares of the feed, the reflux at the reflux ratio times
+  the distillate. Settled, the levels still, the distillate is its share by
+  the mass balance and the reboiler lands on today's closure. A reboiler
+  held by command (M66) leaves the base's level unheld — to be settled.
+- **(B) The usual scheme** — Kister's Fig. 16.4a: the distillate holds the
+  drum's level, the bottoms the base's, the reflux and the reboiler set. The
+  settled products move, and the keys mean something else.

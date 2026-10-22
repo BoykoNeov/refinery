@@ -10990,3 +10990,34 @@ and holds a warmer return past the edge. DESIGN §78.11.
 - Gates: `column_screen.rs` (+2, slow); either edge bit flipped, a gate
   fails. GDScript run headless (1.1–1.6 ms a tick, six a frame); the
   godot-feature clippy. No engine change (no corpus run).
+
+## M74 — a column that holds liquid: the trays, the base and the reflux drum, the products that take minutes to answer, and later the start from empty; ledger row C2; opened on a decision
+
+Asked after M73 as "what is next" (2026-10-22): the user chose 1, holdup
+(C2), and for its scope "start from empty too" — the running column that
+takes time to answer a key first, then the column filling from empty. After
+the probe, three decisions: **each tray's liquid follows the flow over it**
+(the weir), so the column stores and gives up mass as the keys move — the
+start-from-empty machinery's first use; **the reflux drum's and the base's
+sizes declared per plant**, the new plant on Kister's; **a new file copied
+from the tray plant**, the original untouched. DESIGN §79.
+
+### M74.0 — **PROBED** 2026-10-22: how slowly the products answer a key — M74 stays OPEN
+
+Probed (`tools/steptime/prototypes/m74_0/`, `FINDINGS.md`) on the tray plant,
+one key moved at a time from the file's settings, each converged column's
+flows, compositions and K-values recorded before and after, and the
+composition response with holdup computed offline (linear, the flows and
+K-values held): each tray 2.0–4.8 t from M73's geometry (45 t on the twelve),
+the base 8.7 t, the reflux drum 6.8 t on Kister's sizing (Table 15.2) or
+34 t on the other reading of the rule. The side products 90 % of the way in
+1–4 minutes; the top product 90 % in 8–15 minutes on Kister's drum, 27–40 on
+the large one — the drum sets its pace. The settled column is today's (2e-6);
+implicit Euler at the 0.1 s tick within 1.1e-4 of the exact response; the
+heat a running column's liquid stores under 1 MW, left out. A start from
+empty by hand: 60 t to fill (10 minutes of feed), 48 GJ to warm (40 minutes
+at the furnace's 20 MW). No engine code changed.
+
+Next: M74.1.0, a second probe — which stream holds each level (the user's
+decision, Kister ch. 16), the trays' liquid against their flow, and the
+column's stored mass on each key move.

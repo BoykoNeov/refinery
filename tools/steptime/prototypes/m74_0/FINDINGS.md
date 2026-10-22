@@ -86,7 +86,10 @@ answer a key, then the start from an empty column. No engine code changed.
    the reboiler makes up the difference, as M73.0 found for the trays).
 5. **The settled column is today's.** The model with holdup settles on the
    AFTER state to 2e-6 or better in mole fraction (to 2e-11 on the furnace
-   steps): holdup changes the path, not where it ends. So the shipped plants'
+   steps): holdup changes the path, not where it ends. **Under a fixed
+   holdup** — the user then chose liquid that follows the flow (DESIGN §79),
+   under which this holds only if the streams holding the column's levels
+   settle on today's specifications (§79.1, scheme A). So the shipped plants'
    steady answers carry over — a check, not an assumption, for the building
    slices. The screen's measured tables carry over in their end states, but
    measuring them on a plant with holdup costs about ten times the ticks:

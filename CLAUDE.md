@@ -189,7 +189,7 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none** — M73 closed; the next is the user's choice.
+Work only on the current milestone unless asked. **Current: M74** — a column that holds liquid (C2): the trays' liquid following the flow, the reflux drum and base declared, then the start from empty (DESIGN §79).
 **Latest closed: M73 (2026-10-22)**: trays that flood or weep (C1) — sieve trays sized per section, each stage at its own pressure, the drop capped past flood, the multipass layout on Nutter's (C21); the tray plant on key 7 with its measured table; every plant byte-identical (DESIGN §78). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
