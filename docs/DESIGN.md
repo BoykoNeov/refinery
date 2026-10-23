@@ -30808,3 +30808,74 @@ tray plant's draws run straight to their tanks, and M74.4's plant is its
 copy; `Graph::draw_lines` lists only draws with a non-empty `line`, "empty
 on every plant whose draws end at their stores") — the write mirrors
 `engine.rs`'s, which the no-feed run catches.
+
+### 79.6 M74.3b built — a column's loops stop with its feed (the user's option 2)
+
+**Decided (2026-10-23), the user**: of §79.5's three choices for the feed
+shut in one tick, option 2 — the feed's loss cutting the loops and the
+reflux, as an operator's or an interlock's first action. Probed before
+building (`m74_3_probe`, `M74_CUT`, the cuts made by command on the cut's
+tick), the slice is narrower than the words:
+
+1. **The loops are what the column needs, not the reflux.** With the loops
+   cut, the column gets through its first tick with no feed; with the reflux
+   alone cut it is refused as before (stage 3's vapour to zero). With both
+   cut it runs (after 4 below) but the drum, nothing taking its condensate
+   back down, fills and passes it all on: the distillate at 209 kg/s, twice
+   the feed that was. **Built: the loops stop; the reflux runs** — the
+   drum's level loop takes the column's boil-up off as distillate.
+2. **At a shut valve, not a threshold.** A cut at a fifth of the feed
+   fires on the two-minute ramp and gets through; at a twentieth it never
+   fires before the refusal; at zero, once 3–5 are built, the ramp runs. The
+   stop is the feed at zero, the tick the column's `fractionate_at` already
+   reads as idle.
+3. **Automatic, both ways.** The loops stop with the feed and run again
+   with it, at their declared flows: the plan a column without feed steps
+   on carries no loops, and the next fed tick's plan carries them again.
+   No latch (E15's manual reset is a trip's; a stopped loop here is the
+   column's own state, as the base running dry is) — the player's loop keys
+   are untouched.
+
+What building it found, each a wall the probe reached in turn:
+
+4. **The trays' drops swung** (13 s after the cut): the reboiler's whole
+   86 MW up the column, its top vapour near twice its normal, the drops'
+   plain re-solve within the tick (§79.4's implicit lag) swung with a gain
+   near −0.9 a solve — a two-cycle shrinking 12 % a solve, 25 solves short.
+   Now, on a column that holds liquid only, each re-solve steps
+   `β·(next − drops)`, `β` the secant on the residual along the last step,
+   clamped to [0.05, 2] (`heat_balance::relaxed`; a linear swing closes in
+   three solves). Every column without holdup re-solves as M73.2.
+5. **A tray short of its draws** (the feed back in one tick, or the reflux
+   cut at 43 s): the side draws at their rate from the first fed tick on
+   trays the cut drained, and the tray's within-tick answer (§79.4) pushes
+   its liquid over the weir below them — refused before. Now it sends
+   nothing down, its draws from what it holds; a tray truly empty is still
+   "ran out of liquid".
+6. **A loop at zero circulation** (the feed back, its draw tray drained):
+   its return's enthalpy divided by its flow. Now it returns its drawn
+   liquid and cools nothing (`CascadePlan::loop_returns`); a running loop's
+   arithmetic is as before.
+7. **Without holdup**: the idle return now reports each loop at zero flow,
+   drawing the feed's placeholder (the engine refused a loop's line with no
+   run, M72) — DEFERRED C26's first clause.
+
+Measured (`column_holdup.rs`): the tray plant without holdup, the feed shut
+and opened in one tick, its loops still while it idles and back at their
+flows; with holdup, the feed shut in one tick — the loops still, the base
+dry within two minutes, the reboiler throttled from 86.2 to 67.7 MW — and
+opened again after two: the loops back at their flows, the base at 0.502 and
+the drum 0.458 five minutes on, lined out (within 0.01 of half) at about 30.
+The no-feed ramp test (§79.5 finding 4) now drains with its loops stopped:
+the distillate 43.6 kg/s, the heat to 73 W. Every shipped plant
+byte-identical, 69 of 69 on both fidelities (baselines built on Linux from
+HEAD, not the user's Windows ones).
+
+Still open: the furnace left firing on no flow ruptures its coil and the
+leak on the transfer line refuses the plant ("leaves column … names no
+draw"), not traced — DEFERRED C27. The settled solve's refusal message
+("could not settle with its reboiler held … outside the range") also
+headed §79.6's finding 4 on a stepped column, where it misleads.
+
+Mutations: seven, all caught.
+

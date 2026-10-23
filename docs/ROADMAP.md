@@ -11121,3 +11121,20 @@ since M74.1 on a 1-ulp Linux difference in M74.1's own test, fixed.
 Mutations: twenty, nineteen caught, one argued (the draw-line write, on no
 plant that holds liquid). Next: the user's call on the feed cut, then M74.4
 (the plant, key 8, its table).
+
+### M74.3b — **DONE** 2026-10-23: a column's loops stop with its feed — the user's option 2
+
+**Decided (2026-10-23), the user**: option 2 of §79.5 — the feed's loss
+cutting the loops and the reflux. Probed first: the loops are what the
+column needs (the reflux cut floods the drum, the distillate to 209 kg/s),
+at a shut valve rather than a threshold, both ways automatically. Built
+(DESIGN §79.6): a column that holds liquid steps with no feed on a plan
+without its loops, and its idle cousin without holdup reports them at zero
+(C26 closed); three walls behind it fixed — the trays' drops relaxed by a
+secant on holdup columns (a −0.9 swing), a tray short of its draws sends
+nothing down, a loop at zero circulation cools nothing. Measured: the feed
+shut and opened in one tick on both, the column with holdup drained (base
+dry, reboiler 86 → 68 MW) and lined out again in about 30 minutes. Every
+shipped plant byte-identical, 69 of 69 on both fidelities. Mutations:
+seven, all caught. Open: C27 (a ruptured coil's leak refuses the column). Next:
+M74.4 (the plant, key 8, its table).
