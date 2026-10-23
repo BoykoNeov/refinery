@@ -30798,4 +30798,10 @@ the drum's composition with the naphtha draw's to the bit; on Linux one
 fraction differs in its last place (equal on Windows) — CI red from M74.1.
 Compared to 1e-15 now.
 
-Mutations: the pass is running.
+Mutations: twenty — nineteen caught (two on a second pass: the dry drum's
+reflux, now read off the drum's moles, `R = V₁ − D − Δn/dt`; the no-feed
+energy scale, now by the heat closing with no feed, 94 W on its 86 MW),
+one argued: the draw-line write in `energy.rs` serves a draw that leaves
+through a line of pipes, and no column that can hold liquid has one (the
+tray plant's draws run straight to their tanks, and M74.4's plant is its
+copy) — the write mirrors `engine.rs`'s, which the no-feed run catches.

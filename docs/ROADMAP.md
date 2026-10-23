@@ -11118,5 +11118,6 @@ loops and reflux taking heat the feed no longer brings (§79.2's run-time
 `Err`); the tray plant without holdup refuses the same cut for an older
 reason (an idle column reports no run for its loops, M72). Also: CI red
 since M74.1 on a 1-ulp Linux difference in M74.1's own test, fixed.
-Mutations: the pass is running. Next: the user's call on the feed cut, then M74.4
+Mutations: twenty, nineteen caught, one argued (the draw-line write, on no
+plant that holds liquid). Next: the user's call on the feed cut, then M74.4
 (the plant, key 8, its table).

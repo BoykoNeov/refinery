@@ -601,9 +601,7 @@ fn the_heat_is_conserved_every_tick() {
     let cp: Vec<f64> = (0..engine.slate.len())
         .map(|c| engine.slate.get(c).cp.value())
         .collect();
-    let lines = draw_edges(&engine);
     engine.tick().unwrap();
-    let dt = 0.1;
     let mut worst: f64 = 0.0;
     for t in 0..400 {
         if t == 100 {
@@ -611,40 +609,53 @@ fn the_heat_is_conserved_every_tick() {
         }
         let before = held_heat(&state(&engine).unwrap(), &cp);
         engine.tick().unwrap();
-        let held = state(&engine).unwrap();
-        let after = held_heat(&held, &cp);
-        let snapshot = engine.snapshot();
-        let node = snapshot.nodes.iter().find(|n| n.name == "column").unwrap();
-        let duty = node.column_duty.unwrap();
-        let op = node.column_operation.clone().unwrap();
-        let carried = |edge, t: f64| {
-            let e = snapshot.edges.iter().find(|e| e.id == edge).unwrap();
-            let cp_mix: f64 = e
-                .stream
-                .composition
-                .fractions()
-                .iter()
-                .zip(&cp)
-                .map(|(w, c)| w * c)
-                .sum();
-            e.stream.mass_flow.value() * cp_mix * (t - 273.15)
-        };
-        let mut balance = duty.reboiler_w + carried(feed, node.temperature_k)
-            - duty.condenser_w
-            - op.loops.iter().map(|l| l.duty_w).sum::<f64>()
-            - (after - before) / dt;
-        for (stage, edge) in &lines {
-            let t = match stage {
-                0 => held.drum_temperature.value(),
-                stage => held.stage_temperature[stage - 1].value(),
-            };
-            balance -= carried(*edge, t);
-        }
-        worst = worst.max(balance.abs());
+        worst = worst.max(heat_imbalance(&engine, before, &cp, feed).abs());
     }
     // Measured 4.6 W. Each stage's balance is met to the step's tolerance
     // times the column's duty scale, about 1.4 W, so thirteen stages to 18 W.
     assert!(worst < 20.0, "{worst}");
+}
+
+/// The column's heat books over the tick just run [W]: the reboiler and the
+/// feed less the products, the condenser and the loops' coolers, less what
+/// its liquid came to hold (`before`, the held heat at the tick's start).
+fn heat_imbalance(
+    engine: &Engine,
+    before: f64,
+    cp: &[f64],
+    feed: refinery_core::graph::EdgeId,
+) -> f64 {
+    let dt = 0.1;
+    let held = state(engine).unwrap();
+    let after = held_heat(&held, cp);
+    let snapshot = engine.snapshot();
+    let node = snapshot.nodes.iter().find(|n| n.name == "column").unwrap();
+    let duty = node.column_duty.unwrap();
+    let op = node.column_operation.clone().unwrap();
+    let carried = |edge, t: f64| {
+        let e = snapshot.edges.iter().find(|e| e.id == edge).unwrap();
+        let cp_mix: f64 = e
+            .stream
+            .composition
+            .fractions()
+            .iter()
+            .zip(cp)
+            .map(|(w, c)| w * c)
+            .sum();
+        e.stream.mass_flow.value() * cp_mix * (t - 273.15)
+    };
+    let mut balance = duty.reboiler_w + carried(feed, node.temperature_k)
+        - duty.condenser_w
+        - op.loops.iter().map(|l| l.duty_w).sum::<f64>()
+        - (after - before) / dt;
+    for (stage, edge) in draw_edges(engine) {
+        let t = match stage {
+            0 => held.drum_temperature.value(),
+            stage => held.stage_temperature[stage - 1].value(),
+        };
+        balance -= carried(edge, t);
+    }
+    balance
 }
 
 /// **More liquid over a weir stands higher**: the reflux from 4 to 5, the
@@ -922,6 +933,22 @@ fn a_dry_drum_sends_out_in_proportion() {
     let settled = state(&engine).unwrap().settled_distillate.value();
     put_drum(&mut engine, reading(&first).drum_level, 0.05);
     state_mut(&mut engine).drum_integral = 1.5;
+    let mw: Vec<f64> = (0..engine.slate.len())
+        .map(|c| engine.slate.get(c).molar_mass.value())
+        .collect();
+    let moles = |mass: f64, composition: &Composition| -> f64 {
+        composition
+            .fractions()
+            .iter()
+            .zip(&mw)
+            .map(|(w, m)| mass * w / m)
+            .sum()
+    };
+    let drum_moles = |e: &Engine| {
+        let held = state(e).unwrap();
+        moles(held.drum_liquid.value(), &held.drum_composition)
+    };
+    let drum_before = drum_moles(&engine);
     let dry = run(&mut engine, 1);
     let read = reading(&dry);
     assert_eq!(read.drum_limit, LevelLimit::Dry);
@@ -937,6 +964,24 @@ fn a_dry_drum_sends_out_in_proportion() {
         "{distillate} kg/s against {expected}"
     );
     assert_eq!(state(&engine).unwrap().drum_integral, 1.5);
+    // The reflux pump shares the drum's suction: the reflux, off the drum's
+    // moles (R = V₁ − D − Δn/dt), stays the reflux ratio times the
+    // distillate.
+    let naphtha = dry.edges.iter().find(|e| e.name == "naphtha_draw").unwrap();
+    let distillate_mol = moles(
+        naphtha.stream.mass_flow.value(),
+        &naphtha.stream.composition,
+    );
+    let node = dry.nodes.iter().find(|n| n.name == "column").unwrap();
+    let op = node.column_operation.as_ref().unwrap();
+    let reflux_mol =
+        op.stage_vapour_mol_s[0] - distillate_mol - (drum_moles(&engine) - drum_before) / 0.1;
+    let ratio = reflux_mol / distillate_mol;
+    println!(
+        "M74_3 dry drum: reflux ratio {ratio} against {}",
+        op.reflux_ratio
+    );
+    assert!((ratio / op.reflux_ratio - 1.0).abs() < 1.0e-3, "{ratio}");
 }
 
 /// **A drum or base past full passes its excess on with its product within
@@ -1051,8 +1096,19 @@ fn slow_a_column_with_no_feed_goes_on_boiling_and_draining() {
         .into_iter()
         .map(|(_, edge)| edge)
         .collect();
+    let feed = engine
+        .snapshot()
+        .edges
+        .iter()
+        .find(|e| e.name == "transfer_line")
+        .unwrap()
+        .id;
+    let cp: Vec<f64> = (0..engine.slate.len())
+        .map(|c| engine.slate.get(c).cp.value())
+        .collect();
     let dt = 0.1;
     let mut worst: f64 = 0.0;
+    let mut worst_heat: f64 = 0.0;
     let mut start = 0.0;
     let mut snapshot = engine.snapshot();
     for t in 0..1800 {
@@ -1064,8 +1120,12 @@ fn slow_a_column_with_no_feed_goes_on_boiling_and_draining() {
             })
             .unwrap();
         let before = inventory(&state(&engine).unwrap());
+        let heat_before = held_heat(&state(&engine).unwrap(), &cp);
         snapshot = run(&mut engine, 1);
         let after = inventory(&state(&engine).unwrap());
+        if t >= 599 {
+            worst_heat = worst_heat.max(heat_imbalance(&engine, heat_before, &cp, feed).abs());
+        }
         let feed = line_flow(&snapshot, "transfer_line");
         if t == 599 {
             start = after.iter().sum();
@@ -1095,6 +1155,11 @@ fn slow_a_column_with_no_feed_goes_on_boiling_and_draining() {
         "the column kept what it held: {start} -> {end}"
     );
     assert!(worst < 1.0e-8, "{worst}");
+    // The heat too, its balances scaled on the settled reboiler's duty with
+    // no feed to scale them on.
+    println!("M74_3 no feed: the heat to {worst_heat} W");
+    // Measured 94 W: 1e-6 of the 86 MW its balances are scaled on.
+    assert!(worst_heat < 200.0, "{worst_heat}");
 }
 
 /// **A base run dry boils only what reaches it, and comes back** (§79.2, the
