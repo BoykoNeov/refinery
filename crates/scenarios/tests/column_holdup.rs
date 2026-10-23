@@ -17,9 +17,12 @@ const LOOP_PLANT: &str = include_str!("../../../scenarios/crude_unit_loops.toml"
 const CASCADE_PLANT: &str = include_str!("../../../scenarios/crude_column_cascade.toml");
 const WET_PLANT: &str = include_str!("../../../scenarios/crude_unit_wet.toml");
 const STRIPPED_PLANT: &str = include_str!("../../../scenarios/crude_unit_stripped.toml");
+const HOLDUP_PLANT: &str = include_str!("../../../scenarios/crude_unit_holdup.toml");
 
-/// The fixture's holdup: the drum and the base as M74.4 will size them, near
-/// enough — the numbers matter here only through the half-full start.
+/// The fixture's holdup: the drum and the base near the sizes M74.4 gave
+/// the shipped plant (`crude_unit_holdup.toml`, 18.7 and 115 m³) — the
+/// tests here were tuned on these, and the numbers matter mostly through the
+/// half-full start.
 const HOLDUP: &str = "holdup = { drum_m3 = 20.0, base_m3 = 60.0, reboiler = \"held\" }";
 
 /// `src` with `line` added to its column's cascade block, after the block's
@@ -1522,4 +1525,73 @@ fn slow_the_feed_shut_and_opened_in_one_tick_with_holdup() {
     assert_eq!(read.base_limit, LevelLimit::Normal);
     assert_eq!(read.drum_limit, LevelLimit::Normal);
     assert_eq!(reboiler_w(&back), held_duty);
+}
+
+/// The file's body from its `[meta]` table on, without the header's comments.
+fn body(src: &str) -> String {
+    let src = src.replace("\r\n", "\n");
+    src[src.find("[meta]").expect("a [meta] table")..].to_string()
+}
+
+/// **The holdup plant is the tray plant holding its liquid** (M74.4,
+/// DESIGN §79.7): `crude_unit_holdup.toml` is `crude_unit_trays.toml` but
+/// for its name, its description and the one holdup line — the drum 4.5
+/// minutes of the distillate and the base 20 minutes of the bottoms at their
+/// normal levels, the reboiler held — so every tray-plant test speaks for
+/// its column's sizes, and every fixture test here for its holdup.
+#[test]
+fn the_holdup_plant_is_the_tray_plant_holding_its_liquid() {
+    let line = "holdup = { drum_m3 = 18.7, base_m3 = 115.0, reboiler = \"held\" }";
+    let tray = body(TRAY_PLANT);
+    let meta = |src: &str| -> (String, String) {
+        let file = load_str(src).expect("parses");
+        (file.meta.name.clone(), file.meta.description.clone())
+    };
+    let (name, description) = meta(HOLDUP_PLANT);
+    let (tray_name, tray_description) = meta(TRAY_PLANT);
+    assert_eq!(name, "crude_unit_holdup");
+    let held = body(HOLDUP_PLANT)
+        .replace(&name, &tray_name)
+        .replace(&description, &tray_description);
+    assert_eq!(held, body(&with_line(&tray, line)));
+    let engine = engine_of(HOLDUP_PLANT).expect("builds");
+    let node = engine.graph.find_node("column").unwrap();
+    let NodeKind::Column {
+        cascade: Some(spec),
+        ..
+    } = &engine.graph.node(node).kind
+    else {
+        panic!("the column is a cascade column");
+    };
+    let holdup = spec.holdup.as_ref().expect("the holdup is declared");
+    assert_eq!(holdup.drum_volume.value(), 18.7);
+    assert_eq!(holdup.base_volume.value(), 115.0);
+    assert!(holdup.start_held);
+}
+
+/// The holdup plant run `ticks` on `solver`: its levels at the end.
+fn the_holdup_plant_runs(solver: &str, ticks: u32) {
+    let src = HOLDUP_PLANT.replace("flow = \"newton\"", &format!("flow = \"{solver}\""));
+    let mut engine = engine_of(&src).expect("builds");
+    let snapshot = run(&mut engine, ticks);
+    let held = reading(&snapshot);
+    assert!(held.reboiler_held, "{solver}");
+    assert_eq!(held.drum_limit, LevelLimit::Normal, "{solver}");
+    assert_eq!(held.base_limit, LevelLimit::Normal, "{solver}");
+    for level in [held.drum_level, held.base_level] {
+        assert!((level - 0.5).abs() < 0.02, "{solver}: a level at {level}");
+    }
+}
+
+/// **The holdup plant runs** on both flow solvers, its levels on their
+/// normal marks from its start (the file's settings settle where its first
+/// tick filled it).
+#[test]
+fn the_holdup_plant_runs_newton() {
+    the_holdup_plant_runs("newton", 300);
+}
+
+#[test]
+fn the_holdup_plant_runs_simple() {
+    the_holdup_plant_runs("simple", 300);
 }

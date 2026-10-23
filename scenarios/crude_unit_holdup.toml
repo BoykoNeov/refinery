@@ -1,0 +1,315 @@
+# M74.4 plant: the tray plant holding its liquid (docs/DESIGN.md §79, ledger
+# row C2).
+#
+# `crude_unit_trays.toml` (untouched) — the same crude, furnace, column on
+# six sections of four-pass sieve trays, draws and three pumparound loops —
+# with its liquid held: each tray's on its deck and in its downcomer, the
+# reflux drum's and the base's. The column now stores and gives up mass as
+# its keys move, so its products take minutes to answer a key, not a tick.
+#
+# - THE HOLDUP (§79.2): filled on the first tick from the settled column, each
+#   tray at its loads, the drum and the base half full; each tick after, one
+#   implicit step from the last (§79.4).
+# - THE SIZES, on this file's settings: the drum 4.5 minutes of the
+#   distillate at its normal level (Kister, *Distillation Operation*, 1990,
+#   Table 15.2, p. 482-483) — 22.8 kg/s of 659 kg/m3 liquid, 18.7 m3; the base
+#   20 minutes of the bottoms (§79.1, decided) — 29.0 kg/s of 604 kg/m3,
+#   115 m3. The trays hold about 45 t, the drum 6 t, the base 35 t.
+# - THE LEVELS (scheme B, Kister Fig. 16.4a, the user's decision): the
+#   distillate holds the drum's level, the bottoms the base's; the reboiler
+#   held at the duty its first tick settled on. Freed (the screen's reboiler
+#   key), it holds the base's level itself (A). At a tenth of either working
+#   volume the drum's reflux or the base's reboiler runs short in
+#   proportion; past full the excess leaves with the product (§79.5).
+# - THE FEED SHUT: the loops stop with it and start again with it (§79.6).
+
+[meta]
+name = "crude_unit_holdup"
+description = "The tray plant holding its liquid: the trays, the reflux drum and the base store mass, the distillate and the bottoms hold their levels, and the products answer a key over minutes."
+
+[simulation]
+dt = 0.1
+
+[[components]]
+name = "light_naphtha"
+tb_c = 70.0
+molar_mass_kg_per_mol = 0.095
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.13
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[[components]]
+name = "kerosene"
+tb_c = 220.0
+molar_mass_kg_per_mol = 0.17
+density_kg_per_m3 = 800.0
+cp_j_per_kg_k = 2050.0
+
+[[components]]
+name = "diesel"
+tb_c = 300.0
+molar_mass_kg_per_mol = 0.22
+density_kg_per_m3 = 850.0
+cp_j_per_kg_k = 2000.0
+
+[[components]]
+name = "gas_oil"
+tb_c = 380.0
+molar_mass_kg_per_mol = 0.3
+density_kg_per_m3 = 900.0
+cp_j_per_kg_k = 1950.0
+
+[[components]]
+name = "residue"
+tb_c = 560.0
+molar_mass_kg_per_mol = 0.55
+density_kg_per_m3 = 980.0
+cp_j_per_kg_k = 1850.0
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+separation = "heat_balance"
+reactions = "none"
+boiloff = "none"
+
+[nodes.crude_source]
+type = "source"
+pressure_bar = 30.0
+temperature_c = 270.0
+composition = { light_naphtha = 0.08, heavy_naphtha = 0.14, kerosene = 0.16, diesel = 0.20, gas_oil = 0.14, residue = 0.28 }
+
+[nodes.furnace]
+type = "furnace"
+duty_mw = 20.0
+coil_heat_capacity_mj_per_k = 45.0
+coil_ua_kw_per_k = 600
+coil_temperature_c = 359.5
+flame_temperature_c = 1951.1
+tube_failure_c = 550.0
+tube_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 42.686
+
+[nodes.column]
+type = "column"
+pressure_bar = 1.8
+draws = [
+    { outlet = "naphtha_tank", stage = 0, draw_ratio = 0.22 },
+    { outlet = "kerosene_tank", stage = 4, draw_ratio = 0.16 },
+    { outlet = "diesel_tank", stage = 7, draw_ratio = 0.2 },
+    { outlet = "gas_oil_tank", stage = 10, draw_ratio = 0.14 },
+    { outlet = "residue_tank", stage = 13 },
+]
+
+[nodes.column.cascade]
+stages = 13
+feed_stage = 11
+reflux_ratio = 4.0
+holdup = { drum_m3 = 18.7, base_m3 = 115.0, reboiler = "held" }
+trays = [
+    { from = 1, to = 2, diameter_m = 5.9, spacing_m = 0.76, weir_height_m = 0.05, hole_diameter_m = 0.005, hole_area_share = 0.10, downcomer_share = 0.18, clearance_m = 0.045, passes = 4 },
+    { from = 3, to = 5, diameter_m = 7.3, spacing_m = 0.76, weir_height_m = 0.05, hole_diameter_m = 0.005, hole_area_share = 0.15, downcomer_share = 0.22, clearance_m = 0.045, passes = 4 },
+    { from = 6, to = 8, diameter_m = 8.4, spacing_m = 0.76, weir_height_m = 0.05, hole_diameter_m = 0.005, hole_area_share = 0.15, downcomer_share = 0.24, clearance_m = 0.045, passes = 4 },
+    { from = 9, to = 10, diameter_m = 8.5, spacing_m = 0.76, weir_height_m = 0.05, hole_diameter_m = 0.005, hole_area_share = 0.12, downcomer_share = 0.18, clearance_m = 0.045, passes = 4 },
+    { from = 11, to = 11, diameter_m = 7.0, spacing_m = 0.76, weir_height_m = 0.05, hole_diameter_m = 0.005, hole_area_share = 0.12, downcomer_share = 0.18, clearance_m = 0.045, passes = 4 },
+    { from = 12, to = 12, diameter_m = 8.5, spacing_m = 0.76, weir_height_m = 0.05, hole_diameter_m = 0.005, hole_area_share = 0.15, downcomer_share = 0.28, clearance_m = 0.045, passes = 4 },
+]
+loops = [
+    { draw_stage = 4, return_stage = 3, outlet = "kero_pa_pump", flow_kg_per_s = 85.0, return_temperature_c = 150.0, cooler_capacity_mw = 30.0, start_duty_mw = 15.0 },
+    { draw_stage = 7, return_stage = 6, outlet = "diesel_pa_pump", flow_kg_per_s = 95.0, return_temperature_c = 215.0, cooler_capacity_mw = 30.0, start_duty_mw = 15.0 },
+    { draw_stage = 10, return_stage = 9, outlet = "gas_oil_pa_pump", flow_kg_per_s = 65.0, return_temperature_c = 270.0, cooler_capacity_mw = 30.0, start_duty_mw = 10.0 },
+]
+
+[nodes.naphtha_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { light_naphtha = 1.0 }
+
+[nodes.kerosene_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { kerosene = 1.0 }
+
+[nodes.diesel_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { diesel = 1.0 }
+
+[nodes.gas_oil_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { gas_oil = 1.0 }
+
+[nodes.residue_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { residue = 1.0 }
+
+[nodes.kero_pa_pump]
+type = "pump"
+h0_m = 60.0
+a = 1000.0
+on = true
+
+[nodes.kero_pa_cooler]
+type = "cooler"
+duty_mw = 0.0
+
+[nodes.diesel_pa_pump]
+type = "pump"
+h0_m = 60.0
+a = 1000.0
+on = true
+
+[nodes.diesel_pa_cooler]
+type = "cooler"
+duty_mw = 0.0
+
+[nodes.gas_oil_pa_pump]
+type = "pump"
+h0_m = 60.0
+a = 1000.0
+on = true
+
+[nodes.gas_oil_pa_cooler]
+type = "cooler"
+duty_mw = 0.0
+
+[[pipes]]
+name = "crude_line"
+from = "crude_source"
+to = "furnace"
+length_m = 30.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "transfer_line"
+from = "furnace"
+to = "column"
+length_m = 15.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "naphtha_draw"
+from = "column"
+to = "naphtha_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "kerosene_draw"
+from = "column"
+to = "kerosene_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "diesel_draw"
+from = "column"
+to = "diesel_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "gas_oil_draw"
+from = "column"
+to = "gas_oil_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "residue_draw"
+from = "column"
+to = "residue_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "kero_pa_suction"
+from = "column"
+to = "kero_pa_pump"
+length_m = 20.0
+diameter_m = 0.3
+elevation_change_m = -15.0
+
+[[pipes]]
+name = "kero_pa_discharge"
+from = "kero_pa_pump"
+to = "kero_pa_cooler"
+length_m = 30.0
+diameter_m = 0.3
+
+[[pipes]]
+name = "kero_pa_return"
+from = "kero_pa_cooler"
+to = "column"
+length_m = 30.0
+diameter_m = 0.3
+elevation_change_m = 15.6
+
+[[pipes]]
+name = "diesel_pa_suction"
+from = "column"
+to = "diesel_pa_pump"
+length_m = 20.0
+diameter_m = 0.3
+elevation_change_m = -15.0
+
+[[pipes]]
+name = "diesel_pa_discharge"
+from = "diesel_pa_pump"
+to = "diesel_pa_cooler"
+length_m = 30.0
+diameter_m = 0.3
+
+[[pipes]]
+name = "diesel_pa_return"
+from = "diesel_pa_cooler"
+to = "column"
+length_m = 30.0
+diameter_m = 0.3
+elevation_change_m = 15.6
+
+[[pipes]]
+name = "gas_oil_pa_suction"
+from = "column"
+to = "gas_oil_pa_pump"
+length_m = 20.0
+diameter_m = 0.3
+elevation_change_m = -15.0
+
+[[pipes]]
+name = "gas_oil_pa_discharge"
+from = "gas_oil_pa_pump"
+to = "gas_oil_pa_cooler"
+length_m = 30.0
+diameter_m = 0.3
+
+[[pipes]]
+name = "gas_oil_pa_return"
+from = "gas_oil_pa_cooler"
+to = "column"
+length_m = 30.0
+diameter_m = 0.3
+elevation_change_m = 15.6

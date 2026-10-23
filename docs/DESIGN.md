@@ -30879,3 +30879,31 @@ headed §79.6's finding 4 on a stepped column, where it misleads.
 
 Mutations: seven, all caught.
 
+### 79.7 M74.4a built — the plant: `crude_unit_holdup.toml`
+
+The tray plant (`crude_unit_trays.toml`, untouched) with one line added to
+its cascade block, its name and description its own:
+
+```toml
+holdup = { drum_m3 = 18.7, base_m3 = 115.0, reboiler = "held" }
+```
+
+Sized on the file's settings as §79.2 decided, from the column's first
+tick: the distillate 22.8 kg/s, its liquid 659 kg/m³ in the drum, so 4.5
+minutes of it at the normal (half) level is 18.7 m³ of working volume
+(Kister, *Distillation Operation*, Table 15.2); the bottoms 29.0 kg/s at
+604 kg/m³, so 20 minutes at half is 115 m³. The trays hold 44.8 t, the drum
+6.2 t and the base 34.7 t at the start. Scheme B (the reboiler held at the
+duty its first tick settles on, 86.7 MW). The M74.1–M74.3 fixture keeps its
+20 and 60 m³: its tests were tuned there.
+
+Tested (`column_holdup.rs`): the file is the tray plant but for its name,
+description and the holdup line, so every tray-plant and fixture test speaks
+for it; 300 ticks on each flow solver, the levels within 0.02 of half.
+The corpus's 6 000 ticks run on both fidelities (about 1.1 ms a tick); every
+other plant byte-identical, 69 of 69, the new one added (70).
+
+Next (M74.4b): the column screen's key 8 with a reboiler key — the cold
+plant's reboiler keys assume a region without a reboiler axis, so key 8
+takes its own branch — and the measured table, its grid sized from a
+sampled cost at the extremes and put to the user before launching.

@@ -11138,3 +11138,14 @@ dry, reboiler 86 → 68 MW) and lined out again in about 30 minutes. Every
 shipped plant byte-identical, 69 of 69 on both fidelities. Mutations:
 seven, all caught. Open: C27 (a ruptured coil's leak refuses the column). Next:
 M74.4 (the plant, key 8, its table).
+
+### M74.4a — **DONE** 2026-10-23: the plant — the tray plant holding its liquid
+
+`scenarios/crude_unit_holdup.toml` (DESIGN §79.7): the tray plant, untouched,
+with `holdup = { drum_m3 = 18.7, base_m3 = 115.0, reboiler = "held" }` — the
+drum 4.5 minutes of the distillate (Kister) and the base 20 minutes of the
+bottoms (decided) at their normal levels, on the file's settled flows.
+Tested to be the tray plant but for that line; runs on both flow solvers.
+Every other plant byte-identical, 69 of 69 on both fidelities, the new one
+the 70th. Next: M74.4b, the column screen's key 8 and its measured table
+(its grid's cost sampled and put to the user first).
