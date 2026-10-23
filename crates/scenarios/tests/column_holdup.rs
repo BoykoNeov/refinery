@@ -8,6 +8,8 @@ use refinery_core::components::Composition;
 use refinery_core::engine::Engine;
 use refinery_core::graph::{HoldupState, NodeKind};
 use refinery_core::snapshot::{Command, Snapshot};
+use refinery_core::traits::LevelLimit;
+use refinery_core::units::{Kg, Pascal, Watt};
 use refinery_scenarios::{build_engine, load_str};
 
 const TRAY_PLANT: &str = include_str!("../../../scenarios/crude_unit_trays.toml");
@@ -132,8 +134,17 @@ fn a_column_that_holds_liquid_starts_full() {
             .expect("a draw line into the tank");
         edge.stream.composition.clone()
     };
-    assert_eq!(held.drum_composition, drawn("naphtha_tank"));
-    assert_eq!(held.stage_composition[3], drawn("kerosene_tank"));
+    // To round-off, not the bit: the two are summed on different paths, and
+    // on Linux one fraction differs in its last place (equal on Windows) —
+    // CI red from M74.1 to M74.3.
+    let same = |a: &Composition, b: &Composition| {
+        a.fractions()
+            .iter()
+            .zip(b.fractions())
+            .all(|(x, y)| (x - y).abs() <= 1.0e-15 * x.abs().max(1.0e-300))
+    };
+    assert!(same(&held.drum_composition, &drawn("naphtha_tank")));
+    assert!(same(&held.stage_composition[3], &drawn("kerosene_tank")));
 }
 
 /// **A column without holdup writes no holdup key**: the shipped plants'
@@ -725,6 +736,522 @@ fn the_level_loops_hold_their_levels() {
             assert!(
                 reboiler_moved > 0.01,
                 "A's reboiler did not answer: {reboiler_moved}"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M74.3 — the toggle, the physical limits, the products' flows written by the
+// engine, a column with no feed (docs/DESIGN.md §79.5).
+// ---------------------------------------------------------------------------
+
+/// The column's holdup state, to change by hand: a level put where a test
+/// wants it.
+fn state_mut(engine: &mut Engine) -> &mut HoldupState {
+    let node = engine.graph.find_node("column").unwrap();
+    match &mut engine.graph.node_mut(node).kind {
+        NodeKind::Column {
+            cascade: Some(spec),
+            ..
+        } => spec
+            .holdup
+            .as_mut()
+            .and_then(|h| h.state.as_mut())
+            .expect("the first tick filled the state"),
+        _ => panic!("the column is a cascade column"),
+    }
+}
+
+fn set_hold(engine: &mut Engine, duty: Option<f64>) {
+    let node = engine.graph.find_node("column").unwrap();
+    engine
+        .apply(Command::SetReboilerDuty {
+            node,
+            duty: duty.map(refinery_core::units::Watt),
+        })
+        .unwrap();
+}
+
+/// A pipe's flow this tick [kg/s].
+fn line_flow(snapshot: &Snapshot, name: &str) -> f64 {
+    snapshot
+        .edges
+        .iter()
+        .find(|e| e.name == name)
+        .expect(name)
+        .stream
+        .mass_flow
+        .value()
+}
+
+fn reading(snapshot: &Snapshot) -> refinery_core::snapshot::HoldupOperation {
+    let node = snapshot.nodes.iter().find(|n| n.name == "column").unwrap();
+    node.column_operation
+        .as_ref()
+        .and_then(|op| op.holdup)
+        .expect("a column that holds liquid reads its holdup")
+}
+
+/// `settled × max(0, 1 + 2·e + I)`, `e` the level's departure from half full
+/// as a share of half (the step's level loops, `column_step`).
+fn loop_output(level: f64, integral: f64) -> f64 {
+    (1.0 + 2.0 * (level / 0.5 - 1.0) + integral).max(0.0)
+}
+
+/// The base's liquid scaled to stand at `level` of its volume, from what the
+/// last tick read.
+fn put_base(engine: &mut Engine, now: f64, level: f64) {
+    let held = state_mut(engine);
+    held.stage_liquid[12] = Kg(held.stage_liquid[12].value() * level / now);
+}
+
+fn put_drum(engine: &mut Engine, now: f64, level: f64) {
+    let held = state_mut(engine);
+    held.drum_liquid = Kg(held.drum_liquid.value() * level / now);
+}
+
+/// **Freed, the reboiler takes the base's level from the duty it was held
+/// at** (§79.2, the toggle): held at 0.95 of its first tick's duty for a
+/// minute, the base then put at 0.6 of its volume (so neither the duty's
+/// distance from settled nor the level's from half is zero), freed — its
+/// first free tick at the held duty to round-off; and the free reboiler holds
+/// the level after.
+#[test]
+fn freed_the_reboiler_starts_from_its_hold() {
+    let mut engine = engine_of(&fixture()).unwrap();
+    let first = run(&mut engine, 1);
+    let held_duty = 0.95 * reboiler_w(&first);
+    set_hold(&mut engine, Some(held_duty));
+    let before = run(&mut engine, 600);
+    assert!(reading(&before).reboiler_held);
+    assert_eq!(reboiler_w(&before), held_duty);
+    put_base(&mut engine, reading(&before).base_level, 0.6);
+    set_hold(&mut engine, None);
+    let freed = run(&mut engine, 1);
+    assert!(!reading(&freed).reboiler_held);
+    assert!(!state(&engine).unwrap().held);
+    assert!(
+        (reboiler_w(&freed) / held_duty - 1.0).abs() < 1.0e-12,
+        "{} W against {held_duty} W",
+        reboiler_w(&freed)
+    );
+    let later = run(&mut engine, 3000);
+    // Measured: the base from 0.6 back to 0.550 of its volume in five
+    // minutes — at least a third of the way.
+    let level = reading(&later).base_level;
+    assert!((level - 0.5).abs() < 0.067, "{level}");
+}
+
+/// **Held, the bottoms takes the base's level from the flow it ran** (§79.2,
+/// the toggle): free, the crude's supply pressure cut so the feed — and the
+/// bottoms, its share of it — moves off its first tick's; the base put at
+/// 0.6; held — the bottoms on its first held tick the flow it last ran, to
+/// the step's tolerance; and the held reboiler at its hold after.
+#[test]
+fn held_the_bottoms_starts_from_its_flow() {
+    let mut engine = engine_of(&fixture_free()).unwrap();
+    let first = run(&mut engine, 1);
+    let source = engine.graph.find_node("crude_source").unwrap();
+    engine
+        .apply(Command::SetReservoirPressure {
+            node: source,
+            pressure: Pascal(25.0e5),
+        })
+        .unwrap();
+    let before = run(&mut engine, 300);
+    let bottoms = line_flow(&before, "residue_draw");
+    let moved = bottoms / line_flow(&first, "residue_draw") - 1.0;
+    assert!(moved.abs() > 0.01, "the feed did not move: {moved}");
+    put_base(&mut engine, reading(&before).base_level, 0.6);
+    let duty = reboiler_w(&before);
+    set_hold(&mut engine, Some(duty));
+    let held = run(&mut engine, 1);
+    assert!(reading(&held).reboiler_held);
+    assert!(state(&engine).unwrap().held);
+    let first_held = line_flow(&held, "residue_draw");
+    assert!(
+        (first_held / bottoms - 1.0).abs() < 1.0e-6,
+        "{first_held} kg/s against {bottoms} kg/s"
+    );
+    let later = run(&mut engine, 3000);
+    assert_eq!(reboiler_w(&later), duty);
+    // Measured: from 0.6 back to 0.557 in five minutes.
+    let level = reading(&later).base_level;
+    assert!((level - 0.5).abs() < 0.067, "{level}");
+}
+
+/// **A base below its low level boils in proportion** (§79.2, the physical
+/// limits): held, its loop's integral set to +1.5 (so the bottoms' loop is
+/// not pinned at zero), the base put at a twentieth of its volume — the
+/// reboiler boils at its hold times the level over `LOW_LEVEL` (a tenth),
+/// the base reads `"dry"`, and the loop's integral stands.
+#[test]
+fn a_dry_base_boils_in_proportion() {
+    let mut engine = engine_of(&fixture()).unwrap();
+    let first = run(&mut engine, 100);
+    let held_duty = reboiler_w(&first);
+    put_base(&mut engine, reading(&first).base_level, 0.05);
+    state_mut(&mut engine).base_integral = 1.5;
+    let dry = run(&mut engine, 1);
+    let read = reading(&dry);
+    assert_eq!(read.base_limit, LevelLimit::Dry);
+    assert_eq!(read.drum_limit, LevelLimit::Normal);
+    assert!(
+        (read.base_level - 0.05).abs() < 1.0e-4,
+        "{}",
+        read.base_level
+    );
+    let share = reboiler_w(&dry) / held_duty;
+    assert!(
+        (share - read.base_level / 0.1).abs() < 1.0e-12,
+        "{share} against {}",
+        read.base_level / 0.1
+    );
+    assert_eq!(state(&engine).unwrap().base_integral, 1.5);
+}
+
+/// **A drum below its low level sends out in proportion** (§79.2): its
+/// loop's integral set to +1.5, the drum put at a twentieth of its volume —
+/// the distillate its loop's output times the level over `LOW_LEVEL`, the
+/// drum `"dry"`, its integral standing.
+#[test]
+fn a_dry_drum_sends_out_in_proportion() {
+    let mut engine = engine_of(&fixture()).unwrap();
+    let first = run(&mut engine, 100);
+    let settled = state(&engine).unwrap().settled_distillate.value();
+    put_drum(&mut engine, reading(&first).drum_level, 0.05);
+    state_mut(&mut engine).drum_integral = 1.5;
+    let dry = run(&mut engine, 1);
+    let read = reading(&dry);
+    assert_eq!(read.drum_limit, LevelLimit::Dry);
+    assert_eq!(read.base_limit, LevelLimit::Normal);
+    let expected = settled * loop_output(read.drum_level, 1.5) * read.drum_level / 0.1;
+    let distillate = line_flow(&dry, "naphtha_draw");
+    assert!(expected > 0.0);
+    // To 1e-4, not round-off: the flow is set in moles at the drum's
+    // start-of-tick composition and carried at its end-of-tick one, which a
+    // drum a tenth of its normal holdup moves the more (measured 1.8e-5).
+    assert!(
+        (distillate / expected - 1.0).abs() < 1.0e-4,
+        "{distillate} kg/s against {expected}"
+    );
+    assert_eq!(state(&engine).unwrap().drum_integral, 1.5);
+}
+
+/// **A drum or base past full passes its excess on with its product within
+/// the tick** (§79.2): put at 1.2 of its volume, its product carries its
+/// loop's output plus the sixth of what it holds over full in the tick, it
+/// reads `"full"`, its loop's integral stands, and the next tick finds it at
+/// full.
+#[test]
+fn a_full_drum_or_base_passes_its_excess_on() {
+    for (vessel, line) in [("drum", "naphtha_draw"), ("base", "residue_draw")] {
+        let mut engine = engine_of(&fixture()).unwrap();
+        let first = run(&mut engine, 100);
+        let read = reading(&first);
+        let (held_kg, integral, settled) = {
+            if vessel == "drum" {
+                put_drum(&mut engine, read.drum_level, 1.2);
+            } else {
+                put_base(&mut engine, read.base_level, 1.2);
+            }
+            let held = state(&engine).unwrap();
+            if vessel == "drum" {
+                (
+                    held.drum_liquid.value(),
+                    held.drum_integral,
+                    held.settled_distillate.value(),
+                )
+            } else {
+                (
+                    held.stage_liquid[12].value(),
+                    held.base_integral,
+                    held.settled_bottoms.value(),
+                )
+            }
+        };
+        let after = run(&mut engine, 1);
+        let read = reading(&after);
+        let (limit, level, standing) = if vessel == "drum" {
+            (
+                read.drum_limit,
+                read.drum_level,
+                state(&engine).unwrap().drum_integral,
+            )
+        } else {
+            (
+                read.base_limit,
+                read.base_level,
+                state(&engine).unwrap().base_integral,
+            )
+        };
+        assert_eq!(limit, LevelLimit::Full, "{vessel}");
+        assert!((level - 1.2).abs() < 1.0e-4, "{vessel}: {level}");
+        assert_eq!(standing, integral, "{vessel}: the integral wound");
+        let dt = 0.1;
+        let overflow = held_kg * (1.0 - 1.0 / level) / dt;
+        let expected = settled * loop_output(level, integral) + overflow;
+        let flow = line_flow(&after, line);
+        // To 1e-4, as the dry drum's (measured 5.0e-6).
+        assert!(
+            (flow / expected - 1.0).abs() < 1.0e-4,
+            "{vessel}: {flow} kg/s against {expected}"
+        );
+        let next = run(&mut engine, 1);
+        let level = if vessel == "drum" {
+            reading(&next).drum_level
+        } else {
+            reading(&next).base_level
+        };
+        // At full, less what its loop sent out over what came in on the tick
+        // (measured: the drum 0.998).
+        assert!((0.99..=1.0 + 1.0e-6).contains(&level), "{vessel}: {level}");
+    }
+}
+
+/// The tray plant with a valve on its crude line, wide (its Kv large, so the
+/// plant runs as the file's), to shut the feed off with.
+fn fixture_valved() -> String {
+    fixture()
+        .replace(
+            "[nodes.furnace]",
+            "[nodes.feed_valve]\ntype = \"valve\"\nkv = 5000.0\nopening = 1.0\n\n[nodes.furnace]",
+        )
+        .replace(
+            "name = \"crude_line\"\nfrom = \"crude_source\"\nto = \"furnace\"",
+            "name = \"crude_line\"\nfrom = \"crude_source\"\nto = \"feed_valve\"\nlength_m = 1.0\n\
+             diameter_m = 0.08\n\n[[pipes]]\nname = \"valve_line\"\nfrom = \"feed_valve\"\n\
+             to = \"furnace\"",
+        )
+}
+
+/// **A column with no feed goes on boiling and draining** (§79.2, M74.2's
+/// left-over): the furnace out and the feed valve closed over a minute (from
+/// 0.1 open, where the wide valve starts to bite), then two minutes with no
+/// feed — the column steps from its state: the held reboiler boils, the
+/// distillate flows, written by the engine on its line (a share of no feed
+/// would read zero), the column gives up what it holds, and each
+/// component's books close every tick. (Shut in one tick, the column is
+/// refused: §79.5, open.)
+#[test]
+fn slow_a_column_with_no_feed_goes_on_boiling_and_draining() {
+    let mut engine = engine_of(&fixture_valved()).unwrap();
+    let first = run(&mut engine, 100);
+    let held_duty = reboiler_w(&first);
+    let valve = engine.graph.find_node("feed_valve").unwrap();
+    let furnace = engine.graph.find_node("furnace").unwrap();
+    engine
+        .apply(Command::SetFurnaceDuty {
+            node: furnace,
+            duty: Watt(0.0),
+        })
+        .unwrap();
+    let draws: Vec<_> = draw_edges(&engine)
+        .into_iter()
+        .map(|(_, edge)| edge)
+        .collect();
+    let dt = 0.1;
+    let mut worst: f64 = 0.0;
+    let mut start = 0.0;
+    let mut snapshot = engine.snapshot();
+    for t in 0..1800 {
+        let opening = (0.1 * (1.0 - (t + 1) as f64 / 600.0)).max(0.0);
+        engine
+            .apply(Command::SetValveOpening {
+                node: valve,
+                opening,
+            })
+            .unwrap();
+        let before = inventory(&state(&engine).unwrap());
+        snapshot = run(&mut engine, 1);
+        let after = inventory(&state(&engine).unwrap());
+        let feed = line_flow(&snapshot, "transfer_line");
+        if t == 599 {
+            start = after.iter().sum();
+        }
+        if t >= 599 {
+            assert_eq!(feed, 0.0, "tick {t}: the feed still runs");
+            for c in 0..before.len() {
+                let mut balance = -(after[c] - before[c]) / dt;
+                for edge in &draws {
+                    let e = snapshot.edges.iter().find(|e| e.id == *edge).unwrap();
+                    balance -= e.stream.mass_flow.value() * e.stream.composition.fractions()[c];
+                }
+                worst = worst.max(balance.abs());
+            }
+        }
+    }
+    let end: f64 = inventory(&state(&engine).unwrap()).iter().sum();
+    let distillate = line_flow(&snapshot, "naphtha_draw");
+    println!(
+        "M74_3 no feed: {start} kg -> {end} kg; distillate {distillate}, bottoms {}; worst {worst}",
+        line_flow(&snapshot, "residue_draw")
+    );
+    assert_eq!(reboiler_w(&snapshot), held_duty, "the held reboiler moved");
+    assert!(distillate > 1.0, "{distillate}");
+    assert!(
+        end < start - 1000.0,
+        "the column kept what it held: {start} -> {end}"
+    );
+    assert!(worst < 1.0e-8, "{worst}");
+}
+
+/// **A base run dry boils only what reaches it, and comes back** (§79.2, the
+/// physical limits; the roadmap's B run): held at 1.3 times its first tick's
+/// duty, the reboiler boils the base below its low level within three
+/// minutes — read `"dry"`, the reboiler throttled under its hold — and the
+/// column runs on: twenty minutes later the base is back near half full on
+/// the bottoms' loop, the reboiler at its hold. (The reflux to 0.5 under B,
+/// M74.2's case, drains the base to 0.22 of its volume in 25 minutes and no
+/// lower; the loops stopped, to 0.10 and back.)
+#[test]
+fn slow_a_base_run_dry_comes_back() {
+    let mut engine = engine_of(&fixture()).unwrap();
+    let first = run(&mut engine, 100);
+    let hold = 1.3 * reboiler_w(&first);
+    set_hold(&mut engine, Some(hold));
+    let (mut dry, mut least_duty, mut least_level) = (0, f64::INFINITY, f64::INFINITY);
+    let mut snapshot = engine.snapshot();
+    for _ in 0..12000 {
+        snapshot = run(&mut engine, 1);
+        let read = reading(&snapshot);
+        if read.base_limit == LevelLimit::Dry {
+            dry += 1;
+            let share = reboiler_w(&snapshot) / hold;
+            assert!(
+                (share - read.base_level / 0.1).abs() < 1.0e-12,
+                "{share} at {}",
+                read.base_level
+            );
+        } else {
+            assert_eq!(reboiler_w(&snapshot), hold);
+        }
+        least_duty = least_duty.min(reboiler_w(&snapshot));
+        least_level = least_level.min(read.base_level);
+    }
+    let level = reading(&snapshot).base_level;
+    println!(
+        "M74_3 dry base: {dry} ticks dry, least level {least_level}, least duty {} of {} MW, \
+         level at 20 minutes {level}",
+        least_duty / 1e6,
+        hold / 1e6
+    );
+    // Measured: 0.096 of its volume at two minutes, 0.542 at twenty.
+    assert!(dry > 0, "the base never ran dry");
+    assert!(least_duty < hold);
+    assert_eq!(reboiler_w(&snapshot), hold);
+    assert!((level - 0.5).abs() < 0.1, "{level}");
+}
+
+/// **The snapshot reads the holdup**: held from the first tick on a column
+/// declared held, free on one declared free, the levels half full on the
+/// first tick, every limit normal, the limits written as words.
+#[test]
+fn the_snapshot_reads_the_holdup() {
+    for (src, held) in [(fixture(), true), (fixture_free(), false)] {
+        let mut engine = engine_of(&src).unwrap();
+        let first = run(&mut engine, 1);
+        let read = reading(&first);
+        assert_eq!(read.reboiler_held, held);
+        assert_eq!((read.drum_level, read.base_level), (0.5, 0.5));
+        let next = run(&mut engine, 10);
+        let read = reading(&next);
+        assert_eq!(read.reboiler_held, held);
+        assert!((read.drum_level - 0.5).abs() < 0.05, "{}", read.drum_level);
+        assert!((read.base_level - 0.5).abs() < 0.05, "{}", read.base_level);
+        let json = serde_json::to_string(&next).unwrap();
+        assert!(
+            json.contains("\"drum_limit\":\"normal\"")
+                && json.contains("\"base_limit\":\"normal\""),
+            "the limits as words"
+        );
+    }
+}
+
+/// **M74.3's probes** (run with `M74_PROBE` set, else it returns): from 100
+/// ticks at the file's settings, under B (`M74_FREE` for A), the reboiler
+/// held at `M74_HOLD` times its first tick's duty (default 1) and the feed
+/// valve closed over `M74_RAMP` minutes (absent, left open), for
+/// `M74_MINUTES` (default 20) — a line a minute: the feed, the reboiler, the
+/// levels and limits, the least vapour, the products; or the refusal.
+#[test]
+fn m74_3_probe() {
+    if std::env::var("M74_PROBE").is_err() {
+        return;
+    }
+    let number = |name: &str| std::env::var(name).ok().map(|v| v.parse::<f64>().unwrap());
+    let src = if std::env::var("M74_FREE").is_ok() {
+        fixture_valved().replace("\"held\"", "\"free\"")
+    } else {
+        fixture_valved()
+    };
+    if std::env::var("M74_PLAIN").is_ok() {
+        // The tray plant without holdup, the feed shut in one tick, the
+        // furnace left on.
+        let mut engine = engine_of(&src.replace(HOLDUP, "")).unwrap();
+        run(&mut engine, 100);
+        let valve = engine.graph.find_node("feed_valve").unwrap();
+        engine
+            .apply(Command::SetValveOpening {
+                node: valve,
+                opening: 0.0,
+            })
+            .unwrap();
+        for t in 0..36000 {
+            if let Err(e) = engine.tick() {
+                println!("M74PROBE plain refused at {:.1} s: {e}", t as f64 * 0.1);
+                return;
+            }
+        }
+        println!("M74PROBE plain ran an hour");
+        return;
+    }
+    let mut engine = engine_of(&src).unwrap();
+    let first = run(&mut engine, 100);
+    if let Some(hold) = number("M74_HOLD") {
+        set_hold(&mut engine, Some(hold * reboiler_w(&first)));
+    }
+    let valve = engine.graph.find_node("feed_valve").unwrap();
+    let ramp = number("M74_RAMP").map(|m| (m * 600.0) as usize);
+    let ticks = (number("M74_MINUTES").unwrap_or(20.0) * 600.0) as usize;
+    for t in 0..ticks {
+        if let Some(ramp) = ramp {
+            let opening = (1.0 - (t + 1) as f64 / ramp.max(1) as f64).max(0.0);
+            engine
+                .apply(Command::SetValveOpening {
+                    node: valve,
+                    opening,
+                })
+                .unwrap();
+        }
+        if let Err(e) = engine.tick() {
+            println!("M74PROBE refused at {:.1} s: {e}", t as f64 * 0.1);
+            return;
+        }
+        if (t + 1) % 600 == 0 {
+            let s = engine.snapshot();
+            let r = reading(&s);
+            let node = s.nodes.iter().find(|n| n.name == "column").unwrap();
+            let least = node
+                .column_operation
+                .as_ref()
+                .unwrap()
+                .stage_vapour_mol_s
+                .iter()
+                .fold(f64::INFINITY, |a, b| a.min(*b));
+            println!(
+                "M74PROBE {:.0} min feed {:.2} reb {:.2} MW drum {:.3} {:?} base {:.3} {:?} \
+                 least V {least:.1} D {:.2} B {:.2}",
+                (t + 1) as f64 / 600.0,
+                line_flow(&s, "transfer_line"),
+                reboiler_w(&s) / 1e6,
+                r.drum_level,
+                r.drum_limit,
+                r.base_level,
+                r.base_limit,
+                line_flow(&s, "naphtha_draw"),
+                line_flow(&s, "residue_draw")
             );
         }
     }
