@@ -888,6 +888,15 @@ impl CascadePlan {
                 let x = &liquid[l.draw];
                 let drawn =
                     crate::heat_balance::liquid_enthalpy(slate, x, Kelvin(temperatures[l.draw]));
+                // A loop whose draw tray has nothing to give it (M74, §79.6:
+                // a column that holds liquid, its trays drained) circulates
+                // nothing and cools nothing.
+                if *flow <= 0.0 {
+                    return LoopReturn {
+                        enthalpy: drawn,
+                        at_capacity: false,
+                    };
+                }
                 let held =
                     crate::heat_balance::liquid_enthalpy(slate, x, Kelvin(l.return_temperature));
                 let by_start = drawn - l.start_duty / flow;

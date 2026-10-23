@@ -1077,8 +1077,7 @@ fn fixture_valved() -> String {
 /// feed — the column steps from its state: the held reboiler boils, the
 /// distillate flows, written by the engine on its line (a share of no feed
 /// would read zero), the column gives up what it holds, and each
-/// component's books close every tick. (Shut in one tick, the column is
-/// refused: §79.5, open.)
+/// component's books close every tick. (Shut in one tick: §79.6's tests.)
 #[test]
 fn slow_a_column_with_no_feed_goes_on_boiling_and_draining() {
     let mut engine = engine_of(&fixture_valved()).unwrap();
@@ -1148,7 +1147,11 @@ fn slow_a_column_with_no_feed_goes_on_boiling_and_draining() {
         "M74_3 no feed: {start} kg -> {end} kg; distillate {distillate}, bottoms {}; worst {worst}",
         line_flow(&snapshot, "residue_draw")
     );
-    assert_eq!(reboiler_w(&snapshot), held_duty, "the held reboiler moved");
+    // Its loops stopped with the feed (§79.6), the reboiler's whole duty
+    // goes up the column and boils the base below its low level: the held
+    // reboiler throttled, never above its hold.
+    assert!(reboiler_w(&snapshot) <= held_duty, "the held reboiler rose");
+    assert_eq!(loop_flows(&snapshot), vec![0.0; 3]);
     assert!(distillate > 1.0, "{distillate}");
     assert!(
         end < start - 1000.0,
@@ -1240,6 +1243,29 @@ fn the_snapshot_reads_the_holdup() {
 /// valve closed over `M74_RAMP` minutes (absent, left open), for
 /// `M74_MINUTES` (default 20) — a line a minute: the feed, the reboiler, the
 /// levels and limits, the least vapour, the products; or the refusal.
+/// The loops' circulation and the reflux cut to nothing, as an operator
+/// would on losing the feed (`M74_CUT` set; the user's option 2).
+fn cut_loops_and_reflux(engine: &mut Engine) {
+    let Ok(what) = std::env::var("M74_CUT") else {
+        return;
+    };
+    let node = engine.graph.find_node("column").unwrap();
+    if what != "reflux" {
+        for pumparound_loop in 0..3 {
+            engine
+                .apply(Command::SetLoopFlow {
+                    node,
+                    pumparound_loop,
+                    flow: refinery_core::units::KgPerSec(0.0),
+                })
+                .unwrap();
+        }
+    }
+    if what != "loops" {
+        set_reflux(engine, 0.0);
+    }
+}
+
 #[test]
 fn m74_3_probe() {
     if std::env::var("M74_PROBE").is_err() {
@@ -1263,7 +1289,30 @@ fn m74_3_probe() {
                 opening: 0.0,
             })
             .unwrap();
+        cut_loops_and_reflux(&mut engine);
+        let furnace = engine.graph.find_node("furnace").unwrap();
+        engine
+            .apply(Command::SetFurnaceDuty {
+                node: furnace,
+                duty: Watt(0.0),
+            })
+            .unwrap();
         for t in 0..36000 {
+            if t == 1200 {
+                // Two minutes on, the feed back in one tick, the furnace lit.
+                engine
+                    .apply(Command::SetValveOpening {
+                        node: valve,
+                        opening: 1.0,
+                    })
+                    .unwrap();
+                engine
+                    .apply(Command::SetFurnaceDuty {
+                        node: furnace,
+                        duty: Watt(20.0e6),
+                    })
+                    .unwrap();
+            }
             if let Err(e) = engine.tick() {
                 println!("M74PROBE plain refused at {:.1} s: {e}", t as f64 * 0.1);
                 return;
@@ -1280,13 +1329,56 @@ fn m74_3_probe() {
     let valve = engine.graph.find_node("feed_valve").unwrap();
     let ramp = number("M74_RAMP").map(|m| (m * 600.0) as usize);
     let ticks = (number("M74_MINUTES").unwrap_or(20.0) * 600.0) as usize;
+    let mut cut = false;
+    // `M74_REOPEN`: minutes after which the valve opens again in one tick and
+    // the furnace relights (it goes out at the cut).
+    let reopen = number("M74_REOPEN").map(|m| (m * 600.0) as usize);
+    let furnace = engine.graph.find_node("furnace").unwrap();
+    let furnace_duty = Watt(20.0e6);
     for t in 0..ticks {
-        if let Some(ramp) = ramp {
+        if reopen == Some(t) {
+            println!("M74PROBE reopened at {:.1} s", t as f64 * 0.1);
+            engine
+                .apply(Command::SetFurnaceDuty {
+                    node: furnace,
+                    duty: furnace_duty,
+                })
+                .unwrap();
+        }
+        if let Some(ramp) = ramp.filter(|_| reopen.is_none_or(|r| t < r)) {
             let opening = (1.0 - (t + 1) as f64 / ramp.max(1) as f64).max(0.0);
+            // The cut fires when the feed falls under `M74_CUT_AT` of its
+            // first (default: at a shut valve).
+            let fed = line_flow(&engine.snapshot(), "transfer_line");
+            let fire = match number("M74_CUT_AT") {
+                Some(share) => fed < share * line_flow(&first, "transfer_line"),
+                None => opening == 0.0,
+            };
+            if fire && !cut {
+                cut = true;
+                engine
+                    .apply(Command::SetFurnaceDuty {
+                        node: furnace,
+                        duty: Watt(0.0),
+                    })
+                    .unwrap();
+                println!(
+                    "M74PROBE cut at {:.1} s, the feed {fed:.2} kg/s",
+                    t as f64 * 0.1
+                );
+                cut_loops_and_reflux(&mut engine);
+            }
             engine
                 .apply(Command::SetValveOpening {
                     node: valve,
                     opening,
+                })
+                .unwrap();
+        } else if reopen.is_some_and(|r| t == r) {
+            engine
+                .apply(Command::SetValveOpening {
+                    node: valve,
+                    opening: 1.0,
                 })
                 .unwrap();
         }
@@ -1320,4 +1412,114 @@ fn m74_3_probe() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// M74.3b — the loops stop with the feed (docs/DESIGN.md §79.6, the user's
+// option 2).
+// ---------------------------------------------------------------------------
+
+/// The three loops' suction pipes' flows this tick [kg/s].
+fn loop_flows(snapshot: &Snapshot) -> Vec<f64> {
+    ["kero_pa_suction", "diesel_pa_suction", "gas_oil_pa_suction"]
+        .iter()
+        .map(|name| line_flow(snapshot, name))
+        .collect()
+}
+
+/// The feed valve shut (true) or opened (false) in one tick, the furnace put
+/// out or relit with it.
+fn shut_feed(engine: &mut Engine, shut: bool) {
+    let valve = engine.graph.find_node("feed_valve").unwrap();
+    let furnace = engine.graph.find_node("furnace").unwrap();
+    engine
+        .apply(Command::SetValveOpening {
+            node: valve,
+            opening: if shut { 0.0 } else { 1.0 },
+        })
+        .unwrap();
+    engine
+        .apply(Command::SetFurnaceDuty {
+            node: furnace,
+            duty: Watt(if shut { 0.0 } else { 20.0e6 }),
+        })
+        .unwrap();
+}
+
+/// **A column without holdup has its feed shut and opened in one tick**
+/// (§79.6; DEFERRED C26's first clause): its loops reported stopped while it
+/// idles — each suction pipe still — and running again once the feed is back,
+/// at their declared flows (85, 95, 65 kg/s).
+#[test]
+fn the_feed_shut_and_opened_in_one_tick_without_holdup() {
+    let mut engine = engine_of(&fixture_valved().replace(HOLDUP, "")).unwrap();
+    run(&mut engine, 100);
+    shut_feed(&mut engine, true);
+    for _ in 0..50 {
+        let idle = run(&mut engine, 1);
+        assert_eq!(line_flow(&idle, "transfer_line"), 0.0);
+        assert_eq!(loop_flows(&idle), vec![0.0; 3]);
+    }
+    shut_feed(&mut engine, false);
+    let back = run(&mut engine, 50);
+    assert!(line_flow(&back, "transfer_line") > 100.0);
+    for (flow, declared) in loop_flows(&back).iter().zip([85.0, 95.0, 65.0]) {
+        assert!(
+            (flow / declared - 1.0).abs() < 1.0e-9,
+            "{flow} against {declared}"
+        );
+    }
+}
+
+/// **A column that holds liquid has its feed shut and opened in one tick**
+/// (§79.6): with no feed its loops stop — each suction pipe still, the
+/// reboiler's whole duty going up the column — and it drains, the base
+/// running dry within two minutes and its reboiler throttling; the feed back,
+/// its loops run again at their declared flows and five minutes on the base
+/// is off its low level, the column on its way back (measured: lined out,
+/// drum and base within 0.01 of half, at 30 minutes).
+#[test]
+fn slow_the_feed_shut_and_opened_in_one_tick_with_holdup() {
+    let mut engine = engine_of(&fixture_valved()).unwrap();
+    let first = run(&mut engine, 100);
+    let held_duty = reboiler_w(&first);
+    shut_feed(&mut engine, true);
+    let mut dry = false;
+    for _ in 0..1200 {
+        let cut = run(&mut engine, 1);
+        assert_eq!(line_flow(&cut, "transfer_line"), 0.0);
+        assert_eq!(loop_flows(&cut), vec![0.0; 3]);
+        dry |= reading(&cut).base_limit == LevelLimit::Dry;
+    }
+    let cut = engine.snapshot();
+    println!(
+        "M74_3b cut two minutes: base {} drum {} reboiler {} MW",
+        reading(&cut).base_level,
+        reading(&cut).drum_level,
+        reboiler_w(&cut) / 1e6
+    );
+    assert!(dry, "the base never ran dry");
+    assert!(reboiler_w(&cut) < held_duty);
+    shut_feed(&mut engine, false);
+    let back = run(&mut engine, 3000);
+    // To 1e-4: set in moles at the draw tray's start-of-tick composition,
+    // carried at its end's, which a tray the cut drained still moves.
+    for (flow, declared) in loop_flows(&back).iter().zip([85.0, 95.0, 65.0]) {
+        assert!(
+            (flow / declared - 1.0).abs() < 1.0e-4,
+            "{flow} against {declared}"
+        );
+    }
+    let read = reading(&back);
+    println!(
+        "M74_3b five minutes back: base {} drum {} reboiler {} MW",
+        read.base_level,
+        read.drum_level,
+        reboiler_w(&back) / 1e6
+    );
+    // Measured at five minutes: the base 0.502, the drum 0.458, the
+    // reboiler at its hold.
+    assert_eq!(read.base_limit, LevelLimit::Normal);
+    assert_eq!(read.drum_limit, LevelLimit::Normal);
+    assert_eq!(reboiler_w(&back), held_duty);
 }

@@ -547,6 +547,9 @@ impl HeatBalanceCascade {
         }
         let mut latest: Option<CascadeProfile> = None;
         let mut change = f64::INFINITY;
+        // A column that holds liquid relaxes its drops by the gain the last
+        // two solves show (below); `None` until there are two.
+        let mut last_step: Option<(Vec<f64>, Vec<f64>)> = None;
         for _ in 0..MAX_DROP_SOLVES {
             // Each re-solve warm from the last one's profile — for a held
             // column, which starts from its earlier pass, that too.
@@ -590,7 +593,10 @@ impl HeatBalanceCascade {
                 }
                 return Ok(separation);
             }
-            drops = next;
+            drops = match &lagged {
+                None => next,
+                Some(_) => relaxed(&drops, &next, &mut last_step),
+            };
             latest = separation.profile;
         }
         Err(SimError::Numerical(format!(
@@ -681,6 +687,11 @@ impl HeatBalanceCascade {
                 .and_then(|holdup| holdup.state.as_ref().map(|state| (holdup, state)))
             {
                 let at_feed = &state.stage_composition[plan.feed_stage];
+                // Its loops stopped with the feed (§79.6, the user's
+                // decision): their coolers would go on taking heat the feed
+                // no longer brings, and the stages above it stop boiling.
+                let mut plan = plan;
+                plan.loops.clear();
                 let setup = ColumnSetup {
                     pass,
                     thermo,
@@ -732,7 +743,20 @@ impl HeatBalanceCascade {
                 reboiler_declined: None,
                 cut_back: Vec::new(),
                 water_flooded: None,
-                loops: Vec::new(),
+                // Each loop stopped with the feed (M74, docs/DESIGN.md
+                // §79.6): at zero flow, drawing what the column holds.
+                loops: spec
+                    .loops
+                    .iter()
+                    .map(|declared| LoopRun {
+                        flow: KgPerSec(0.0),
+                        return_temperature: declared.return_temperature,
+                        duty: Watt::ZERO,
+                        at_capacity: false,
+                        drawn: pass.feed.clone(),
+                        drawn_temperature: pass.temperature,
+                    })
+                    .collect(),
                 stage_liquid: Vec::new(),
                 trays: Vec::new(),
                 holdup: None,
@@ -1182,6 +1206,49 @@ fn starting_holdup(
 /// step from the state its last tick left (`column_step`), published as a
 /// pass — every draw's flow, its trays' readings and loops, and the state
 /// the engine writes back.
+/// The drops a column that holds liquid solves at next (M74, docs/DESIGN.md
+/// §79.6): the plain re-solve's `next` taken a step `β` along its residual
+/// `r = next − drops`, `β = −|s|²/(Δr·s)` — the secant on the residual
+/// along the last step `s` (Newton on `r` in that direction), clamped to
+/// `[0.05, 2]`. With no feed and its loops cut such a column's vapour runs
+/// near twice its normal, and the drops' plain re-solve swings with a gain
+/// near −0.9 a solve (measured): a two-cycle that 25 solves cannot close.
+/// The secant reads that gain off the swing and steps to its middle. Every
+/// column without holdup re-solves plainly, as M73.2 does.
+fn relaxed(
+    drops: &[Pascal],
+    next: &[Pascal],
+    last: &mut Option<(Vec<f64>, Vec<f64>)>,
+) -> Vec<Pascal> {
+    let at: Vec<f64> = drops.iter().map(|d| d.value()).collect();
+    let residual: Vec<f64> = next.iter().zip(&at).map(|(n, d)| n.value() - d).collect();
+    let beta = match last.as_ref() {
+        None => 1.0,
+        Some((from, residual_then)) => {
+            let step: Vec<f64> = at.iter().zip(from).map(|(a, f)| a - f).collect();
+            let along: f64 = residual
+                .iter()
+                .zip(residual_then)
+                .zip(&step)
+                .map(|((r, q), s)| (r - q) * s)
+                .sum();
+            let length: f64 = step.iter().map(|s| s * s).sum();
+            if along < 0.0 && length > 0.0 {
+                (-length / along).clamp(0.05, 2.0)
+            } else {
+                1.0
+            }
+        }
+    };
+    let relaxed = at
+        .iter()
+        .zip(&residual)
+        .map(|(d, r)| Pascal(d + beta * r))
+        .collect();
+    *last = Some((at, residual));
+    relaxed
+}
+
 fn stepped_pass(
     setup: &ColumnSetup<'_>,
     holdup: &ColumnHoldup,
@@ -4049,6 +4116,36 @@ fn feed_flash(
 mod tests {
     use super::*;
     use crate::{ConstantAlphaThermo, StageCascade};
+
+    /// **The drops' secant closes a swinging re-solve** (M74, §79.6): a
+    /// re-solve `next = 1000 + g·(drops − 1000)` per tray with the gain
+    /// `g = −0.9` measured on a column with no feed — plainly, 25 solves leave
+    /// the drops 0.9²⁵ of their start off; relaxed, the third solve lands on
+    /// the fixed point (the map linear, the secant exact); and a re-solve
+    /// already converging monotonically (`g = 0.5`) is not slowed.
+    #[test]
+    fn the_secant_closes_a_swinging_resolve() {
+        for (gain, solves) in [(-0.9, 3), (0.5, 3)] {
+            let map = |d: &[Pascal]| -> Vec<Pascal> {
+                d.iter()
+                    .map(|d| Pascal(1000.0 + gain * (d.value() - 1000.0)))
+                    .collect()
+            };
+            let mut drops = vec![Pascal(1100.0), Pascal(900.0)];
+            let mut last = None;
+            let mut change = f64::INFINITY;
+            for _ in 0..solves {
+                let next = map(&drops);
+                change = next
+                    .iter()
+                    .zip(&drops)
+                    .map(|(n, d)| (n.value() - d.value()).abs())
+                    .fold(0.0, f64::max);
+                drops = relaxed(&drops, &next, &mut last);
+            }
+            assert!(change < 1.0e-6, "gain {gain}: still {change} Pa");
+        }
+    }
     use refinery_core::components::{Phase, PseudoComponent};
     use refinery_core::graph::{ColumnDraw, NodeId};
     use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol, KgPerSec, P_ATM};
