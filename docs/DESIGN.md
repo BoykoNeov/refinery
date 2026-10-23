@@ -30775,8 +30775,8 @@ Measured (`column_holdup.rs`; the probe `m74_3_probe`, run with
    feed would read zero), each component's books to 1.1e-10 kg/s. With the
    furnace left firing the coil runs dry and ruptures (19 minutes on); the
    leak on the transfer line then refuses the plant — "edge
-   'transfer_line__downstream' leaves column … names no draw" — the
-   column's outlets, not M74's (the test puts the furnace out).
+   'transfer_line__downstream' leaves column … names no draw" — not traced
+   (the test puts the furnace out).
 
 **Open — the feed shut in one tick is refused** (put to the user): on the
 first tick with no feed, stage 3's vapour goes to zero and stage 11 is
@@ -30788,15 +30788,16 @@ This is §79.2's run-time `Err`, a stage that stops boiling, reached by a
 screen action — as M74.2's side note asked of the reflux key. The tray
 plant without holdup refuses the same cut for an older reason: "column
 reported no run for the pumparound loop" — its idle return carries no loop
-runs (M72's ground, not in the ledger until now). The choices: stages that
+runs (M72's ground; DEFERRED C26 now). The choices: stages that
 stop boiling (the start from empty's, brought forward); the feed's loss
 cutting the loops and the reflux with it (an operator's or an interlock's
 first action); or the cut left refused by name.
 
 **A CI fix on the way**: `a_column_that_holds_liquid_starts_full` compared
 the drum's composition with the naphtha draw's to the bit; on Linux one
-fraction differs in its last place (equal on Windows) — CI red from M74.1.
-Compared to 1e-15 now.
+fraction differs in its last place (equal on Windows) — CI red on `main`
+from M74.1's push (runs 287–291). Compared to 1e-15 now; `main` stays red
+until this branch merges (CI runs on `main` only).
 
 Mutations: twenty — nineteen caught (two on a second pass: the dry drum's
 reflux, now read off the drum's moles, `R = V₁ − D − Δn/dt`; the no-feed
@@ -30804,4 +30805,6 @@ energy scale, now by the heat closing with no feed, 94 W on its 86 MW),
 one argued: the draw-line write in `energy.rs` serves a draw that leaves
 through a line of pipes, and no column that can hold liquid has one (the
 tray plant's draws run straight to their tanks, and M74.4's plant is its
-copy) — the write mirrors `engine.rs`'s, which the no-feed run catches.
+copy; `Graph::draw_lines` lists only draws with a non-empty `line`, "empty
+on every plant whose draws end at their stores") — the write mirrors
+`engine.rs`'s, which the no-feed run catches.
