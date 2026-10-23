@@ -30729,15 +30729,73 @@ reflux, more liquid on the trays; the level loops hold their levels under A
 and B; A lands on the tray plant (slow). Mutations: ten, nine caught, one
 argued (above).
 
-### 79.5 M74.3, in progress — the toggle, the limits, the flows, no feed
+### 79.5 M74.3 built — the toggle, the limits, the flows, no feed; one wall found
 
-Built as §79.2 says (the record of what is built and what is left is the
-roadmap's M74.3 entry): the hold at the first tick for a column declared
-held; the hand-over without a jump; the limits — `LOW_LEVEL`, a tenth of the
-working volume (a game value: about the portion under a drum's low-level
-alarm in Kister's Table 15.2 sizing), under which the drum's outflow and the
-base's reboiler scale with the level, and past full the excess leaving with
-the product within the tick; `Separation::draw_flows`, written by the engine
-in place of `split·feed`; the step with no feed; the snapshot's
-`ColumnOperation::holdup`. Its tests, its mutation pass and its findings are
-still to come.
+Built as §79.2 says: a column declared held holds its reboiler from its
+first tick at the duty that tick settled on (the engine's commit); a tick
+that finds the hold changed hands the base's level to the other stream, its
+loop's integral set so that stream starts where it stood (`HoldupState::
+held`, `last_bottoms`, `last_reboiler`); the limits — `LOW_LEVEL`, a tenth
+of the working volume (a game value: about the portion under a drum's
+low-level alarm in Kister's Table 15.2 sizing), under which the drum's
+outflow and the base's reboiler scale with the level, and past full the
+excess leaving with the product within the tick, the loops' integrals
+standing at a limit; `Separation::draw_flows`, written by the engine in
+place of `split·feed` at both draw writes (`engine.rs`, `energy.rs`); the
+step with no feed (its energy scale the settled reboiler's duty); the
+snapshot's `ColumnOperation::holdup` (held or free, the drum's and base's
+levels, `"normal" | "dry" | "full"`).
+
+Measured (`column_holdup.rs`; the probe `m74_3_probe`, run with
+`M74_PROBE`):
+
+1. **The hand-over is without a jump**: freed after a minute held at 0.95 of
+   its first duty, the base put at 0.6 of its volume, the reboiler's first
+   free tick at its hold to 1e-12; held after the crude's supply moved the
+   feed, the bottoms' first held tick at its last flow to 1e-6 (the step's
+   tolerance). Five minutes on the base is back from 0.6 to 0.55 under
+   either.
+2. **The limits**, the state put there by hand: a drum or base at a
+   twentieth of its volume reads `"dry"`, the reboiler boiling its hold
+   times the level over `LOW_LEVEL` (to round-off), the drum's distillate
+   its loop's output likewise (to 1e-4: the flow is set in moles at the
+   drum's start-of-tick composition and carried at its end's, which a drum
+   that low moves the more — 1.8e-5); at 1.2 of its volume it reads
+   `"full"` and its product carries its loop's output and the sixth over
+   full in the tick (5e-6), the next tick at 0.998 of full.
+3. **A base run dry comes back**: held at 1.3 of its first duty, the base
+   falls to 0.095 of its volume at two minutes, 312 ticks `"dry"`, the
+   reboiler throttled to 107.5 of its 112.7 MW, and is back at 0.54 at
+   twenty minutes on the bottoms' loop. M74.2's B runs do not reach the
+   limit: the reflux to 0.5, the base to 0.22 at worst over 25 minutes (the
+   drum to 0.83); the loops stopped, to 0.10 and back over 30.
+4. **A column with no feed drains**: the furnace out, the feed valve closed
+   over a minute, two minutes with no feed — 68.9 t to 64.6 t held, the
+   distillate 14.7 kg/s and the bottoms 11.0 on their lines (a share of no
+   feed would read zero), each component's books to 1.1e-10 kg/s. With the
+   furnace left firing the coil runs dry and ruptures (19 minutes on); the
+   leak on the transfer line then refuses the plant — "edge
+   'transfer_line__downstream' leaves column … names no draw" — the
+   column's outlets, not M74's (the test puts the furnace out).
+
+**Open — the feed shut in one tick is refused** (put to the user): on the
+first tick with no feed, stage 3's vapour goes to zero and stage 11 is
+3.0 MW short — the feed's flash was the vapour above the feed, while the
+loops (40 MW) and the reflux go on taking heat; the valve's opening ramped
+over two minutes (the flow falling in its last 12 s) likewise at 119.9 s;
+ramped over ten (the last minute's flow) it runs, the least vapour 91 mol/s.
+This is §79.2's run-time `Err`, a stage that stops boiling, reached by a
+screen action — as M74.2's side note asked of the reflux key. The tray
+plant without holdup refuses the same cut for an older reason: "column
+reported no run for the pumparound loop" — its idle return carries no loop
+runs (M72's ground, not in the ledger until now). The choices: stages that
+stop boiling (the start from empty's, brought forward); the feed's loss
+cutting the loops and the reflux with it (an operator's or an interlock's
+first action); or the cut left refused by name.
+
+**A CI fix on the way**: `a_column_that_holds_liquid_starts_full` compared
+the drum's composition with the naphtha draw's to the bit; on Linux one
+fraction differs in its last place (equal on Windows) — CI red from M74.1.
+Compared to 1e-15 now.
+
+Mutations: the pass is running.
