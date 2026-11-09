@@ -30808,3 +30808,51 @@ tray plant's draws run straight to their tanks, and M74.4's plant is its
 copy; `Graph::draw_lines` lists only draws with a non-empty `line`, "empty
 on every plant whose draws end at their stores") — the write mirrors
 `engine.rs`'s, which the no-feed run catches.
+
+### 79.6 M74.3 follow-up (2026-11-09) — a double throttle fixed, the draw line reached, the feed cut measured further
+
+**A fault: freed on a dry base, the reboiler was throttled twice.** The
+state kept the duty the base's stream ran at AFTER the dry limit
+(`last_reboiler`, likewise `last_bottoms` with a full base's excess); the
+hand-over set the free loop's integral to give that duty, and the limit
+then cut it again — held, the base at a twentieth of its volume, freed: 44.0
+→ 22.5 MW in one tick. §79.5's hand-over tests freed at a normal level. The
+state now keeps what the hold or the loop asked for before the limits
+(`column_step::SetFlows::{bottoms,reboiler}_before_limits`); freed, 44.0 →
+44.4 MW, the base rising in the tick
+(`freed_on_a_dry_base_the_reboiler_is_throttled_once`).
+
+**The draw-line write is reached** — §79.5's argued mutation corrected: the
+loader takes a column that holds liquid with its naphtha run down through a
+pump (a draw LINE), so the no-feed test now runs so
+(`with_naphtha_pump`): the line's pipes carry the draw to the bit, and the
+rundown's temperature equals the draw's every tick — the pump mixes the
+line's flow the node-state pass writes (`energy::resolve_node_states`);
+with that write a share of no feed, the pump holds what it last had and the
+rundown lags. Mutation caught.
+
+**The feed cut, measured further** (`m74_3_probe`, now with `M74_STEP`,
+`M74_CUT_LOOPS`, `M74_REFLUX`; the valve wide, so a ramp of its opening
+closes the flow only in its last percent — read the flows, not the ramp):
+
+| on one tick | result |
+|---|---|
+| the feed 90 → 32, 20 or 13.4 kg/s | runs five minutes; every stage's vapour ≥ 560 mol/s |
+| the feed 90 → ~10 kg/s, or to 0 | `Err` on that tick, stage 3's vapour at zero |
+| to 0, the reflux to 0 | `Err` on that tick, the same |
+| to 0, the three loops stopped (reflux 0, 1 or left at 4; held or free) | the cut runs; at 13–14 s the trays' pressure drops do not settle (0.57 Pa after 25 solves, §78.9) |
+
+So §79.5's second choice, the feed's loss cutting the loops and the reflux,
+does not run as the engine stands: it passes the cut and meets the lagged
+pressure drops' fixed point (§79.4 reversal 2) failing to settle. And the
+wall is sharp — 13.4 kg/s left runs with the vapour healthy, ~10 does not —
+which reads more like the step's Newton losing the answer than a stage
+truly ceasing to boil; worth a probe before choosing stages that stop
+boiling. Put to the user with C26.
+
+**Open — the level loops have no ceiling** (a side note at the user's
+session, 2026-11-09): each loop's output is held at zero or above and
+nothing above, so a free reboiler or the bottoms may be asked for any duty
+or flow after an upset, where a real reboiler and pump have a maximum. No
+test reaches it (the largest seen: 1.3 times the first duty, by command).
+Put to the user (C27).

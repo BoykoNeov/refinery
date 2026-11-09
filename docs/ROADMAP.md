@@ -11121,3 +11121,11 @@ since M74.1 on a 1-ulp Linux difference in M74.1's own test, fixed.
 Mutations: twenty, nineteen caught, one argued (the draw-line write, on no
 plant that holds liquid). Next: the user's call on the feed cut, then M74.4
 (the plant, key 8, its table).
+
+Follow-up (2026-11-09, DESIGN §79.6): a fault fixed — freed on a dry base,
+the reboiler was throttled twice (the hand-over carried the duty after the
+limit); the draw-line write reached and caught (the argued mutation); the
+feed cut measured further — 90 → 13.4 kg/s in one tick runs, ~10 does not,
+and the cut with the loops and reflux stopped passes the cut but its trays'
+pressure drops fail to settle at 13 s. Also open: the level loops have no
+ceiling (C27). Both put to the user.

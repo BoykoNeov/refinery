@@ -167,8 +167,11 @@ struct SetFlows {
     /// The base's level loop's integral this tick ran on — the state's, or
     /// on a tick the hold changed, the hand-over's.
     base_integral: f64,
-    /// The bottoms [kg/s].
-    bottoms_mass: f64,
+    /// The bottoms [kg/s] and the reboiler's duty [W] the base's stream ran
+    /// at before the physical limits — what a hand-over starts the other
+    /// stream from, so a limit still in force is not applied twice.
+    bottoms_before_limits: f64,
+    reboiler_before_limits: f64,
 }
 
 /// One evaluation of the residuals.
@@ -427,6 +430,7 @@ impl ColumnStep<'_> {
         // distillate alike; a base low enough that the reboiler's tubes
         // uncover boils only in proportion; a drum or base past full passes
         // its excess on with its product within the tick.
+        let (bottoms_before_limits, reboiler_before_limits) = (bottoms_mass, reboiler);
         let mut drum_limit = LevelLimit::Normal;
         let mut base_limit = LevelLimit::Normal;
         let mut drum_out_share = 1.0;
@@ -472,7 +476,8 @@ impl ColumnStep<'_> {
                 base_limit,
             },
             base_integral,
-            bottoms_mass,
+            bottoms_before_limits,
+            reboiler_before_limits,
         })
     }
 
@@ -821,8 +826,8 @@ impl ColumnStep<'_> {
             drum_integral: integrate(state.drum_integral, reading.drum_level, reading.drum_limit),
             base_integral: integrate(set.base_integral, reading.base_level, reading.base_limit),
             held: reading.held,
-            last_bottoms: KgPerSec(set.bottoms_mass),
-            last_reboiler: Watt(set.reboiler),
+            last_bottoms: KgPerSec(set.bottoms_before_limits),
+            last_reboiler: Watt(set.reboiler_before_limits),
         };
         Ok(Stepped {
             temperatures: u[..n].to_vec(),

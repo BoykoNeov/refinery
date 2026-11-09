@@ -1071,17 +1071,63 @@ fn fixture_valved() -> String {
         )
 }
 
+/// `src` with its naphtha run down through a pump: a draw LINE (M62.4b),
+/// whose pipes the engine writes on its node-state path
+/// (`energy::resolve_node_states`) as well as its draw write — the other
+/// draws run straight to their tanks.
+fn with_naphtha_pump(src: &str) -> String {
+    let src = src
+        .replacen(
+            "{ outlet = \"naphtha_tank\", stage = 0",
+            "{ outlet = \"naphtha_pump\", stage = 0",
+            1,
+        )
+        .replacen(
+            "[nodes.naphtha_tank]",
+            "[nodes.naphtha_pump]
+type = \"pump\"
+h0_m = 40.0
+a = 2000.0
+on = true
+
+             [nodes.naphtha_tank]",
+            1,
+        )
+        .replacen(
+            "name = \"naphtha_draw\"
+from = \"column\"
+to = \"naphtha_tank\"",
+            "name = \"naphtha_draw\"
+from = \"column\"
+to = \"naphtha_pump\"
+             length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = \"naphtha_rundown\"
+             from = \"naphtha_pump\"
+to = \"naphtha_tank\"",
+            1,
+        );
+    assert!(
+        src.contains("naphtha_rundown") && src.contains("outlet = \"naphtha_pump\""),
+        "the naphtha draw was not found"
+    );
+    src
+}
+
 /// **A column with no feed goes on boiling and draining** (§79.2, M74.2's
 /// left-over): the furnace out and the feed valve closed over a minute (from
 /// 0.1 open, where the wide valve starts to bite), then two minutes with no
 /// feed — the column steps from its state: the held reboiler boils, the
 /// distillate flows, written by the engine on its line (a share of no feed
 /// would read zero), the column gives up what it holds, and each
-/// component's books close every tick. (Shut in one tick, the column is
+/// component's books close every tick. Its naphtha runs down through a pump
+/// (a draw line, the engine's second draw write). (Shut in one tick, the column is
 /// refused: §79.5, open.)
 #[test]
 fn slow_a_column_with_no_feed_goes_on_boiling_and_draining() {
-    let mut engine = engine_of(&fixture_valved()).unwrap();
+    let mut engine = engine_of(&with_naphtha_pump(&fixture_valved())).unwrap();
     let first = run(&mut engine, 100);
     let held_duty = reboiler_w(&first);
     let valve = engine.graph.find_node("feed_valve").unwrap();
@@ -1132,6 +1178,15 @@ fn slow_a_column_with_no_feed_goes_on_boiling_and_draining() {
         }
         if t >= 599 {
             assert_eq!(feed, 0.0, "tick {t}: the feed still runs");
+            // The naphtha's line through its pump carries the draw on every
+            // pipe, and the pump mixes it within the tick: the node-state
+            // pass writes the line's flow too (`energy.rs`), or the pump
+            // holds what it last had and the rundown lags the draw.
+            let pipe = |name: &str| {
+                let e = snapshot.edges.iter().find(|e| e.name == name).unwrap();
+                (e.stream.mass_flow.value(), e.stream.temperature.value())
+            };
+            assert_eq!(pipe("naphtha_rundown"), pipe("naphtha_draw"), "tick {t}");
             for c in 0..before.len() {
                 let mut balance = -(after[c] - before[c]) / dt;
                 for edge in &draws {
@@ -1234,12 +1289,40 @@ fn the_snapshot_reads_the_holdup() {
     }
 }
 
+/// **Freed while its base runs dry, the reboiler starts from the duty it
+/// ran at** — not that duty throttled a second time (found 2026-11-09): the
+/// hand-over starts the loop from what the hold asked before the dry limit,
+/// and the limit applies once. Held, the base put at a twentieth of its
+/// volume; one tick dry, then freed.
+#[test]
+fn freed_on_a_dry_base_the_reboiler_is_throttled_once() {
+    let mut engine = engine_of(&fixture()).unwrap();
+    let before = run(&mut engine, 100);
+    put_base(&mut engine, reading(&before).base_level, 0.05);
+    let dry = run(&mut engine, 1);
+    assert_eq!(reading(&dry).base_limit, LevelLimit::Dry);
+    set_hold(&mut engine, None);
+    let freed = run(&mut engine, 1);
+    assert_eq!(reading(&freed).base_limit, LevelLimit::Dry);
+    let jump = reboiler_w(&freed) / reboiler_w(&dry) - 1.0;
+    // Measured +0.86 %: the base's level rising in the tick. Throttled twice,
+    // the duty halved.
+    assert!(
+        jump.abs() < 0.02,
+        "{} → {} W",
+        reboiler_w(&dry),
+        reboiler_w(&freed)
+    );
+}
+
 /// **M74.3's probes** (run with `M74_PROBE` set, else it returns): from 100
 /// ticks at the file's settings, under B (`M74_FREE` for A), the reboiler
 /// held at `M74_HOLD` times its first tick's duty (default 1) and the feed
 /// valve closed over `M74_RAMP` minutes (absent, left open), for
 /// `M74_MINUTES` (default 20) — a line a minute: the feed, the reboiler, the
-/// levels and limits, the least vapour, the products; or the refusal.
+/// levels and limits, the least vapour, the products; or the refusal. On
+/// the first tick (2026-11-09): `M74_STEP` puts the valve at that opening;
+/// `M74_CUT_LOOPS` stops the three pumparounds; `M74_REFLUX` sets the reflux.
 #[test]
 fn m74_3_probe() {
     if std::env::var("M74_PROBE").is_err() {
@@ -1278,6 +1361,29 @@ fn m74_3_probe() {
         set_hold(&mut engine, Some(hold * reboiler_w(&first)));
     }
     let valve = engine.graph.find_node("feed_valve").unwrap();
+    let column = engine.graph.find_node("column").unwrap();
+    if let Some(opening) = number("M74_STEP") {
+        engine
+            .apply(Command::SetValveOpening {
+                node: valve,
+                opening,
+            })
+            .unwrap();
+    }
+    if std::env::var("M74_CUT_LOOPS").is_ok() {
+        for pumparound_loop in 0..3 {
+            engine
+                .apply(Command::SetLoopFlow {
+                    node: column,
+                    pumparound_loop,
+                    flow: refinery_core::units::KgPerSec(0.0),
+                })
+                .unwrap();
+        }
+    }
+    if let Some(reflux_ratio) = number("M74_REFLUX") {
+        set_reflux(&mut engine, reflux_ratio);
+    }
     let ramp = number("M74_RAMP").map(|m| (m * 600.0) as usize);
     let ticks = (number("M74_MINUTES").unwrap_or(20.0) * 600.0) as usize;
     for t in 0..ticks {
@@ -1293,6 +1399,13 @@ fn m74_3_probe() {
         if let Err(e) = engine.tick() {
             println!("M74PROBE refused at {:.1} s: {e}", t as f64 * 0.1);
             return;
+        }
+        if std::env::var("M74_FIRST").is_ok() && t < 5 {
+            let s = engine.snapshot();
+            println!(
+                "M74PROBE tick {t} feed {:.2} kg/s",
+                line_flow(&s, "transfer_line")
+            );
         }
         if (t + 1) % 600 == 0 {
             let s = engine.snapshot();
