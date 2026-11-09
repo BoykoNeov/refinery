@@ -804,10 +804,11 @@ fn reading(snapshot: &Snapshot) -> refinery_core::snapshot::HoldupOperation {
         .expect("a column that holds liquid reads its holdup")
 }
 
-/// `settled × max(0, 1 + 2·e + I)`, `e` the level's departure from half full
-/// as a share of half (the step's level loops, `column_step`).
+/// `settled × min(2.5, max(0, 1 + 2·e + I))`, `e` the level's departure from
+/// half full as a share of half (the step's level loops, `column_step`; the
+/// ceiling §79.6's).
 fn loop_output(level: f64, integral: f64) -> f64 {
-    (1.0 + 2.0 * (level / 0.5 - 1.0) + integral).max(0.0)
+    (1.0 + 2.0 * (level / 0.5 - 1.0) + integral).clamp(0.0, 2.5)
 }
 
 /// The base's liquid scaled to stand at `level` of its volume, from what the
@@ -1287,6 +1288,52 @@ fn the_snapshot_reads_the_holdup() {
                 && json.contains("\"base_limit\":\"normal\""),
             "the limits as words"
         );
+    }
+}
+
+/// **A level loop asks no more than its ceiling** (§79.6, the user's
+/// decision: a reboiler's and a pump's maximum, 2.5 times what the column
+/// settled on): a drum or base put at 0.95 of its volume asks more (2.8
+/// times, and its integral); the
+/// distillate, the bottoms (reboiler held) or the free reboiler runs at
+/// its ceiling, the reading says so, and the loop's integral stands (no
+/// wind-up). At rest no loop is at its maximum.
+#[test]
+fn a_level_loop_asks_no_more_than_its_ceiling() {
+    for free in [false, true] {
+        let src = if free { fixture_free() } else { fixture() };
+        let mut engine = engine_of(&src).unwrap();
+        let before = run(&mut engine, 100);
+        let rest = reading(&before);
+        assert!(!rest.drum_loop_at_max && !rest.base_loop_at_max, "{rest:?}");
+        put_drum(&mut engine, rest.drum_level, 0.95);
+        put_base(&mut engine, rest.base_level, 0.95);
+        let start = state(&engine).unwrap();
+        let after = run(&mut engine, 1);
+        let end = state(&engine).unwrap();
+        let read = reading(&after);
+        assert!(read.drum_loop_at_max && read.base_loop_at_max, "{read:?}");
+        assert_eq!(read.drum_limit, LevelLimit::Normal);
+        let naphtha = line_flow(&after, "naphtha_draw");
+        // To 1e-4: the distillate's moles carried at the drum's end-of-tick
+        // composition (§79.5).
+        assert!(
+            (naphtha / (2.5 * start.settled_distillate.value()) - 1.0).abs() < 1e-4,
+            "{naphtha}"
+        );
+        if free {
+            assert_eq!(reboiler_w(&after), 2.5 * start.settled_reboiler.value());
+        } else {
+            let bottoms = line_flow(&after, "residue_draw");
+            assert!(
+                (bottoms / (2.5 * start.settled_bottoms.value()) - 1.0).abs() < 1e-4,
+                "{bottoms}"
+            );
+        }
+        assert_eq!(end.drum_integral, start.drum_integral, "free {free}");
+        assert_eq!(end.base_integral, start.base_integral, "free {free}");
+        let json = serde_json::to_string(&read).unwrap();
+        assert!(json.contains("\"base_loop_at_max\":true"), "{json}");
     }
 }
 

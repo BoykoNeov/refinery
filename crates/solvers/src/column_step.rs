@@ -57,6 +57,15 @@ pub(crate) const LEVEL_INTEGRAL_S: f64 = 300.0;
 /// the drum the table sizes).
 pub(crate) const LOW_LEVEL: f64 = 0.1;
 
+/// The most a level loop may ask of its stream, as a multiple of what the
+/// column settled on at its first tick [-]: a reboiler's or a pump's maximum
+/// (M74.3 follow-up, docs/DESIGN.md §79.6, the user's decisions). **A GAME
+/// VALUE**, set so the screen's whole reflux key still lines out: the tray
+/// plant settled at the key's top, a reflux of 15, takes 2.19 times the
+/// reboiler's duty at its file's 4 (190.0 against 86.9 MW). A reboiler held
+/// by command is not a loop's and is not capped.
+pub(crate) const LOOP_CEILING: f64 = 2.5;
+
 /// The most a stage temperature may move in one Newton step [K] — a damping
 /// bound, not physics (`column_newton`'s value).
 const MAX_TEMPERATURE_STEP_K: f64 = 25.0;
@@ -394,7 +403,10 @@ impl ColumnStep<'_> {
             base_volume,
         );
         let (drum_error, base_error) = (drum_level / 0.5 - 1.0, base_level / 0.5 - 1.0);
-        let output = |error: f64, integral: f64| (1.0 + LEVEL_GAIN * error + integral).max(0.0);
+        // Each loop's output between shut and its ceiling (§79.6).
+        let asked = |error: f64, integral: f64| 1.0 + LEVEL_GAIN * error + integral;
+        let output = |error: f64, integral: f64| asked(error, integral).clamp(0.0, LOOP_CEILING);
+        let drum_loop_at_max = asked(drum_error, state.drum_integral) >= LOOP_CEILING;
         let held = self.spec.reboiler_duty.is_some();
         // A hold changed since the last tick hands the base's level to the
         // other stream from where that stream stood (§79.2, the toggle): its
@@ -409,6 +421,7 @@ impl ColumnStep<'_> {
             };
             now / settled - 1.0 - LEVEL_GAIN * base_error
         };
+        let base_loop_at_max = asked(base_error, base_integral) >= LOOP_CEILING;
         let dt = self.holdup.tick.value();
         let controlled = state.settled_distillate.value() * output(drum_error, state.drum_integral);
         let mut overflow = 0.0;
@@ -474,6 +487,8 @@ impl ColumnStep<'_> {
                 base_level,
                 drum_limit,
                 base_limit,
+                drum_loop_at_max,
+                base_loop_at_max,
             },
             base_integral,
             bottoms_before_limits,
@@ -797,13 +812,15 @@ impl ColumnStep<'_> {
         }
 
         // The level loops' integrals, each held while its stream is pinned at
-        // zero and the level would push it lower, or while its level is past
-        // a limit (no wind-up).
+        // zero and the level would push it lower, or at its ceiling and the
+        // level would push it higher, or while its level is past a limit (no
+        // wind-up).
         let state = self.state;
         let reading = set.reading;
         let integrate = |integral: f64, level: f64, limit: LevelLimit| {
             let error = level / 0.5 - 1.0;
-            let pinned = 1.0 + LEVEL_GAIN * error + integral <= 0.0 && error < 0.0;
+            let asked = 1.0 + LEVEL_GAIN * error + integral;
+            let pinned = (asked <= 0.0 && error < 0.0) || (asked >= LOOP_CEILING && error > 0.0);
             if pinned || limit != LevelLimit::Normal {
                 integral
             } else {

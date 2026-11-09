@@ -30859,3 +30859,30 @@ nothing above, so a free reboiler or the bottoms may be asked for any duty
 or flow after an upset, where a real reboiler and pump have a maximum. No
 test reaches it (the largest seen: 1.3 times the first duty, by command).
 Put to the user (C27).
+
+**Decided (2026-11-09), the user:**
+- **The feed cut: stages that stop boiling** — a tray the vapour no longer
+  reaches goes cold and passes its liquid down unboiled, as a real column's
+  upper trays do when its feed is lost. The start from empty needs the same
+  (an empty column's trays do not boil), so the two are built together,
+  after their own probe.
+- **The level loops get a ceiling — built.** `column_step::LOOP_CEILING`,
+  2.5 times what the column settled on, caps each loop's output — the distillate,
+  the bottoms under a held reboiler, a free reboiler; at it the loop's
+  integral stands while the level would push it higher (no wind-up), and
+  the snapshot reads `HoldupOperation::drum_loop_at_max` /
+  `base_loop_at_max`. A reboiler held by command is the operator's and not
+  capped; held above the ceiling and freed, it falls to the ceiling — the
+  reboiler's maximum. Tested (`a_level_loop_asks_no_more_than_its_ceiling`:
+  a drum and base at 0.95 of their volume under either scheme, each stream
+  at 2.5 times its settled flow or duty, the integrals standing); every
+  existing holdup test unchanged but the full vessel's expected flow, now
+  its loop's capped output plus the excess. Mutations: five, all caught.
+  **Its size, the user's second decision**: 1.5 was built first, and a side
+  note asked whether it caps normal play — it does. The tray plant settled
+  at each reflux (no holdup, a minute): 4 → 86.9 MW, 5 → 97.0, 8 → 125.8
+  (1.45 times), 10 → 144.4 (1.66), 15 → 190.0 (2.19); at 1.5 a free
+  reboiler could not line out above a reflux of about 8, the base filling
+  and its excess leaving with the bottoms. Chosen: 2.5 — the screen's whole
+  reflux key lines out, and the cap stops only the runaway ask after an
+  upset (a game value).

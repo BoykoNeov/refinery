@@ -11128,4 +11128,8 @@ limit); the draw-line write reached and caught (the argued mutation); the
 feed cut measured further — 90 → 13.4 kg/s in one tick runs, ~10 does not,
 and the cut with the loops and reflux stopped passes the cut but its trays'
 pressure drops fail to settle at 13 s. Also open: the level loops have no
-ceiling (C27). Both put to the user.
+ceiling (C27). Both put to the user — **decided 2026-11-09**: the feed
+cut by stages that stop boiling, built with the start from empty (its own
+probe first); the ceiling built (`LOOP_CEILING`, 2.5 times the settled
+output — reflux 15 takes 2.19 — the reading `drum_loop_at_max` / `base_loop_at_max`). Next: M74.4
+(the plant, key 8, its table), then the start from empty's probe.

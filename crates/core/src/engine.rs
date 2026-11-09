@@ -4124,6 +4124,8 @@ impl Engine {
                                 base_level: reading.base_level,
                                 drum_limit: reading.drum_limit,
                                 base_limit: reading.base_limit,
+                                drum_loop_at_max: reading.drum_loop_at_max,
+                                base_loop_at_max: reading.base_loop_at_max,
                             }),
                         })
                     }),

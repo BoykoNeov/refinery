@@ -844,6 +844,11 @@ pub struct HoldupReading {
     /// The limit each ran into, if any.
     pub drum_limit: LevelLimit,
     pub base_limit: LevelLimit,
+    /// Whether the drum's level loop (the distillate) and the base's (the
+    /// bottoms, or a free reboiler) asked for their ceiling or more — run at
+    /// their maximum (M74.3 follow-up, §79.6).
+    pub drum_loop_at_max: bool,
+    pub base_loop_at_max: bool,
 }
 
 /// A drum's or a base's level against its limits (M74, docs/DESIGN.md

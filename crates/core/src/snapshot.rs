@@ -788,6 +788,11 @@ pub struct HoldupOperation {
     /// `"normal"`.
     pub drum_limit: LevelLimit,
     pub base_limit: LevelLimit,
+    /// The distillate at its maximum, its level loop asking for more; the
+    /// base's stream likewise — the bottoms, or a free reboiler (M74.3
+    /// follow-up, docs/DESIGN.md §79.6).
+    pub drum_loop_at_max: bool,
+    pub base_loop_at_max: bool,
 }
 
 /// One tray's hydraulics — see `ColumnOperation::trays`.
