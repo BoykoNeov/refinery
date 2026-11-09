@@ -1213,7 +1213,8 @@ fn slow_a_column_with_no_feed_goes_on_boiling_and_draining() {
     // The heat too, its balances scaled on the settled reboiler's duty with
     // no feed to scale them on.
     println!("M74_3 no feed: the heat to {worst_heat} W");
-    // Measured 94 W: 1e-6 of the 86 MW its balances are scaled on.
+    // Measured 75 W (94 before the naphtha ran down through a pump): 1e-6 of
+    // the 86 MW its balances are scaled on.
     assert!(worst_heat < 200.0, "{worst_heat}");
 }
 
@@ -1400,10 +1401,23 @@ fn m74_3_probe() {
             println!("M74PROBE refused at {:.1} s: {e}", t as f64 * 0.1);
             return;
         }
-        if std::env::var("M74_FIRST").is_ok() && t < 5 {
+        if std::env::var("M74_FIRST").is_ok() && t < 30 {
             let s = engine.snapshot();
+            let node = s.nodes.iter().find(|n| n.name == "column").unwrap();
+            let vapour = &node.column_operation.as_ref().unwrap().stage_vapour_mol_s;
+            let (at, least) =
+                vapour
+                    .iter()
+                    .enumerate()
+                    .fold((0, f64::INFINITY), |(a, l), (j, v)| {
+                        if *v < l {
+                            (j + 1, *v)
+                        } else {
+                            (a, l)
+                        }
+                    });
             println!(
-                "M74PROBE tick {t} feed {:.2} kg/s",
+                "M74PROBE tick {t} feed {:.2} kg/s least vapour {least:.1} mol/s at stage {at}",
                 line_flow(&s, "transfer_line")
             );
         }

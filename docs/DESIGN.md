@@ -30845,10 +30845,13 @@ closes the flow only in its last percent — read the flows, not the ramp):
 So §79.5's second choice, the feed's loss cutting the loops and the reflux,
 does not run as the engine stands: it passes the cut and meets the lagged
 pressure drops' fixed point (§79.4 reversal 2) failing to settle. And the
-wall is sharp — 13.4 kg/s left runs with the vapour healthy, ~10 does not —
-which reads more like the step's Newton losing the answer than a stage
-truly ceasing to boil; worth a probe before choosing stages that stop
-boiling. Put to the user with C26.
+wall is sharp — 13.4 kg/s left runs, ~10 does not. On the cut's first tick
+the least vapour (stage 3's) falls with the feed left: 575 mol/s before
+the cut; 320, 214 and 157 with 32, 20 and 13.4 kg/s left, recovering
+within the minute. So the trays above the feed do lose their vapour —
+the physics §79.5 reads — though that line, carried on, stays above zero
+at 10 kg/s: the step's Newton may give out before a stage truly stops
+boiling. Not separated. Put to the user with C26.
 
 **Open — the level loops have no ceiling** (a side note at the user's
 session, 2026-11-09): each loop's output is held at zero or above and
