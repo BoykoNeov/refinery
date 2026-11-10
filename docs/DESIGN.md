@@ -30947,3 +30947,49 @@ refused** — as a flooding or weeping tray (§78, decision 4). The screen names
 the trays whose liquid down (`ColumnOperation::stage_liquid_mol_s`) is zero
 and marks them on the column; the table allows a setting wherever the column
 runs, and reports how many allowed settings end with such a tray.
+
+### 79.8 M74.4 — key 8 and its keys' range: a box, the reboiler's floor (2026-11-10)
+
+**Key 8** loads `crude_unit_holdup.toml`: the drum's and base's levels drawn as
+gauges with their limits (dry, full) and the loops at their ceiling; the
+reflux read as the column's result; T/G step the held reboiler 2.5 MW (from
+the duty it runs at, when free), Y frees it; a tray passing nothing down named
+DRY (§79.7's decision). The timeline `AUTO_HOLDUP` and its gate
+`slow_the_holdup_plant_timeline`: the reflux up to 6 (the distillate down at
+once, the drum dipping and still climbing back four minutes on), the reboiler
+held at 150 MW (the base boiled dry, the reboiler throttled, the bottoms
+stopped), freed (the base climbing, the bottoms back at its share), the reflux
+down to 0.5 (the drum full, the distillate at its ceiling, back inside its range
+by 11 700). Frame cost on the screen: 1.1–1.6 ms a tick, 3.0 ms while the
+column floods at 150 MW; five ticks a frame.
+
+**Measured before choosing the range** (`tools/steptime/prototypes/m74_4/`,
+about 45 minutes of machine time in all):
+
+| batch | runs | ran |
+|---|---|---|
+| one move from rest, random over the five keys (the reboiler free in a quarter, else held 40–215 MW), 20 minutes after | 300 | 300 |
+| freed, at the 16 corners of the other four keys' box and at 32 settings the tray plant's table refuses, two hours after | 48 | 48 |
+| walks of ten presses 30 s apart on the screen's steps, switching held and free (40 freeing on a base boiled dry), 20 minutes after | 200 | 200 |
+| held at 215 MW (the free reboiler's ceiling) at the 16 corners, an hour | 16 | 16 |
+| held at 80 MW at the 16 corners, from rest and after a free run, an hour | 32 | 32 |
+| held at 0 / 20 / 40 MW at the 16 corners, an hour | 48 | 24 |
+| held 45–70 MW at the worst corner (furnace 0 or 40, reflux 0.5 or 15, the loops at twice their flow returning 60 K cold) | 16 | 5 |
+| held 30–50 MW, the loops a little gentler (1.5× their flow, or returning 40 K cold) | 6 | 2 |
+
+Every failure is one wall: a stage that stops boiling (the least vapour to
+zero on stage 3, or on stage 12 forty minutes on), the deferred wall §79.6
+names — the reboiler held too low for the heat the loops take out. How low
+runs depends on the loops: 20–40 MW where they are gentle, 80 MW at their
+coldest and fullest. The tray plant's measured table (§78.11) does not serve
+the free scheme: freed, this plant runs settings it refuses.
+
+**Decided (2026-11-10), the user: one floor, a box.** Every key over the tray
+plant's box (furnace 0–40 MW, reflux 0.5–15, the loops' flow 0–2×, their
+return ±60 K), the reboiler free or held 80–215 MW; T/G held at the edge as
+the other keys are. Its gate, `slow_the_holdup_reboiler_floor_runs_at_its_worst_corner`
+(80 MW at the worst corner, every stage boiling; at 70 MW it fails). Of the
+300 single moves 88 had a tray passing nothing down at some tick, 5 to the end
+(a reflux low or the loops cold and full); of the 288 that ran in the checks,
+94. The slowest tick seen: 168 ms, in an extreme corner (a visible hitch, not
+a stop).

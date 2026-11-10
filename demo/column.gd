@@ -282,7 +282,10 @@ const PLANTS := {
 			["gas_oil_draw", "gas oil"],
 			["residue_draw", "residue"],
 		],
-		"ticks_per_frame": 6,
+		# Measured on the screen (M74.4, §79.8): 1.1–1.6 ms a tick through its
+		# timeline, 3.0 ms while the reboiler held at 150 MW floods the column
+		# — five ticks keep that frame under 16 ms.
+		"ticks_per_frame": 5,
 		# The reboiler on keys (T/G, Y): it starts held, the distillate and
 		# the bottoms on the drum's and base's levels (scheme B, §79.1); freed,
 		# the reboiler holds the base's level itself (A).
@@ -292,6 +295,16 @@ const PLANTS := {
 		"reflux": [0.5, 15.0],
 		"loop_flow": [0.0, 2.0],
 		"loop_return_k": [-60.0, 60.0],
+		# The keys' range, a box (M74.4, §79.8; the user's choice): every key
+		# over the tray plant's box, the reboiler free or held 80–215 MW.
+		# Measured: 300 single moves, 48 runs freed for two hours (with the
+		# tray plant's refused settings), 200 walks of presses switching held
+		# and free, 32 holds at 80 MW and 16 at 215 MW an hour at the box's
+		# corners — every one ran. Held lower, the loops at their coldest and
+		# fullest leave a stage too little vapour and it stops boiling (the
+		# deferred wall): 70 MW fails there, 20–40 MW runs where the loops are
+		# gentler, and the one floor is the one that holds everywhere.
+		"reboiler_mw": [80.0, 215.0],
 		"range_ref": "§79.8",
 	},
 }

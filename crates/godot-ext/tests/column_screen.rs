@@ -1054,3 +1054,37 @@ fn slow_the_holdup_plant_timeline() {
     assert_eq!(back["drum_limit"], "normal", "{back}");
     assert_eq!(back["drum_loop_at_max"], false, "{back}");
 }
+
+/// **The holdup plant's reboiler floor** (M74.4, DESIGN §79.8): T/G hold the
+/// reboiler no lower than 80 MW, the user's choice. Held lower, the loops
+/// taking their most heat out (at twice their flow, returning 60 K cold) leave
+/// the stage under the top too little vapour, and it stops boiling — the
+/// deferred wall: at 70 MW, furnace off and the reflux at 0.5, two minutes
+/// on. At 80 MW, the same corner runs, every stage boiling.
+#[test]
+fn slow_the_holdup_reboiler_floor_runs_at_its_worst_corner() {
+    let mut screen = Screen::holdup();
+    let (column, furnace) = (screen.column, screen.furnace);
+    screen.run_to(600);
+    screen.send(&format!(
+        r#"{{"cmd":"set_furnace_duty","duty":0.0,"node":{furnace}}}"#
+    ));
+    screen.send(&format!(
+        r#"{{"cmd":"set_reflux_ratio","node":{column},"reflux_ratio":0.5}}"#
+    ));
+    screen.send_loops_flow(2.0);
+    screen.send_loops_return(-60.0);
+    screen.send(&format!(
+        r#"{{"cmd":"set_reboiler_duty","duty":80000000.0,"node":{column}}}"#
+    ));
+    let mut least = f64::INFINITY;
+    for tick in (900..=6600).step_by(300) {
+        screen.run_to(tick);
+        let vapour = screen.column_node()["column_operation"]["stage_vapour_mol_s"].clone();
+        for v in vapour.as_array().unwrap() {
+            least = least.min(v.as_f64().unwrap());
+        }
+    }
+    assert!(least > 10.0, "a stage near stopped boiling: {least} mol/s");
+    assert_eq!(screen.holdup_reading()["reboiler_held"], true);
+}

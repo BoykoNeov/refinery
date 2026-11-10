@@ -11133,3 +11133,19 @@ cut by stages that stop boiling, built with the start from empty (its own
 probe first); the ceiling built (`LOOP_CEILING`, 2.5 times the settled
 output — reflux 15 takes 2.19 — the reading `drum_loop_at_max` / `base_loop_at_max`). Next: M74.4
 (the plant, key 8, its table), then the start from empty's probe.
+
+### M74.4 — **DONE** 2026-11-10: the holdup plant, key 8, its keys' range
+
+Built (DESIGN §79.7–§79.8): `scenarios/crude_unit_holdup.toml`, the tray
+plant holding liquid in scheme B (the drum 18.7 m³, the base 115.4 m³); the
+corpus, every earlier plant byte-identical, the new one run. **A wall found
+and fixed first (the user's call):** held at 175 MW or more the plant was
+refused, "a tray ran short of its draws" — a tray short within its tick now
+gives what it has, as §79.2 says, and a loop given nothing returns no heat
+(six mutations, all caught). **A tray passing nothing down is shown, not
+refused** (the user's decision). Key 8 on the column screen (gauges for the
+drum and base, T/G the held reboiler, Y frees it, the timeline and its gate).
+**The keys' range a box (the user's decision):** the tray plant's box, the
+reboiler free or held 80–215 MW — about 670 runs measured, every failure below 80 MW
+a stage that stops boiling (the deferred wall). Next: the start from empty's
+probe (with the feed cut, by stages that stop boiling).
