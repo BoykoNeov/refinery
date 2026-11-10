@@ -13,9 +13,20 @@
 //!   n'_jc − n_jc = dt·(in − out)_c        per component, the Thomas sweep with
 //!                                         n'/dt on its diagonal, the drum a
 //!                                         row above the top stage
-//!   S_j = Σ_c K_jc·x'_jc − 1              every stage (x' unnormalised)
+//!   S_j = max(Σ_c K_jc·x'_jc − 1, −V_j/V_s)   every stage (x' unnormalised):
+//!                                         it boils, or sends up no vapour
+//!                                         with its liquid under its bubble
+//!                                         point (M74.5)
 //!   E_j = Σ in·h_in − Σ out·h_out − h_j·(H'_j − H_j)/dt − R_j (+ Q at the base)
 //! ```
+//!
+//! A stage that stops boiling (M74.5, docs/DESIGN.md §79.9) is the same
+//! stage with no vapour: its temperature is then its energy balance's alone,
+//! the heat its liquid stores carrying it below its bubble point, and the
+//! vapour coming up into it condenses in it. The complementarity is solved as
+//! a min-function by semismooth Newton (Hintermüller, Ito & Kunisch, SIAM J.
+//! Optim. 13 (2002) 865); a boiling stage's residual is the bubble point's
+//! to the bit.
 //!
 //! The liquid each stage stores is carried at its own enthalpy; the heat its
 //! liquid stores as its temperature moves is left out (§79.0 finding 7). Every
@@ -70,8 +81,13 @@ pub(crate) const LOOP_CEILING: f64 = 2.5;
 /// bound, not physics (`column_newton`'s value).
 const MAX_TEMPERATURE_STEP_K: f64 = 25.0;
 
-/// The share of its distance to zero a vapour may close in one step [-].
-const FRACTION_TO_BOUNDARY: f64 = 0.9;
+/// The vapour a stage's boiling-or-not residual reads its vapour against
+/// [mol/s] (M74.5, docs/DESIGN.md §79.9) — a numerical scale, not physics:
+/// about the holdup plant's feed in moles. Converged, a stage boils (its
+/// bubble point met) or sends up under `tolerance × VAPOUR_SCALE_MOL_S` (5e-4
+/// mol/s at the loosest tolerance); away from it, the scale only weighs the
+/// two branches against each other for Newton.
+const VAPOUR_SCALE_MOL_S: f64 = 500.0;
 
 /// Newton steps before a tick's step is refused.
 const MAX_ITERATIONS: u32 = 40;
@@ -255,34 +271,31 @@ impl ColumnStep<'_> {
             let Some(mut delta) = solve_dense(jacobian, negated) else {
                 return Err(self.unconverged(&evaluation, iterations));
             };
-            // Damped: no temperature by more than MAX_TEMPERATURE_STEP_K, no
-            // vapour through zero.
+            // Damped: no temperature by more than MAX_TEMPERATURE_STEP_K; a
+            // vapour stepped through zero lands on it, the rest of the step
+            // whole (M74.5: a stage may stop boiling — shrinking the whole
+            // step short of zero instead, no vapour could reach it, and
+            // Newton's path through a stage with none stalled where the
+            // answer has every stage boiling, docs/DESIGN.md §79.9).
             let mut scale: f64 = 1.0;
-            for (j, d) in delta.iter().enumerate() {
-                if j < n {
-                    if d.abs() > MAX_TEMPERATURE_STEP_K {
-                        scale = scale.min(MAX_TEMPERATURE_STEP_K / d.abs());
-                    }
-                } else if *d < 0.0 {
-                    scale = scale.min(FRACTION_TO_BOUNDARY * u[j] / -d);
+            for d in &delta[..n] {
+                if d.abs() > MAX_TEMPERATURE_STEP_K {
+                    scale = scale.min(MAX_TEMPERATURE_STEP_K / d.abs());
                 }
             }
             for d in &mut delta {
                 *d *= scale;
             }
-            let current = norm(&evaluation.residual);
-            let mut accepted = None;
-            let mut length = 1.0;
-            for _ in 0..MAX_HALVINGS {
-                let trial: Vec<f64> = u.iter().zip(&delta).map(|(a, d)| a + length * d).collect();
-                if let Ok(next) = self.evaluate(&trial, &amounts, &drum, &set) {
-                    if norm(&next.residual) < current {
-                        accepted = Some((trial, next));
-                        break;
-                    }
-                }
-                length *= 0.5;
-            }
+            // The step's length halved until the largest residual falls;
+            // failing that — at a stage switching between boiling and not,
+            // where the largest residual's kink can stop every length — until
+            // the sum of squares does (the semismooth Newton merit; Qi & Sun,
+            // Math. Program. 58 (1993) 353): only a tick that would be refused
+            // takes the second search.
+            let residual = &evaluation.residual;
+            let accepted = self
+                .line_search(&u, &delta, &amounts, &drum, &set, residual, norm)
+                .or_else(|| self.line_search(&u, &delta, &amounts, &drum, &set, residual, squares));
             let Some((trial, next)) = accepted else {
                 return Err(self.unconverged(&evaluation, iterations));
             };
@@ -290,6 +303,47 @@ impl ColumnStep<'_> {
             evaluation = next;
         }
         self.finish(&u, evaluation, &set)
+    }
+
+    /// The first length along `delta` (halved from the whole step) at which
+    /// `merit` falls below its value at `residual`, each vapour projected onto
+    /// zero or above, and that point's evaluation.
+    #[allow(clippy::too_many_arguments)]
+    fn line_search(
+        &self,
+        u: &[f64],
+        delta: &[f64],
+        amounts: &[Vec<f64>],
+        drum: &[f64],
+        set: &SetFlows,
+        residual: &[f64],
+        merit: fn(&[f64]) -> f64,
+    ) -> Option<(Vec<f64>, Evaluation)> {
+        let n = self.plan.stages;
+        let current = merit(residual);
+        let mut length = 1.0;
+        for _ in 0..MAX_HALVINGS {
+            let trial: Vec<f64> = u
+                .iter()
+                .zip(delta)
+                .enumerate()
+                .map(|(i, (a, d))| {
+                    let moved = a + length * d;
+                    if i >= n {
+                        moved.max(0.0)
+                    } else {
+                        moved
+                    }
+                })
+                .collect();
+            if let Ok(next) = self.evaluate(&trial, amounts, drum, set) {
+                if merit(&next.residual) < current {
+                    return Some((trial, next));
+                }
+            }
+            length *= 0.5;
+        }
+        None
     }
 
     /// The liquid off each tray from what it holds, the draws and loops off
@@ -517,7 +571,7 @@ impl ColumnStep<'_> {
         if temperatures.iter().any(|t| !t.is_finite() || *t <= 0.0) {
             return Err(outside("a stage temperature left the physical region"));
         }
-        if vapour.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+        if vapour.iter().any(|v| !v.is_finite() || *v < 0.0) {
             return Err(outside("a vapour rate left the physical region"));
         }
         let (into, out) = plan.circulation(&set.loops);
@@ -626,9 +680,13 @@ impl ColumnStep<'_> {
             return Err(outside("a mole fraction left the physical region"));
         }
 
+        // Each stage boils (Σ K·x' = 1, V ≥ 0) or does not (V = 0, Σ K·x' ≤ 1):
+        // the complementarity as a min-function, signed so a boiling stage's
+        // residual is its bubble point's (M74.5, docs/DESIGN.md §79.9).
         let mut residual = Vec::with_capacity(2 * n);
-        for (row, k_row) in x.iter().zip(&k) {
-            residual.push(row.iter().zip(k_row).map(|(x, k)| x * k).sum::<f64>() - 1.0);
+        for ((row, k_row), v) in x.iter().zip(&k).zip(vapour) {
+            let bubble = row.iter().zip(k_row).map(|(x, k)| x * k).sum::<f64>() - 1.0;
+            residual.push(bubble.max(-v / VAPOUR_SCALE_MOL_S));
         }
         let normalise = |row: &[f64]| -> Result<Vec<f64>, SimError> {
             Ok(MoleFractions::from_amounts(row)?.fractions().to_vec())
@@ -874,6 +932,11 @@ impl ColumnStep<'_> {
 /// The largest absolute residual.
 fn norm(residual: &[f64]) -> f64 {
     residual.iter().fold(0.0, |m, r| m.max(r.abs()))
+}
+
+/// The residuals' sum of squares.
+fn squares(residual: &[f64]) -> f64 {
+    residual.iter().map(|r| r * r).sum()
 }
 
 /// The tridiagonal solve: `lower[i]·x[i−1] + diagonal[i]·x[i] + upper[i]·x[i+1]

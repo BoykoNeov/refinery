@@ -31081,3 +31081,28 @@ running column solved at load, the state then emptied; the burst tube's
 drain back down the transfer line a ledger row of its own (C28), a feed shut
 meaning the furnace shut until then; the pressure-drop wall (the cut with the
 loops and reflux stopped) open.
+
+### 79.10 M74.5 step 1 built — stages that stop boiling (2026-11-10)
+
+Built (`solvers::column_step`), the probe's `l2` prototype without its
+switch (§79.9): each stage's first residual `max(Σ K·x' − 1, −V/V_s)`,
+`VAPOUR_SCALE_MOL_S` = 500 mol/s a numerical scale (converged, a stage boils
+or sends up under `tolerance × V_s`, 5e-4 mol/s at the loosest tolerance); a
+vapour stepped through zero projected onto it, the temperatures still capped
+at 25 K a step (the fraction-to-boundary rule gone); a step with no descent in
+the largest residual searched again on the sum of squares — only a tick that
+would be refused. A zero vapour is no longer outside the physical region.
+
+Tested first, failing on 9e9a650 (`column_holdup.rs`): **the feed shut in
+one tick, the furnace out** (`slow_a_feed_shut_in_one_tick_runs_on`: five
+minutes, the least vapour 42.9 mol/s, the books to 1.8e-10 kg/s and 55 W);
+**held at 0 MW in the worst corner** (`slow_held_at_nothing_…`: stages not
+boiling 4 529 ticks, the last 4 797 ticks on, the books to 2.4e-10 kg/s and
+3.6 W); and for the second search, **the feed back in one tick onto a stage
+not boiling** (`slow_the_feed_back_…`: stage 3 cold 735 ticks at 20 MW, every
+stage boiling 8 ticks after the valve opens). Mutations: seven, six caught,
+one argued — the vapour scale ×100 (a weight between the two branches for
+Newton; converged, either is zero). FULL tier green; every plant
+byte-identical, 70 of 70 on both fidelities. Key 8's range is unchanged here:
+the trays that drain without vapour come first (§79.9 decision 2), then the
+range is measured again.

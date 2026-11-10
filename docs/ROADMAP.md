@@ -11183,3 +11183,9 @@ The prototype (`tools/steptime/prototypes/m74_5_0/stop_boiling.patch`, its
 vapour (or too little) passing liquid through its holes at a published
 weeping rate; key 8's held reboiler 0–215 MW, its gate moved to 0 MW; the
 corpus byte-identical but where a stage stops boiling.
+
+**Step 1 DONE 2026-11-10** (DESIGN §79.10): stages that stop boiling, in
+`column_step`; the feed cut in one tick (furnace out), held at 0 MW, the feed
+back onto a stage not boiling — failing first, then passing; every plant
+byte-identical. Next: step 2, the trays that drain without vapour (Hsieh &
+McNulty's weeping, a prototype first), then step 3, key 8 to 0 MW.

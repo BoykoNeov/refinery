@@ -1584,3 +1584,260 @@ fn slow_a_tray_short_within_the_tick_gives_what_it_has() {
     assert!(worst < 1.0e-8, "{worst}");
     assert!(worst_heat < 20.0, "{worst_heat}");
 }
+
+/// The holdup plant as shipped (`crude_unit_holdup.toml`) with a valve on
+/// its crude line, wide (as `fixture_valved`), to shut the feed off with.
+fn holdup_plant_valved() -> String {
+    let src = HOLDUP_PLANT.replace("\r\n", "\n");
+    let valved = src
+        .replacen(
+            "[nodes.furnace]",
+            "[nodes.feed_valve]\ntype = \"valve\"\nkv = 5000.0\nopening = 1.0\n\n[nodes.furnace]",
+            1,
+        )
+        .replacen(
+            "name = \"crude_line\"\nfrom = \"crude_source\"\nto = \"furnace\"",
+            "name = \"crude_line\"\nfrom = \"crude_source\"\nto = \"feed_valve\"\nlength_m = 1.0\n\
+             diameter_m = 0.08\n\n[[pipes]]\nname = \"valve_line\"\nfrom = \"feed_valve\"\n\
+             to = \"furnace\"",
+            1,
+        );
+    assert!(valved.contains("valve_line"), "the valve was not put in");
+    valved
+}
+
+/// Each stage's vapour this tick [mol/s], top first.
+fn stage_vapour(snapshot: &Snapshot) -> Vec<f64> {
+    snapshot
+        .nodes
+        .iter()
+        .find(|n| n.name == "column")
+        .unwrap()
+        .column_operation
+        .as_ref()
+        .unwrap()
+        .stage_vapour_mol_s
+        .clone()
+}
+
+/// The column's books over one tick: each component's worst imbalance
+/// [kg/s] and the heat's [W], from the feed line, the draw lines and what the
+/// column came to hold.
+struct Books {
+    feed: refinery_core::graph::EdgeId,
+    draws: Vec<refinery_core::graph::EdgeId>,
+    cp: Vec<f64>,
+    mass: f64,
+    heat: f64,
+}
+
+impl Books {
+    fn of(engine: &Engine) -> Self {
+        Books {
+            feed: engine
+                .snapshot()
+                .edges
+                .iter()
+                .find(|e| e.name == "transfer_line")
+                .unwrap()
+                .id,
+            draws: draw_edges(engine).into_iter().map(|(_, e)| e).collect(),
+            cp: (0..engine.slate.len())
+                .map(|c| engine.slate.get(c).cp.value())
+                .collect(),
+            mass: 0.0,
+            heat: 0.0,
+        }
+    }
+
+    /// One tick, its books read.
+    fn tick(&mut self, engine: &mut Engine) -> Snapshot {
+        let dt = 0.1;
+        let held = state(engine).unwrap();
+        let before = inventory(&held);
+        let heat_before = held_heat(&held, &self.cp);
+        let snapshot = run(engine, 1);
+        let after = inventory(&state(engine).unwrap());
+        let flow = |edge| {
+            let e = snapshot.edges.iter().find(|e| e.id == edge).unwrap();
+            (
+                e.stream.mass_flow.value(),
+                e.stream.composition.fractions().to_vec(),
+            )
+        };
+        let (fed, z) = flow(self.feed);
+        for c in 0..z.len() {
+            let mut balance = fed * z[c] - (after[c] - before[c]) / dt;
+            for edge in &self.draws {
+                let (drawn, w) = flow(*edge);
+                balance -= drawn * w[c];
+            }
+            self.mass = self.mass.max(balance.abs());
+        }
+        self.heat = self
+            .heat
+            .max(heat_imbalance(engine, heat_before, &self.cp, self.feed).abs());
+        snapshot
+    }
+}
+
+/// **The feed shut in one tick, the furnace out: the column runs on, every
+/// stage boiling** (M74.5, docs/DESIGN.md §79.9; C26): refused before M74.5
+/// on its first tick ("stage 3's vapour 0.000"), Newton's path passing
+/// through a stage with no vapour; with stages that may stop boiling the
+/// tick converges and no stage stops (the least vapour measured 43 mol/s).
+/// Five minutes with no feed, its books closing every tick. (With the furnace
+/// left firing into the shut line its tubes burst 9.3 minutes on: C28.)
+#[test]
+fn slow_a_feed_shut_in_one_tick_runs_on() {
+    let mut engine = engine_of(&holdup_plant_valved()).unwrap();
+    run(&mut engine, 100);
+    let valve = engine.graph.find_node("feed_valve").unwrap();
+    let furnace = engine.graph.find_node("furnace").unwrap();
+    engine
+        .apply(Command::SetFurnaceDuty {
+            node: furnace,
+            duty: Watt(0.0),
+        })
+        .unwrap();
+    engine
+        .apply(Command::SetValveOpening {
+            node: valve,
+            opening: 0.0,
+        })
+        .unwrap();
+    let mut books = Books::of(&engine);
+    let mut least = f64::INFINITY;
+    for t in 0..3000 {
+        let snapshot = books.tick(&mut engine);
+        assert_eq!(line_flow(&snapshot, "transfer_line"), 0.0, "tick {t}");
+        least = stage_vapour(&snapshot).into_iter().fold(least, f64::min);
+    }
+    println!(
+        "M74_5 feed cut: least vapour {least} mol/s; books {} kg/s, {} W",
+        books.mass, books.heat
+    );
+    assert!(least > 10.0, "a stage stopped boiling: {least} mol/s");
+    assert!(books.mass < 1.0e-8, "{}", books.mass);
+    assert!(books.heat < 200.0, "{}", books.heat);
+}
+
+/// **Held at 0 MW in the worst corner, stages stop boiling and boil again**
+/// (M74.5, docs/DESIGN.md §79.9): the furnace out, the reflux 0.5, the loops at
+/// twice their flow returning 60 K cold, the reboiler held at nothing —
+/// refused before M74.5 within half a minute (a stage's vapour to zero);
+/// now the trays the loops chill stop boiling (measured: stages 3 and 4, 4 529
+/// ticks, the last 4 797 ticks on) and boil again as the column settles, the
+/// books closing on every tick, cold or not (measured 2.4e-10 kg/s, 3.6 W).
+#[test]
+fn slow_held_at_nothing_stages_stop_boiling_and_boil_again() {
+    let mut engine = engine_of(HOLDUP_PLANT).unwrap();
+    run(&mut engine, 100);
+    let column = engine.graph.find_node("column").unwrap();
+    let furnace = engine.graph.find_node("furnace").unwrap();
+    engine
+        .apply(Command::SetFurnaceDuty {
+            node: furnace,
+            duty: Watt(0.0),
+        })
+        .unwrap();
+    set_reflux(&mut engine, 0.5);
+    for (i, (flow, return_c)) in [(85.0, 150.0), (95.0, 215.0), (65.0, 270.0)]
+        .into_iter()
+        .enumerate()
+    {
+        engine
+            .apply(Command::SetLoopFlow {
+                node: column,
+                pumparound_loop: i as u32,
+                flow: refinery_core::units::KgPerSec(2.0 * flow),
+            })
+            .unwrap();
+        engine
+            .apply(Command::SetLoopReturnTemperature {
+                node: column,
+                pumparound_loop: i as u32,
+                temperature: refinery_core::units::Kelvin(return_c + 273.15 - 60.0),
+            })
+            .unwrap();
+    }
+    set_hold(&mut engine, Some(0.0));
+    let mut books = Books::of(&engine);
+    let (mut cold_ticks, mut last_cold) = (0, 0);
+    let mut snapshot = engine.snapshot();
+    for t in 0..6000 {
+        snapshot = books.tick(&mut engine);
+        if stage_vapour(&snapshot).iter().any(|v| *v < 1.0e-3) {
+            cold_ticks += 1;
+            last_cold = t;
+        }
+    }
+    println!(
+        "M74_5 held at nothing: {cold_ticks} ticks with a stage not boiling, the last at {last_cold}; \
+         books {} kg/s, {} W",
+        books.mass, books.heat
+    );
+    assert!(cold_ticks > 600, "{cold_ticks}");
+    assert!(
+        stage_vapour(&snapshot).iter().all(|v| *v >= 1.0e-3),
+        "a stage still not boiling at ten minutes: {:?}",
+        stage_vapour(&snapshot)
+    );
+    assert!(books.mass < 1.0e-8, "{}", books.mass);
+    assert!(books.heat < 200.0, "{}", books.heat);
+}
+
+/// **The feed back in one tick onto a stage not boiling** (M74.5,
+/// docs/DESIGN.md §79.9): the feed shut with the reboiler held at 20 MW, stage 3
+/// stops boiling; five minutes on the valve opens wide in one tick. Newton's
+/// largest-residual search found no length on that tick (the probe: "stage
+/// 13's energy balance short by 0.010 MW", no descent at the switch); searched
+/// again on the sum of squares it converges, stage 3 boiling again within a
+/// second. The furnace fires on: its tubes would burst at 9.3 minutes (C28).
+#[test]
+fn slow_the_feed_back_in_one_tick_onto_a_stage_not_boiling() {
+    let mut engine = engine_of(&holdup_plant_valved()).unwrap();
+    run(&mut engine, 100);
+    let valve = engine.graph.find_node("feed_valve").unwrap();
+    let shut = |engine: &mut Engine, opening: f64| {
+        engine
+            .apply(Command::SetValveOpening {
+                node: valve,
+                opening,
+            })
+            .unwrap();
+    };
+    shut(&mut engine, 0.0);
+    set_hold(&mut engine, Some(20.0e6));
+    let mut books = Books::of(&engine);
+    let mut cold_before = 0;
+    let mut snapshot = engine.snapshot();
+    for _ in 0..3000 {
+        snapshot = books.tick(&mut engine);
+        if stage_vapour(&snapshot)[2] < 1.0e-3 {
+            cold_before += 1;
+        }
+    }
+    assert!(
+        stage_vapour(&snapshot)[2] < 1.0e-3,
+        "stage 3 boils before the feed is back: {:?}",
+        stage_vapour(&snapshot)
+    );
+    shut(&mut engine, 1.0);
+    let mut cold_after = 0;
+    for _ in 0..600 {
+        snapshot = books.tick(&mut engine);
+        if stage_vapour(&snapshot).iter().any(|v| *v < 1.0e-3) {
+            cold_after += 1;
+        }
+    }
+    println!(
+        "M74_5 feed back: stage 3 not boiling {cold_before} ticks before, a stage {cold_after} \
+         after; books {} kg/s, {} W",
+        books.mass, books.heat
+    );
+    assert!(line_flow(&snapshot, "transfer_line") > 50.0);
+    assert!(cold_after < 100, "{cold_after}");
+    assert!(books.mass < 1.0e-8, "{}", books.mass);
+    assert!(books.heat < 200.0, "{}", books.heat);
+}
