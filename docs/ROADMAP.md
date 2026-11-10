@@ -11195,4 +11195,10 @@ disagree on 5 mm holes — decided, Eduljee's when, Hsieh & McNulty's how fast;
 built with its reference case, but a tray over a stage that stops boiling
 then empties, which the step cannot hold (49 of the 70 held runs). **Decided
 2026-11-10, the user: ship the shorter step** — the draining kept as a patch
-for the start from empty (C29). Next: step 3, key 8 to 0 MW.
+for the start from empty (C29).
+
+**Step 3 DONE 2026-11-10** (DESIGN §79.13): key 8's held reboiler 0–215 MW,
+the 70 holds and 200 single moves re-measured on the committed engine, all
+run; the screen names the stages not boiling. **M74.5 done.** Next: part B of
+the start from empty — each tray's steel its temperature, an empty tray a state
+the step holds (then the draining, C29), the total-reflux start; its own probe.

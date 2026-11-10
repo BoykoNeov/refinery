@@ -1055,14 +1055,14 @@ fn slow_the_holdup_plant_timeline() {
     assert_eq!(back["drum_loop_at_max"], false, "{back}");
 }
 
-/// **The holdup plant's reboiler floor** (M74.4, DESIGN §79.8): T/G hold the
-/// reboiler no lower than 80 MW, the user's choice. Held lower, the loops
-/// taking their most heat out (at twice their flow, returning 60 K cold) leave
-/// the stage under the top too little vapour, and it stops boiling — the
-/// deferred wall: at 70 MW, furnace off and the reflux at 0.5, two minutes
-/// on. At 80 MW, the same corner runs, every stage boiling.
+/// **The holdup plant's reboiler held at nothing, at its worst corner**
+/// (M74.5, DESIGN §79.10, §79.13): T/G now hold the reboiler down to 0 MW (the
+/// 80 MW floor of M74.4, §79.8, lifted). At 0 MW with the furnace off, the
+/// reflux at 0.5 and the loops taking their most heat out (twice their flow,
+/// returning 60 K cold), stages stop boiling — refused before M74.5 at 70 MW
+/// here — and the column runs on; held back at 86 MW, every stage boils again.
 #[test]
-fn slow_the_holdup_reboiler_floor_runs_at_its_worst_corner() {
+fn slow_the_holdup_reboiler_held_at_nothing_runs_at_its_worst_corner() {
     let mut screen = Screen::holdup();
     let (column, furnace) = (screen.column, screen.furnace);
     screen.run_to(600);
@@ -1075,16 +1075,30 @@ fn slow_the_holdup_reboiler_floor_runs_at_its_worst_corner() {
     screen.send_loops_flow(2.0);
     screen.send_loops_return(-60.0);
     screen.send(&format!(
-        r#"{{"cmd":"set_reboiler_duty","duty":80000000.0,"node":{column}}}"#
+        r#"{{"cmd":"set_reboiler_duty","duty":0.0,"node":{column}}}"#
     ));
-    let mut least = f64::INFINITY;
+    let vapour = |screen: &Screen| -> Vec<f64> {
+        screen.column_node()["column_operation"]["stage_vapour_mol_s"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect()
+    };
+    let mut cold = 0;
     for tick in (900..=6600).step_by(300) {
         screen.run_to(tick);
-        let vapour = screen.column_node()["column_operation"]["stage_vapour_mol_s"].clone();
-        for v in vapour.as_array().unwrap() {
-            least = least.min(v.as_f64().unwrap());
-        }
+        cold += vapour(&screen).iter().filter(|v| **v < 1.0e-3).count();
     }
-    assert!(least > 10.0, "a stage near stopped boiling: {least} mol/s");
+    assert!(cold > 0, "no stage stopped boiling at 0 MW");
     assert_eq!(screen.holdup_reading()["reboiler_held"], true);
+    screen.send(&format!(
+        r#"{{"cmd":"set_reboiler_duty","duty":86000000.0,"node":{column}}}"#
+    ));
+    screen.run_to(9600);
+    let back = vapour(&screen);
+    assert!(
+        back.iter().all(|v| *v >= 1.0e-3),
+        "held back at 86 MW, a stage still not boiling: {back:?}"
+    );
 }

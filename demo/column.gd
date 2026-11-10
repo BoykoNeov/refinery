@@ -296,16 +296,15 @@ const PLANTS := {
 		"loop_flow": [0.0, 2.0],
 		"loop_return_k": [-60.0, 60.0],
 		# The keys' range, a box (M74.4, §79.8; the user's choice): every key
-		# over the tray plant's box, the reboiler free or held 80–215 MW.
+		# over the tray plant's box, the reboiler free or held 0–215 MW.
 		# Measured: 300 single moves, 48 runs freed for two hours (with the
 		# tray plant's refused settings), 200 walks of presses switching held
 		# and free, 32 holds at 80 MW and 16 at 215 MW an hour at the box's
-		# corners — every one ran. Held lower, the loops at their coldest and
-		# fullest leave a stage too little vapour and it stops boiling (the
-		# deferred wall): 70 MW fails there, 20–40 MW runs where the loops are
-		# gentler, and the one floor is the one that holds everywhere.
-		"reboiler_mw": [80.0, 215.0],
-		"range_ref": "§79.8",
+		# corners — every one ran. Below 80 MW a stage may stop boiling (M74.5,
+		# §79.9–§79.10): the 70 held runs an hour at 0–70 MW at the box's
+		# corners and 200 single moves at 0–80 MW, every one ran.
+		"reboiler_mw": [0.0, 215.0],
+		"range_ref": "§79.8, §79.13",
 	},
 }
 
@@ -1514,6 +1513,18 @@ func _stage_vapour() -> Array:
 	return _operation().get("stage_vapour_mol_s", [])
 
 
+## The stages (one-based) that send up no vapour this tick — a stage that
+## stopped boiling (M74.5, §79.10): converged, under a thousandth of a
+## mole a second where a boiling one sends hundreds.
+func _stages_not_boiling() -> Array:
+	var cold := []
+	var vapour := _stage_vapour()
+	for j in vapour.size():
+		if float(vapour[j]) < 1.0e-3:
+			cold.append(j + 1)
+	return cold
+
+
 func _c(kelvin: float) -> String:
 	return "%.1f °C" % (kelvin - 273.15)
 
@@ -1885,9 +1896,13 @@ func _draw_trays() -> void:
 	var flooding := _trays_flooding()
 	var weeping := _trays_weeping()
 	var dry := _trays_dry()
-	if flooding.is_empty() and weeping.is_empty() and dry.is_empty():
+	var cold := _stages_not_boiling()
+	if flooding.is_empty() and weeping.is_empty() and dry.is_empty() and cold.is_empty():
 		_text(at, "every tray inside its window", GOOD, 13)
 		return
+	if not cold.is_empty():
+		_text(at, "NOT BOILING: stages %s send up no vapour" % _stage_ranges(cold), WARN, 13)
+		at.y += 18
 	if not dry.is_empty():
 		_text(at, "DRY: trays %s pass nothing down" % _stage_ranges(dry), WARN, 13)
 		at.y += 18

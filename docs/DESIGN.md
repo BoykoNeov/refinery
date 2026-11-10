@@ -31162,3 +31162,19 @@ shorter step now** — stages that stop boiling (§79.10) and key 8 to 0 MW —
 the draining kept as `tools/steptime/prototypes/m74_5/draining.patch` (the
 code, its reference test; applies to 67cbbd0) and built with the empty
 trays (C29).
+
+### 79.13 M74.5 step 3 — key 8's held reboiler down to 0 MW (2026-11-10)
+
+The user's decision (§79.9, decision 1): with stages that stop boiling built
+(§79.10), T/G hold the holdup plant's reboiler anywhere from 0 to 215 MW
+(`demo/column.gd`, `reboiler_mw`; M74.4's floor of 80 MW, §79.8, lifted).
+Measured on the committed engine (`tools/steptime/prototypes/m74_5/`,
+`head_*.txt`): the 70 hour-long holds at the box's corners (0–70 MW and the
+M74.4 corners), 70 run; the 200 single moves held 0–80 MW, 200 run — both
+the prototype's to the printed digit. The screen names the stages that send
+up no vapour (under 10⁻³ mol/s) as "NOT BOILING" over its tray readings. The
+gate `slow_the_holdup_reboiler_held_at_nothing_runs_at_its_worst_corner`
+(`crates/godot-ext/tests/column_screen.rs`) replaces M74.4's floor gate: at
+0 MW in the worst corner stages stop boiling and the column runs on; held
+back at 86 MW, every stage boils again. **M74.5 done**; the draining (C29)
+waits for the start from empty.
