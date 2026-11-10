@@ -105,6 +105,16 @@ each run's stages that sent up no vapour (under 1e-3 mol/s) counted, and
    feed should do — the column's liquid back down the transfer line to the
    hole, or a check valve at the column — is for the user.
 
+9. **What building it would disturb** (the advisor's check: the projection
+   changes Newton's path on any tick a step would take a vapour below zero,
+   which the corpus at rest never asks). On `l2`: `column_holdup::` 23 of 23,
+   the timeline and floor gates (`slow_the_holdup_plant_timeline`,
+   `slow_the_holdup_reboiler_floor_runs_at_its_worst_corner` — it asserts
+   80 MW runs, not that 70 fails), `refinery-solvers --lib` 176 of 176; and 40
+   of M74.4's walks (`walks40.txt`, ten presses each) read the same patched and
+   unpatched to the digits the driver prints (levels 3 decimals, flows 2) —
+   `walks_*.txt`.
+
 ## What it costs
 
 About 25 minutes of machine time in all (the 70 held hours patched and

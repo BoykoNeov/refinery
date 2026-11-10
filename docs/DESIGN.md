@@ -31045,6 +31045,10 @@ without a division by it (`sieve_tray`: no flood, full weeping).
    ahead of the furnace changes nothing; with the furnace off the cut runs
    20 minutes (at 86 MW and at 20 MW, stages 1–4 then not boiling).
 
+8. On the prototype the holdup plant's tests pass (`column_holdup::` 23,
+   its timeline and floor gates, the solvers' 176), and 40 of M74.4's walks
+   read the same as unpatched to the printed digits.
+
 **Part B, read off the code** — what an empty column needs, for the user:
 the level loops' outputs are multiples of the first tick's settled flows (the
 design point can still be solved at load, the state then set empty); the
