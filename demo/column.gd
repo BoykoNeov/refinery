@@ -41,6 +41,13 @@
 #               tray reads its share of flood, and one that floods (too much
 #               vapour) or weeps (too little) is marked on the column. The
 #               keys go past both: the column runs on, its trays named.
+#   holdup      scenarios/crude_unit_holdup.toml — that tray plant holding
+#               liquid (M74, §79): on its trays, in a reflux drum and in its
+#               base, so a key moved takes minutes to reach the products. Its
+#               reboiler starts held: the distillate holds the drum's level,
+#               the bottoms the base's, the reflux as set. T/G hold the
+#               reboiler higher or lower, Y frees it to hold the base's level
+#               itself. A drum or base run dry or full is shown, not refused.
 #
 # Same rule as every screen: this script computes nothing physical. Every
 # number it draws is a snapshot field — the stage temperatures and vapour, the
@@ -51,7 +58,7 @@
 # to MW (CLAUDE.md rule 4).
 #
 # Interactive:  godot --path . res://demo/column.tscn
-#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 / 6 / 7 switch plants)
+#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 switch plants)
 # Recorded:     godot --headless --path . res://demo/column.tscn --quit-after 20000 -- --auto [--plant=hot]
 #               ...runs that plant's scripted timeline (TIMELINES) and prints a
 #               `t=` line at a fixed interval plus one line per command.
@@ -261,6 +268,32 @@ const PLANTS := {
 		"loop_return_k": [-60.0, 60.0],
 		"range_ref": "§78.11",
 	},
+	"holdup":
+	{
+		"scenario": "res://scenarios/crude_unit_holdup.toml",
+		"title": "The tray plant holding liquid: a key moved takes minutes to reach the products",
+		"furnace": "furnace",
+		"feed_pipe": "transfer_line",
+		"draws":
+		[
+			["naphtha_draw", "naphtha"],
+			["kerosene_draw", "kerosene"],
+			["diesel_draw", "diesel"],
+			["gas_oil_draw", "gas oil"],
+			["residue_draw", "residue"],
+		],
+		"ticks_per_frame": 6,
+		# The reboiler on keys (T/G, Y): it starts held, the distillate and
+		# the bottoms on the drum's and base's levels (scheme B, §79.1); freed,
+		# the reboiler holds the base's level itself (A).
+		"reboiler": true,
+		"furnace_step_mw": 5.0,
+		"furnace_mw": [0.0, 40.0],
+		"reflux": [0.5, 15.0],
+		"loop_flow": [0.0, 2.0],
+		"loop_return_k": [-60.0, 60.0],
+		"range_ref": "§79.8",
+	},
 }
 
 ## Scripted timelines for the recorded runs, in ticks. Each is replayed with the
@@ -368,11 +401,27 @@ const AUTO_TRAYS := {
 	4800: ["loops_return_up"],
 	5100: ["quit"],
 }
+## holdup (M74.4, §79.8), the tray plant holding liquid, its reboiler held
+## from its first tick: the reflux up to 6 at 600 takes the distillate down at
+## once while the drum's level dips, and four minutes on the drum is still
+## climbing back; the reboiler held at 150 MW at 3 000 boils the base down
+## until it reads dry, the reboiler throttled to what it can boil and the
+## bottoms stopped; freed at 6 000 on its low base, the reboiler takes the
+## base's level and the bottoms goes back to its share of the feed; the reflux
+## down to 0.5 at 9 000 fills the drum — full, the distillate at its ceiling
+## and the excess with it — and over the next minutes it comes back down.
+const AUTO_HOLDUP := {
+	600: ["reflux_6"],
+	3000: ["reboiler_150"],
+	6000: ["reboiler_free"],
+	9000: ["reflux_0.5"],
+	12000: ["quit"],
+}
 ## The reboiler key pressed every `[2]` ticks from `[0]` to `[1]` on a timeline.
 const WALKS := {"cold": [510, 2390, 10]}
 const TIMELINES := {
 	"crude": AUTO_CRUDE, "hot": AUTO_HOT, "overheated": AUTO_OVERHEATED, "stripped": AUTO_STRIPPED, "cold": AUTO_COLD,
-	"loops": AUTO_LOOPS, "trays": AUTO_TRAYS
+	"loops": AUTO_LOOPS, "trays": AUTO_TRAYS, "holdup": AUTO_HOLDUP
 }
 const AUTO_SHOT_TICKS := {
 	"crude": [600, 1500, 2400, 3000],
@@ -382,6 +431,7 @@ const AUTO_SHOT_TICKS := {
 	"cold": [500, 1005, 2000, 2400],
 	"loops": [1500, 2400, 3300, 3900],
 	"trays": [1500, 2400, 3300, 3900, 4500, 4800],
+	"holdup": [1200, 3900, 6600, 9600, 11400],
 }
 const PRINT_EVERY := 300
 
@@ -447,7 +497,7 @@ func _ready() -> void:
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
 	if not PLANTS.has(plant_key):
-		_halt("no plant '%s' (crude | hot | overheated | stripped | cold | loops | trays)" % plant_key)
+		_halt("no plant '%s' (crude | hot | overheated | stripped | cold | loops | trays | holdup)" % plant_key)
 		return
 	_load(plant_key)
 
@@ -589,6 +639,8 @@ func _input(event: InputEvent) -> void:
 			_load("loops")
 		KEY_7:
 			_load("trays")
+		KEY_8:
+			_load("holdup")
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -656,6 +708,8 @@ func _do(action: String) -> void:
 			_set_reflux(_reflux_set() + step)
 		"reflux_0":
 			_set_reflux(0.0)
+		"reflux_0.5":
+			_set_reflux(0.5)
 		"reflux_1":
 			_set_reflux(1.0)
 		"reflux_1.5":
@@ -707,22 +761,40 @@ func _do(action: String) -> void:
 			if not plant.has("reboiler"):
 				_say("this plant's reboiler is not on a key", true)
 				return
-			# From the duty it RUNS at, so a walk follows the feed (§71.3).
+			# From the duty it RUNS at, so a walk follows the feed (§71.3); on a
+			# column that holds liquid, held, from its hold — a dry base
+			# throttles what it runs at, and a step from that would lower it.
 			var running := _mw("reboiler_w")
+			if _holds_liquid() and _held():
+				running = _held_mw()
 			var target := running + DUTY_STEP_MW if action == "reboiler_up" else maxf(0.0, running - DUTY_STEP_MW)
 			if action == "reboiler_down" and running <= 0.0:
 				_hold("reboiler", "0.0 MW")
 				return
 			if not _held() and _hold_refused():
 				return
+			# A plant whose held reboiler has a measured range (M74.4): the
+			# press is held at its edge, as the other keys' are.
+			if plant.has("reboiler_mw"):
+				var limits: Array = plant["reboiler_mw"]
+				var clamped := clampf(target, limits[0], limits[1])
+				if not is_equal_approx(clamped, target) and _held() and is_equal_approx(clamped, _held_mw()):
+					_hold("reboiler", "%.1f MW" % clamped)
+					return
+				target = clamped
 			_send("hold the reboiler at %.1f MW" % target, {"cmd": "set_reboiler_duty", "node": column_id, "duty": target * 1.0e6})
+		"reboiler_150":
+			_send("hold the reboiler at 150.0 MW", {"cmd": "set_reboiler_duty", "node": column_id, "duty": 150.0e6})
 		"reboiler_free":
 			if not plant.has("reboiler"):
 				_say("this plant's reboiler is not on a key", true)
 				return
 			if _free_holds():
 				return
-			_send("free the reboiler: it closes the column at the reflux of %.1f" % _reflux_set(), {"cmd": "set_reboiler_duty", "node": column_id, "duty": null})
+			var freed := "free the reboiler: it closes the column at the reflux of %.1f" % _reflux_set()
+			if _holds_liquid():
+				freed = "free the reboiler: it holds the base's level, the bottoms at its share of the feed"
+			_send(freed, {"cmd": "set_reboiler_duty", "node": column_id, "duty": null})
 
 
 ## On a plant whose reboiler is on a key, while it is held: the presses past
@@ -999,7 +1071,7 @@ func _grid_step(key: String, value: float, step: float) -> float:
 ## Whether the region judges a press now: on a plant whose reboiler is on a
 ## key, its region is the column free (M67.5); held, `held_limits` judge.
 func _region_applies() -> bool:
-	return not region.is_empty() and not (PLANTS[plant_key].has("reboiler") and _held())
+	return not region.is_empty() and not (PLANTS[plant_key].has("held_limits") and _held())
 
 
 ## Whether the region allows the keys at `values`: every grid setting around
@@ -1236,6 +1308,19 @@ func _trays_weeping() -> Array:
 	return _operation().get("trays_weeping", [])
 
 
+## The stages whose trays pass no liquid to the tray below (M74.4, §79.7):
+## the liquid down the snapshot reads at zero — everything reaching the tray
+## boils off or leaves as its draws. Shown, not refused (the user's decision).
+## Empty on a column that publishes no liquid down.
+func _trays_dry() -> Array:
+	var down: Array = _operation().get("stage_liquid_mol_s", [])
+	var dry := []
+	for j in range(0, down.size() - 1):
+		if float(down[j]) == 0.0:
+			dry.append(j + 1)
+	return dry
+
+
 func _tray_most(field: String) -> float:
 	var most := -INF
 	for tray in _trays():
@@ -1282,9 +1367,45 @@ func _loop_name(i: int) -> String:
 
 
 ## Whether the column holds its reboiler (`reboiler_duty_mw`, M64): its
-## reflux is then a result, and its declared `reflux_ratio` only a seed.
+## reflux is then a result, and its declared `reflux_ratio` only a seed — but
+## on a column that holds liquid (M74) the reflux stays as set, the drum's
+## level setting the distillate. Such a column declared held commits its
+## hold on its first tick, so before it the file's word is read.
 func _held() -> bool:
+	if _holds_liquid() and _cascade()["holdup"].get("state") == null:
+		return bool(_cascade()["holdup"]["start_held"])
 	return _cascade().has("reboiler_duty")
+
+
+## Whether the column holds liquid on its trays, in a reflux drum and a base
+## (M74, §79): a key moved then takes minutes to reach the products.
+func _holds_liquid() -> bool:
+	return _cascade().has("holdup")
+
+
+## Whether the column's reflux is a result of its held reboiler rather than
+## its setting: held, and holding no liquid.
+func _reflux_is_result() -> bool:
+	return _held() and not _holds_liquid()
+
+
+## What the column that holds liquid read this tick (M74.3, §79.5): which
+## stream holds the base, the drum's and base's levels and limits, and a level
+## loop at its ceiling. Empty before the first tick.
+func _holdup() -> Dictionary:
+	return _operation().get("holdup", {})
+
+
+## The liquid the column holds [kg]: its trays', its base's and its drum's.
+## Zero before the first tick fills it.
+func _held_kg() -> float:
+	var state = _cascade()["holdup"].get("state")
+	if state == null:
+		return 0.0
+	var total := float(state["drum_liquid"])
+	for kg in state["stage_liquid"]:
+		total += float(kg)
+	return total
 
 
 func _held_mw() -> float:
@@ -1316,7 +1437,7 @@ func _cut_words(share: float) -> String:
 
 ## Whether the column runs above the reflux it is set to (never on a held one).
 func _raised() -> bool:
-	return not _held() and _reflux_ran() > _reflux_set() + 1e-9
+	return not _reflux_is_result() and _reflux_ran() > _reflux_set() + 1e-9
 
 
 func _steam_opening() -> float:
@@ -1401,7 +1522,7 @@ func _readout(tick: int) -> String:
 			_duty_w() / 1.0e6,
 			_feed_k() - 273.15,
 			_flash() * 100.0,
-			"ran=%.3f (a result)" % _reflux_ran() if _held() else "set=%.2f ran=%.3f" % [_reflux_set(), _reflux_ran()],
+			"ran=%.3f (a result)" % _reflux_ran() if _reflux_is_result() else "set=%.2f ran=%.3f" % [_reflux_set(), _reflux_ran()],
 			_mw("condenser_w"),
 			_mw("reboiler_w"),
 			pumparounds,
@@ -1412,7 +1533,14 @@ func _readout(tick: int) -> String:
 		line += "  steam=%.0f%% %.3f kg/s  bottom=%.1f C" % [
 			_steam_opening() * 100.0, _steam_kg_s(), float(stages[-1]) - 273.15 if not stages.is_empty() else 0.0
 		]
-	if PLANTS[plant_key].has("reboiler"):
+	if _holds_liquid() and not _holdup().is_empty():
+		var h := _holdup()
+		line += "  %s  drum %.0f%% %s  base %.0f%% %s%s  held %.1f t" % [
+			"held: D on drum, B on base" if bool(h["reboiler_held"]) else "free: reboiler on base",
+			float(h["drum_level"]) * 100.0, str(h["drum_limit"]), float(h["base_level"]) * 100.0, str(h["base_limit"]),
+			_loop_max_words(h), _held_kg() / 1000.0
+		]
+	elif PLANTS[plant_key].has("reboiler"):
 		if not _held():
 			line += "  reboiler free"
 		elif _declined().is_empty():
@@ -1429,6 +1557,8 @@ func _readout(tick: int) -> String:
 			_tray_least("flood_fraction") * 100.0, _tray_most("flood_fraction") * 100.0, _tray_span_pa() / 100.0,
 			_stage_ranges(_trays_flooding()), _stage_ranges(_trays_weeping())
 		]
+		if not _trays_dry().is_empty():
+			line += " dry [%s]" % _stage_ranges(_trays_dry())
 	var cut := _cut_back()
 	if not cut.is_empty():
 		var named: Array[String] = []
@@ -1505,14 +1635,16 @@ func _draw() -> void:
 		get_viewport_rect().size.x - 60, 15, 2, BAD if message_bad else GOOD
 	)
 	var keys := "Up/Down furnace   W/S reflux   E/D pumparounds   Space pause   [ ] speed"
-	if PLANTS[plant_key].has("reboiler"):
+	if _holds_liquid():
+		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   T/G reboiler   Y free it   Space pause   [ ] speed"
+	elif PLANTS[plant_key].has("reboiler"):
 		keys = "Up/Down furnace   R/F steam   E/D pumparounds   T/G reboiler   Y free it   Space pause   [ ] speed"
 	elif steam_valve_id >= 0:
 		keys = "Up/Down furnace   R/F steam   E/D pumparounds   Space pause   [ ] speed"
 	elif _has_loops():
 		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   Space pause   [ ] speed"
 	_text(Vector2(30, 600), keys, DIM)
-	_text(Vector2(30, 624), "1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays", DIM)
+	_text(Vector2(30, 624), "1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup", DIM)
 	if halted != "":
 		draw_multiline_string(
 			ThemeDB.fallback_font, Vector2(30, 90), "HALTED — %s" % halted, HORIZONTAL_ALIGNMENT_LEFT,
@@ -1604,9 +1736,17 @@ func _draw_column() -> void:
 	var raised := _raised()
 	_text(condenser + Vector2(-250, -4), "condenser %.1f MW" % _mw("condenser_w"), INK, 14)
 	var reflux_label := "reflux %.2f%s" % [_reflux_ran(), "  RAISED (set %.1f)" % _reflux_set() if raised else ""]
-	if _held():
+	if _reflux_is_result():
 		reflux_label = "reflux %.2f, a result" % _reflux_ran()
 	_text(condenser + Vector2(-250, 14), reflux_label, WARN if raised else DIM, 14)
+	# A column that holds liquid (M74): its reflux drum beside the condenser
+	# and its base beside the reboiler, each filled to its level.
+	var holdup := _holdup()
+	if not holdup.is_empty():
+		var drum := Rect2(condenser + Vector2(24, -26), Vector2(54, 20))
+		draw_line(condenser + Vector2(14, 0), Vector2(drum.position.x, drum.get_center().y), PIPE, 3.0)
+		_draw_level(drum, float(holdup["drum_level"]), str(holdup["drum_limit"]), bool(holdup["drum_loop_at_max"]))
+		_text(drum.position + Vector2(0, -5), "drum %.0f %%" % (float(holdup["drum_level"]) * 100.0), _limit_color(str(holdup["drum_limit"])), 12)
 
 	var foot := COLUMN_RECT.position + Vector2(COLUMN_RECT.size.x * 0.5, COLUMN_RECT.size.y)
 	if steam_pipe_id >= 0:
@@ -1625,6 +1765,10 @@ func _draw_column() -> void:
 		draw_rect(reboiler, Color(0.35, 0.18, 0.10))
 		draw_rect(reboiler, SHELL, false, 2.0)
 		_text(reboiler.position + Vector2(-60, 46), "reboiler %.1f MW%s" % [_mw("reboiler_w"), "  held" if _held() else ""], INK, 14)
+	if not holdup.is_empty():
+		var base := Rect2(foot + Vector2(-50, 10), Vector2(14, 26))
+		_draw_level(base, float(holdup["base_level"]), str(holdup["base_limit"]), bool(holdup["base_loop_at_max"]))
+		_text(base.position + Vector2(-82, 18), "base %.0f %%" % (float(holdup["base_level"]) * 100.0), _limit_color(str(holdup["base_limit"])), 12)
 
 	# Pumparounds, left of the column at their stages.
 	for pumparound in _pumparounds():
@@ -1655,12 +1799,49 @@ func _draw_column() -> void:
 		_text(Vector2(x + 10, return_y + 15), "%.1f MW off%s" % [float(run["duty_w"]) / 1.0e6, _loop_flag(run)], WARN if flagged else color, 10)
 
 
-## "FLOODING" or "WEEPING" for the tray on `stage` (one-based), as the engine
+## A drum's or base's level: its vessel, filled from the bottom to its level
+## (0–1 of its working volume), the fill in warning when it runs dry, in
+## alarm when full, the outline in warning while its level loop asks past its
+## ceiling (§79.6).
+func _draw_level(rect: Rect2, level: float, limit: String, at_max: bool) -> void:
+	draw_rect(rect, Color(0.05, 0.05, 0.07))
+	var share := clampf(level, 0.0, 1.0)
+	var fill := Rect2(rect.position + Vector2(0, rect.size.y * (1.0 - share)), Vector2(rect.size.x, rect.size.y * share))
+	draw_rect(fill, _limit_color(limit) if limit != "normal" else COOL)
+	draw_rect(rect, WARN if at_max else SHELL, false, 2.0)
+
+
+## A drum's or base's limit as a colour: dry in warning, full in alarm.
+func _limit_color(limit: String) -> Color:
+	match limit:
+		"dry":
+			return WARN
+		"full":
+			return BAD
+	return DIM
+
+
+## A level loop at its ceiling in words, for the `t=` line; empty while
+## neither is.
+func _loop_max_words(h: Dictionary) -> String:
+	var at: Array[String] = []
+	if bool(h["drum_loop_at_max"]):
+		at.append("distillate")
+	if bool(h["base_loop_at_max"]):
+		at.append("reboiler" if not bool(h["reboiler_held"]) else "bottoms")
+	return "" if at.is_empty() else "  AT MAX: %s" % ", ".join(at)
+
+
+## "FLOODING", "DRY" (passing nothing down, M74.4) or "WEEPING" for the tray
+## on `stage` (one-based), in that order of precedence, as the engine
 ## names it; empty where it runs inside its window, or has no tray.
 func _tray_trouble(stage: int) -> String:
 	for named in _trays_flooding():
 		if int(named) == stage:
 			return "FLOODING"
+	for named in _trays_dry():
+		if int(named) == stage:
+			return "DRY"
 	for named in _trays_weeping():
 		if int(named) == stage:
 			return "WEEPING"
@@ -1690,9 +1871,13 @@ func _draw_trays() -> void:
 	at.y += 22
 	var flooding := _trays_flooding()
 	var weeping := _trays_weeping()
-	if flooding.is_empty() and weeping.is_empty():
+	var dry := _trays_dry()
+	if flooding.is_empty() and weeping.is_empty() and dry.is_empty():
 		_text(at, "every tray inside its window", GOOD, 13)
 		return
+	if not dry.is_empty():
+		_text(at, "DRY: trays %s pass nothing down" % _stage_ranges(dry), WARN, 13)
+		at.y += 18
 	if not flooding.is_empty():
 		_text(at, "FLOODING: trays %s" % _stage_ranges(flooding), BAD, 13)
 		at.y += 18
@@ -1770,7 +1955,7 @@ func _draw_panel() -> void:
 	_text(Vector2(PANEL_X, y), "flashes          %5.1f %%" % (_flash() * 100.0), WARN if _flash() > 0.0 else INK)
 	y += 22
 	var raised := _raised()
-	if _held():
+	if _reflux_is_result():
 		_text(Vector2(PANEL_X, y), "reflux ran      %6.3f  (a result)" % _reflux_ran(), INK)
 		y += 18
 		if _mw("reboiler_w") > 0.0:
@@ -1802,6 +1987,8 @@ func _draw_panel() -> void:
 	if not _cut_back().is_empty():
 		_text(Vector2(PANEL_X + 12, y - 4), "products cut back: their trays are short of liquid", WARN, 13)
 		y += 18
+	if _holds_liquid():
+		y = _draw_holdup_panel(y)
 	if steam_valve_id >= 0:
 		_text(Vector2(PANEL_X, y), "steam          %6.3f kg/s (%.0f %%)" % [_steam_kg_s(), _steam_opening() * 100.0], STEAM)
 		y += 22
@@ -1875,11 +2062,37 @@ func _draw_panel() -> void:
 			DIM,
 			14
 		)
-	if plant.has("reboiler"):
+	if plant.has("reboiler_mw"):
+		y += 18
+		_text(Vector2(PANEL_X, y), "reboiler held  %.0f–%.0f MW, or free" % [plant["reboiler_mw"][0], plant["reboiler_mw"][1]], DIM, 14)
+	if plant.has("held_limits"):
 		y += 18
 		_text(Vector2(PANEL_X, y), "reboiler held: furnace to %.1f MW, steam up only," % _held_limit("furnace_min", 0.0), DIM, 14)
 		y += 18
 		_text(Vector2(PANEL_X, y), "  the pumparounds to %.0f %%" % (_held_limit("pumparounds_max", 0.0) * 100.0), DIM, 14)
+
+
+## The panel's lines for a column that holds liquid (M74, §79): what it holds,
+## which stream holds each level, the drum's and base's levels and limits,
+## and a level loop at its ceiling. Returns the next line's y.
+func _draw_holdup_panel(y: float) -> float:
+	var h := _holdup()
+	if h.is_empty():
+		return y
+	_text(Vector2(PANEL_X, y), "holds          %6.1f t  (trays, drum, base)" % (_held_kg() / 1000.0), INK)
+	y += 18
+	var scheme := "the distillate holds the drum, the bottoms the base" if bool(h["reboiler_held"]) else "the distillate holds the drum, the reboiler the base"
+	_text(Vector2(PANEL_X + 12, y), scheme, DIM, 13)
+	y += 22
+	for vessel in [["drum", "drum_level", "drum_limit", "drum_loop_at_max", "the distillate"], ["base", "base_level", "base_limit", "base_loop_at_max", "the reboiler" if not bool(h["reboiler_held"]) else "the bottoms"]]:
+		var limit := str(h[vessel[2]])
+		var words: String = {"normal": "", "dry": "  DRY: its outflow cut to what it holds", "full": "  FULL: the excess leaves with its product"}[limit]
+		_text(Vector2(PANEL_X, y), "%-14s %5.0f %%%s" % [vessel[0], float(h[vessel[1]]) * 100.0, words], _limit_color(limit) if limit != "normal" else INK)
+		y += 18
+		if bool(h[vessel[3]]):
+			_text(Vector2(PANEL_X + 12, y - 2), "%s at its maximum: the level runs on" % vessel[4], WARN, 13)
+			y += 18
+	return y + 4
 
 
 func _text(at: Vector2, text: String, color: Color, size: int = 16) -> void:

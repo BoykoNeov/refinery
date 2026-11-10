@@ -940,3 +940,117 @@ fn slow_the_tray_units_region_is_the_columns() {
         "the loop plant's edge"
     );
 }
+
+impl Screen {
+    /// The holdup plant (M74.4): the tray plant holding liquid, the same names.
+    fn holdup() -> Self {
+        Screen::load(
+            "crude_unit_holdup.toml",
+            "furnace",
+            "transfer_line",
+            &[
+                "naphtha_draw",
+                "kerosene_draw",
+                "diesel_draw",
+                "gas_oil_draw",
+                "residue_draw",
+            ],
+        )
+    }
+
+    /// What the column that holds liquid read this tick.
+    fn holdup_reading(&self) -> Value {
+        self.column_node()["column_operation"]["holdup"].clone()
+    }
+
+    /// A product's flow [kg/s], by its draw pipe.
+    fn draw_flow(&self, pipe: &str) -> f64 {
+        let id = self.session.edge_id(pipe);
+        self.snapshot()["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"].as_i64() == Some(id))
+            .unwrap()["stream"]["mass_flow"]
+            .as_f64()
+            .unwrap()
+    }
+}
+
+/// **The holdup plant** (`AUTO_HOLDUP`, M74.4, DESIGN §79.8): the tray plant
+/// holding liquid, its reboiler held from its first tick (scheme B). The
+/// reflux up to 6 at 600 takes the distillate down at once while the drum's
+/// level dips, and four minutes on the drum is still climbing back; the
+/// reboiler held at 150 MW at 3 000 boils the base down until it reads dry,
+/// the reboiler throttled under its hold and the bottoms stopped; freed at
+/// 6 000 on its low base, the reboiler takes the base's level, the bottoms
+/// back at its share of the feed and the base climbing; the reflux down to
+/// 0.5 at 9 000 fills the drum — full, the distillate at its ceiling — and by
+/// 11 700 the drum is back inside its range.
+#[test]
+fn slow_the_holdup_plant_timeline() {
+    let mut screen = Screen::holdup();
+    let column = screen.column;
+    let level = |h: &Value, key: &str| h[key].as_f64().unwrap();
+    screen.run_to(600);
+    let start = screen.holdup_reading();
+    assert_eq!(start["reboiler_held"], true, "held from its first tick");
+    assert!((level(&start, "drum_level") - 0.5).abs() < 1e-3, "{start}");
+    assert!((level(&start, "base_level") - 0.5).abs() < 1e-3, "{start}");
+    let distillate = screen.draw_flow("naphtha_draw");
+    assert!((distillate - 22.8).abs() < 0.1, "{distillate}");
+
+    screen.send(&format!(
+        r#"{{"cmd":"set_reflux_ratio","node":{column},"reflux_ratio":6.0}}"#
+    ));
+    screen.run_to(900);
+    assert!(screen.draw_flow("naphtha_draw") < distillate - 4.0);
+    let dipped = level(&screen.holdup_reading(), "drum_level");
+    assert!(dipped < 0.46, "{dipped}");
+    screen.run_to(3000);
+    let climbing = level(&screen.holdup_reading(), "drum_level");
+    assert!(
+        climbing > dipped + 0.01 && climbing < 0.49,
+        "four minutes on the drum still climbs: {dipped} to {climbing}"
+    );
+
+    screen.send(&format!(
+        r#"{{"cmd":"set_reboiler_duty","duty":150000000.0,"node":{column}}}"#
+    ));
+    let mut dry = 0;
+    for tick in 3001..=6000 {
+        screen.run_to(tick);
+        if screen.holdup_reading()["base_limit"] == "dry" {
+            dry += 1;
+            assert!(screen.reading().4 < 150.0, "the dry base throttles it");
+            assert_eq!(screen.draw_flow("residue_draw"), 0.0, "the bottoms stopped");
+        }
+    }
+    assert!(dry > 0, "the base never read dry");
+    let low = level(&screen.holdup_reading(), "base_level");
+
+    screen.send(&format!(
+        r#"{{"cmd":"set_reboiler_duty","duty":null,"node":{column}}}"#
+    ));
+    screen.run_to(9000);
+    let freed = screen.holdup_reading();
+    assert_eq!(freed["reboiler_held"], false);
+    assert!(level(&freed, "base_level") > low + 0.1, "{low} to {freed}");
+    let bottoms = screen.draw_flow("residue_draw");
+    assert!(
+        (bottoms - 29.0).abs() < 0.01,
+        "its share of the feed: {bottoms}"
+    );
+
+    screen.send(&format!(
+        r#"{{"cmd":"set_reflux_ratio","node":{column},"reflux_ratio":0.5}}"#
+    ));
+    screen.run_to(9600);
+    let full = screen.holdup_reading();
+    assert_eq!(full["drum_limit"], "full", "{full}");
+    assert_eq!(full["drum_loop_at_max"], true, "{full}");
+    screen.run_to(11700);
+    let back = screen.holdup_reading();
+    assert_eq!(back["drum_limit"], "normal", "{back}");
+    assert_eq!(back["drum_loop_at_max"], false, "{back}");
+}

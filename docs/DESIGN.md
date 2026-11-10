@@ -30941,3 +30941,9 @@ at half returning 20 K warm (one tray passing nothing down to the end). Those
 trays still hold liquid and boil (the least vapour 189 mol/s): not §79.6's
 stages that stop boiling. How the table and the screen treat a tray passing
 nothing down is put to the user.
+
+**Decided (2026-11-10), the user: a tray passing nothing down is shown, not
+refused** — as a flooding or weeping tray (§78, decision 4). The screen names
+the trays whose liquid down (`ColumnOperation::stage_liquid_mol_s`) is zero
+and marks them on the column; the table allows a setting wherever the column
+runs, and reports how many allowed settings end with such a tray.
