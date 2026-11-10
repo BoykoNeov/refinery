@@ -30886,3 +30886,58 @@ Put to the user (C27).
   and its excess leaving with the bottoms. Chosen: 2.5 — the screen's whole
   reflux key lines out, and the cap stops only the runaway ask after an
   upset (a game value).
+
+### 79.7 M74.4 — the holdup plant, and a tray short within its tick (2026-11-10)
+
+**The plant**, `scenarios/crude_unit_holdup.toml`: the tray plant copied,
+with `holdup = { drum_m3 = 18.7, base_m3 = 115.4, reboiler = "held" }`. The
+drum on Kister's rules (Table 15.2: 5 minutes of the distillate between its
+alarms, 2 under the low one, so 4.5 at its normal level) on the file's settled
+distillate, 22.8 kg/s at 659 kg/m³; the base 20 minutes of the settled
+bottoms, 29.0 kg/s at 603 kg/m³, at its normal level (§79.1, decided). At
+rest it holds both at half (0.4995, 0.5010 at ten minutes), 0.7 ms a tick.
+Corpus: runs 6 000 ticks on both fidelities; the 69 earlier plants
+byte-identical.
+
+**A wall found measuring it, fixed (the user's decision, 2026-11-10).** A
+sample of single jumps found the column refused held at 175 MW and more —
+"a tray ran short of its draws" — where the tray plant without holdup runs
+held at 150, 175 and 200 MW, no hold declined. Tray 10 carries both the gas
+oil's draw and the bottom loop's; the draws are cut back at the start of the
+tick on what the tray holds (§79.2 step 1), but its liquid off is solved
+within the tick (§79.4), and on the 214th tick at 200 MW it came to 217 mol/s
+against the draws' 224. The step took that as outside the physical region,
+and no iterate inside it closed the tick. §79.2 says a tray short of its draws
+gives what it has, the draws first, then nothing goes down — the start of the
+tick did; the tick did not. Now it does: the draws keep their tick's flows,
+taken from what the tray holds, nothing goes down
+(`column_step`, `down = max(0, off − drawn − loop)`), and the next tick cuts
+them back on what the tray then holds. A tray its vapour boils below its
+weir's crest is the same case.
+
+A second fault behind it: two seconds on, the start-of-tick cut-back gave the
+bottom loop nothing, and its return's enthalpy is a duty over its flow
+(`cascade::loop_returns`, `start_duty / flow`) — not finite at no flow. A loop
+given nothing now returns at its draw's enthalpy: no flow, no heat out, its
+return read at its draw tray's temperature. No column without holdup reaches
+a loop at no flow (the plans hold only running loops), so every plant stays
+byte-identical.
+
+Tested (`slow_a_tray_short_within_the_tick_gives_what_it_has`): held at
+200 MW from tick 10, ninety seconds — 162 ticks some tray passes nothing
+down, 251 loop-ticks given nothing (each at no duty, not at capacity, its
+return at its draw tray's temperature), each component's books to
+1.8e-10 kg/s, the heat to 4.1 W. Mutations: six, all caught.
+
+**What the fix lets run** (20 minutes after one jump): held at 175–215 MW
+the column runs, its base dry from about a minute on, the reboiler throttled
+to ~118 MW by the dry base (§79.5's limit), every tray but one flooding; some
+tray passes nothing down for 14–19 s of the first minute (up to eleven at
+once), none after 44 s. Two settings the tray plant refuses also run: the
+reflux 0.5 with the loops stopped returning 60 K warm (trays passing nothing
+down on 94 % of the ticks, up to eight, to the end; the gas oil cut to
+nothing, the drum full, the base dry), and free at 0 MW, reflux 1, the loops
+at half returning 20 K warm (one tray passing nothing down to the end). Those
+trays still hold liquid and boil (the least vapour 189 mol/s): not §79.6's
+stages that stop boiling. How the table and the screen treat a tray passing
+nothing down is put to the user.

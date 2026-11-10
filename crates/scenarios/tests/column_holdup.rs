@@ -13,6 +13,7 @@ use refinery_core::units::{Kg, Pascal, Watt};
 use refinery_scenarios::{build_engine, load_str};
 
 const TRAY_PLANT: &str = include_str!("../../../scenarios/crude_unit_trays.toml");
+const HOLDUP_PLANT: &str = include_str!("../../../scenarios/crude_unit_holdup.toml");
 const LOOP_PLANT: &str = include_str!("../../../scenarios/crude_unit_loops.toml");
 const CASCADE_PLANT: &str = include_str!("../../../scenarios/crude_column_cascade.toml");
 const WET_PLANT: &str = include_str!("../../../scenarios/crude_unit_wet.toml");
@@ -1494,4 +1495,92 @@ fn m74_3_probe() {
             );
         }
     }
+}
+
+/// **A tray short of its draws within the tick gives what it has** (§79.2,
+/// M74.4): the holdup plant (`crude_unit_holdup.toml`) held at 200 MW, 2.3
+/// times its first duty. Some 22 s on, tray 10 — the gas oil's draw and the
+/// bottom loop's — passes less liquid within the tick than the two draws set
+/// at the tick's start take (217 of 224 mol/s); the step refused the tick,
+/// "a tray ran short of its draws", where the tray plant without holdup runs
+/// held there. Now the draws take their tick's flows from what the tray
+/// holds, nothing goes down, and the next tick cuts them back on what it
+/// holds. Two seconds later the cut-back gives the bottom loop nothing, and
+/// its return's heat, a duty over no flow, was not finite; a loop given
+/// nothing now returns nothing. The column runs a minute and a half on
+/// (measured: 162 ticks some tray passes nothing down), each component's
+/// books closed every tick to 1.8e-10 kg/s, its heat to 4.1 W.
+#[test]
+fn slow_a_tray_short_within_the_tick_gives_what_it_has() {
+    let mut engine = engine_of(HOLDUP_PLANT).unwrap();
+    let feed = engine
+        .snapshot()
+        .edges
+        .iter()
+        .find(|e| e.name == "transfer_line")
+        .unwrap()
+        .id;
+    let draws: Vec<_> = draw_edges(&engine)
+        .into_iter()
+        .map(|(_, edge)| edge)
+        .collect();
+    let cp: Vec<f64> = (0..engine.slate.len())
+        .map(|c| engine.slate.get(c).cp.value())
+        .collect();
+    run(&mut engine, 10);
+    set_hold(&mut engine, Some(200.0e6));
+    let dt = 0.1;
+    let (mut worst, mut worst_heat, mut nothing_down): (f64, f64, u32) = (0.0, 0.0, 0);
+    let mut loop_given_nothing = 0;
+    for t in 0..900 {
+        let before = inventory(&state(&engine).unwrap());
+        let heat_before = held_heat(&state(&engine).unwrap(), &cp);
+        engine
+            .tick()
+            .unwrap_or_else(|e| panic!("{} s after the hold: {e}", t as f64 * dt));
+        let after = inventory(&state(&engine).unwrap());
+        worst_heat = worst_heat.max(heat_imbalance(&engine, heat_before, &cp, feed).abs());
+        let snapshot = engine.snapshot();
+        let flow = |edge| {
+            let e = snapshot.edges.iter().find(|e| e.id == edge).unwrap();
+            (
+                e.stream.mass_flow.value(),
+                e.stream.composition.fractions().to_vec(),
+            )
+        };
+        let (fed, z) = flow(feed);
+        for c in 0..z.len() {
+            let mut balance = fed * z[c] - (after[c] - before[c]) / dt;
+            for edge in &draws {
+                let (drawn, w) = flow(*edge);
+                balance -= drawn * w[c];
+            }
+            worst = worst.max(balance.abs());
+        }
+        let node = snapshot.nodes.iter().find(|n| n.name == "column").unwrap();
+        let op = node.column_operation.as_ref().unwrap();
+        if op.stage_liquid_mol_s[..12].contains(&0.0) {
+            nothing_down += 1;
+        }
+        // A loop its tray gives nothing runs nothing, takes no heat out, and
+        // reads its draw tray's own temperature as its return's.
+        for run in op.loops.iter().filter(|run| run.flow_kg_s == 0.0) {
+            loop_given_nothing += 1;
+            assert_eq!(run.duty_w, 0.0, "{run:?}");
+            assert!(!run.at_capacity, "{run:?}");
+            let drawn = op.stage_temperatures_k[run.draw_stage as usize - 1];
+            assert!(
+                (run.return_temperature_k - drawn).abs() < 1.0e-9,
+                "{run:?} drawn at {drawn} K"
+            );
+        }
+    }
+    println!(
+        "M74_4 short tray: {nothing_down} ticks a tray passed nothing down, \
+         {loop_given_nothing} loop-ticks given nothing, books {worst:e} kg/s, heat {worst_heat:.1} W"
+    );
+    assert!(nothing_down > 0, "no tray ran short within its tick");
+    assert!(loop_given_nothing > 0, "no loop was given nothing");
+    assert!(worst < 1.0e-8, "{worst}");
+    assert!(worst_heat < 20.0, "{worst_heat}");
 }

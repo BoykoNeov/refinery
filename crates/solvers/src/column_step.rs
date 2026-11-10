@@ -545,10 +545,16 @@ impl ColumnStep<'_> {
             if j + 1 < n {
                 let k = set.slope[j] * dt;
                 let off = (set.off[j] + k * (arriving - vapour[j])) / (1.0 + k);
-                down[j] = off - set.drawn[j] - out[j];
-                if down[j] < 0.0 {
-                    return Err(outside("a tray ran short of its draws"));
-                }
+                // A tray whose liquid falls short of its draws within the tick
+                // gives what it has (§79.2): the draws keep the flows the tick
+                // set them at, out of what the tray holds, and nothing goes
+                // down — so too a tray its vapour boils below its weir's
+                // crest, where the slope's straight line would pass less than
+                // none. The next tick cuts the draws back on what the tray
+                // then holds (`set_flows`). Refused here, a tray a little
+                // short within the tick stopped the column where the tray
+                // plant runs (M74.4, docs/DESIGN.md §79.7).
+                down[j] = (off - set.drawn[j] - out[j]).max(0.0);
                 liquid_in[j + 1] = down[j];
             }
             held_next.push(held[j] + dt * (arriving - down[j] - set.drawn[j] - out[j] - vapour[j]));
