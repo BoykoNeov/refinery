@@ -31106,3 +31106,29 @@ Newton; converged, either is zero). FULL tier green; every plant
 byte-identical, 70 of 70 on both fidelities. Key 8's range is unchanged here:
 the trays that drain without vapour come first (§79.9 decision 2), then the
 range is measured again.
+
+### 79.11 M74.5 step 2, checked first — two weep points that disagree (2026-11-10)
+
+Before building the trays that drain without vapour (§79.9 decision 2) on
+Hsieh & McNulty's counter-current flow model (*Chem. Eng. Prog.* 89 (1993)
+71, as Ludwig Vol. 2 §13.44 reproduces it, pp. 435–436:
+`√J*G + m·√J*L = C`, sieve `m` = 2.01, `C` = 0.74, `J*` = velocity ×
+`√(ρ/(g·Z·(ρL − ρG)))`, `Z = h_c^1.5/D_h^0.5` — dimensionless in any one
+unit), each holdup-plant tray was read at rest with the gas through its
+holes (the advisor's reading of Ludwig's ambiguous symbol list;
+`tools/steptime/prototypes/m74_5/weep_at_rest.txt`, a temporary print, not
+committed):
+
+- **trays 1–2**: `√J*G` 0.760 and 0.766 — above 0.74, no weeping;
+- **trays 3–12**: 0.586–0.626 — **below the weep point at the file's
+  settings**, weeping at rest (`√J*L` ≈ 0.06–0.08, about a tenth of each
+  tray's liquid load by hand);
+- **Eduljee's weep point** (M73's, `sieve_tray`, the snapshot's
+  `trays_weeping`) puts every tray 1.48–2.29 times above it.
+
+The two disagree mostly through the holes: 5 mm on every section, where the
+model's `Z ∝ D_h^−0.5` makes smaller holes weep MORE — Eduljee's, and common
+practice, the reverse. At ½-inch holes the same trays would sit at the weep
+point (`√J*G` × 1.26). Taken as published, the holdup plant weeps at rest:
+its trays hold less, its fingerprint moves, and the screen's "weeping" flag
+(Eduljee's) disagrees with the drain. **Put to the user** before building.

@@ -1,0 +1,12 @@
+tray  1  liquid  1946 kg  hole speed 11.27 m/s  HM sqrt(J*G) 0.760  (leaks under 0.74)  Eduljee margin 2.23
+tray  2  liquid  1996 kg  hole speed 11.33 m/s  HM sqrt(J*G) 0.766  (leaks under 0.74)  Eduljee margin 2.29
+tray  3  liquid  3494 kg  hole speed  7.62 m/s  HM sqrt(J*G) 0.593  (leaks under 0.74)  Eduljee margin 1.53
+tray  4  liquid  3508 kg  hole speed  7.61 m/s  HM sqrt(J*G) 0.594  (leaks under 0.74)  Eduljee margin 1.54
+tray  5  liquid  2816 kg  hole speed  7.09 m/s  HM sqrt(J*G) 0.619  (leaks under 0.74)  Eduljee margin 1.48
+tray  6  liquid  4631 kg  hole speed  7.13 m/s  HM sqrt(J*G) 0.586  (leaks under 0.74)  Eduljee margin 1.49
+tray  7  liquid  4739 kg  hole speed  7.31 m/s  HM sqrt(J*G) 0.595  (leaks under 0.74)  Eduljee margin 1.55
+tray  8  liquid  3899 kg  hole speed  7.02 m/s  HM sqrt(J*G) 0.626  (leaks under 0.74)  Eduljee margin 1.54
+tray  9  liquid  4778 kg  hole speed  7.80 m/s  HM sqrt(J*G) 0.624  (leaks under 0.74)  Eduljee margin 1.71
+tray 10  liquid  4669 kg  hole speed  7.40 m/s  HM sqrt(J*G) 0.613  (leaks under 0.74)  Eduljee margin 1.64
+tray 11  liquid  3276 kg  hole speed  6.76 m/s  HM sqrt(J*G) 0.614  (leaks under 0.74)  Eduljee margin 1.67
+tray 12  liquid  4997 kg  hole speed  5.75 m/s  HM sqrt(J*G) 0.610  (leaks under 0.74)  Eduljee margin 1.61
