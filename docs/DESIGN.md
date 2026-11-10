@@ -30993,3 +30993,64 @@ the other keys are. Its gate, `slow_the_holdup_reboiler_floor_runs_at_its_worst_
 (a reflux low or the loops cold and full); of the 288 that ran in the checks,
 94. The slowest tick seen: 168 ms, in an extreme corner (a visible hitch, not
 a stop).
+
+### 79.9 M74.5.0 — part A of the start from empty's probe: stages that stop boiling (2026-11-10)
+
+The start from empty's probe, split in two (the advisor's advice, taken):
+**part A**, a stage that stops boiling, measured on the running holdup plant;
+**part B**, the empty column, put to the user before anything is built.
+`tools/steptime/prototypes/m74_5_0/` (`FINDINGS.md`, `stop_boiling.patch`); no
+engine code changed.
+
+**The prototype** (on `column_step`): (1) each stage's first residual the
+complementarity `max(Σ K·x' − 1, −V/V_s)`, `V_s` = 500 mol/s — a stage boils
+(`Σ K·x' = 1`, `V ≥ 0`) or does not (`V = 0`, its liquid under its bubble
+point, its temperature from its energy balance alone, the stored heat in
+since §79.4); a boiling stage's residual is today's to the bit (semismooth
+Newton on a min-function; Hintermüller, Ito & Kunisch, SIAM J. Optim. 13
+(2002) 865); (2) a vapour stepped through zero projected onto it, the rest of
+the step whole (today the whole step stops at 0.9 of the way to zero, so no
+vapour reaches it); (3) a step with no descent in the largest residual
+searched again on the sum of squares (Qi & Sun, Math. Program. 58 (1993) 353),
+only where the tick would be refused. The tray hydraulics read zero vapour
+without a division by it (`sieve_tray`: no flood, full weeping).
+
+**Measured** (patched against unpatched, worktrees of 055b190):
+
+1. Neither (1) nor (2) alone carries the feed cut or the reboiler at 0 MW;
+   together they do.
+2. **The one-tick feed cut (C26) runs with every stage boiling** (the least
+   vapour 43 mol/s; until the furnace's tubes burst, item 7): the unpatched refusal was Newton's path through a stage
+   with no vapour, not the answer. The machinery is still what the cut needs.
+3. **The 80 MW floor (§79.8) was real physics**: its 70 held runs, all run
+   patched (unpatched 31, as §79.8); each run the unpatched engine refused has
+   stages that stop boiling, each it ran has none. The top four stop under
+   the loops cold and full (0.1–20 minutes, with some reboiler), the base and
+   the stage above at 0 MW (to the end); with any reboiler every stage boils
+   again.
+4. The feed-cut set: 4 of 7 run (unpatched 0) — the cut, the feed back after
+   5 minutes, a 40 MW reboiler, 0 MW with the loops cold and full then the
+   feed and 86 MW back (8 stages cold, boiling again 2.3 minutes on). The
+   cut with the loops and reflux stopped is refused by the trays' pressure
+   drops not settling (§79.6's other wall); the cut at 20 MW with the feed
+   back in one tick stalled Newton at the switch — cured by (3), not by the
+   Fischer–Burmeister function.
+5. Every shipped plant byte-identical, 70 of 70 on both fidelities.
+6. 200 random moves below the floor (0–80 MW, the box): all run, 5 with
+   stages cold for a time, none at the end; the slowest tick 71 ms.
+7. **With the furnace firing the cut runs 9.3 minutes, not for good**: the
+   furnace's 20 MW into a line with no flow takes its coil to 550 °C, its
+   tubes burst (M39), and the column's liquid runs back down the transfer
+   line towards the hole — refused by the reverse-feed check. A check valve
+   ahead of the furnace changes nothing; with the furnace off the cut runs
+   20 minutes (at 86 MW and at 20 MW, stages 1–4 then not boiling).
+
+**Part B, read off the code** — what an empty column needs, for the user:
+the level loops' outputs are multiples of the first tick's settled flows (the
+design point can still be solved at load, the state then set empty); the
+reflux is `R·D`, so a dry drum refluxes nothing and Kister's total-reflux
+start (*Distillation Operation*, §12.8 pp. 329–330) has no expression; an
+empty stage has no state (no moles, no composition); a sieve tray with no
+vapour holds its liquid at its weir here, where a real one dumps it through
+its holes; and what the column is fed while it fills (Kister §12.1,
+pp. 313–314, the start-up order).

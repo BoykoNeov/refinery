@@ -1,0 +1,1 @@
+valve=0~5000;valve=0@3000>valve=1~6000;valve=0+flow=0+reflux=0.5~5000;valve=0+flow=0+reflux=0~5000;valve=0+reb=40~5000;valve=0+reb=20@3000>valve=1~6000;valve=0+reb=0+flow=2+ret=-60@3000>valve=1+reb=86~9000

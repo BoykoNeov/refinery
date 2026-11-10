@@ -1,0 +1,160 @@
+diff --git a/crates/solvers/src/column_step.rs b/crates/solvers/src/column_step.rs
+index de5fe57..24f577e 100644
+--- a/crates/solvers/src/column_step.rs
++++ b/crates/solvers/src/column_step.rs
+@@ -87,6 +87,36 @@ const SLOPE_DIFFERENCE: f64 = 1.0e-6;
+ const TEMPERATURE_DIFFERENCE_K: f64 = 1.0e-4;
+ const VAPOUR_DIFFERENCE: f64 = 1.0e-7;
+ 
++/// M74.5.0 PROBE: the vapour a stage's complementarity residual is scaled by
++/// [mol/s] — about the feed's molar rate.
++const VAPOUR_SCALE_MOL_S: f64 = 500.0;
++
++/// M74.5.0 PROBE ONLY: which change runs, from `M74_5_0_VARIANT` — `both`
++/// (default), `damping` (the projection, today's bubble residual) or
++/// `complementarity` (today's fraction-to-boundary damping).
++fn amounts_ref(a: &[Vec<f64>]) -> &[Vec<f64>] {
++    a
++}
++fn variant() -> &'static str {
++    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
++    V.get_or_init(|| std::env::var("M74_5_0_VARIANT").unwrap_or_else(|_| "both".into()))
++}
++fn projected() -> bool {
++    variant() != "complementarity"
++}
++fn complementarity() -> bool {
++    variant() != "damping"
++}
++fn smoothed() -> bool {
++    variant() == "fb"
++}
++fn l2_fallback() -> bool {
++    variant() == "l2"
++}
++fn l2(residual: &[f64]) -> f64 {
++    residual.iter().map(|r| r * r).sum()
++}
++
+ /// One column's tick, everything but the unknowns fixed.
+ pub(crate) struct ColumnStep<'a> {
+     pub(crate) plan: &'a CascadePlan,
+@@ -255,16 +285,20 @@ impl ColumnStep<'_> {
+             let Some(mut delta) = solve_dense(jacobian, negated) else {
+                 return Err(self.unconverged(&evaluation, iterations));
+             };
+-            // Damped: no temperature by more than MAX_TEMPERATURE_STEP_K, no
+-            // vapour through zero.
++            // Damped: no temperature by more than MAX_TEMPERATURE_STEP_K; a
++            // vapour stepping through zero is projected onto it (M74.5.0
++            // PROBE: a stage may stop boiling), the rest of the step whole.
+             let mut scale: f64 = 1.0;
+             for (j, d) in delta.iter().enumerate() {
+-                if j < n {
+-                    if d.abs() > MAX_TEMPERATURE_STEP_K {
+-                        scale = scale.min(MAX_TEMPERATURE_STEP_K / d.abs());
++                if j < n && d.abs() > MAX_TEMPERATURE_STEP_K {
++                    scale = scale.min(MAX_TEMPERATURE_STEP_K / d.abs());
++                }
++            }
++            if !projected() {
++                for (j, d) in delta.iter().enumerate() {
++                    if j >= n && *d < 0.0 && u[j] > 0.0 {
++                        scale = scale.min(FRACTION_TO_BOUNDARY * u[j] / -d);
+                     }
+-                } else if *d < 0.0 {
+-                    scale = scale.min(FRACTION_TO_BOUNDARY * u[j] / -d);
+                 }
+             }
+             for d in &mut delta {
+@@ -274,7 +308,19 @@ impl ColumnStep<'_> {
+             let mut accepted = None;
+             let mut length = 1.0;
+             for _ in 0..MAX_HALVINGS {
+-                let trial: Vec<f64> = u.iter().zip(&delta).map(|(a, d)| a + length * d).collect();
++                let trial: Vec<f64> = u
++                    .iter()
++                    .zip(&delta)
++                    .enumerate()
++                    .map(|(i, (a, d))| {
++                        let t = a + length * d;
++                        if i >= n {
++                            t.max(0.0)
++                        } else {
++                            t
++                        }
++                    })
++                    .collect();
+                 if let Ok(next) = self.evaluate(&trial, &amounts, &drum, &set) {
+                     if norm(&next.residual) < current {
+                         accepted = Some((trial, next));
+@@ -283,6 +329,35 @@ impl ColumnStep<'_> {
+                 }
+                 length *= 0.5;
+             }
++            // M74.5.0 PROBE (`l2`): no descent in the largest residual —
++            // the same step searched on the sum of squares (the semismooth
++            // Newton merit; Qi & Sun 1993), only where the tick would stop.
++            if accepted.is_none() && l2_fallback() {
++                let current = l2(&evaluation.residual);
++                let mut length = 1.0;
++                for _ in 0..MAX_HALVINGS {
++                    let trial: Vec<f64> = u
++                        .iter()
++                        .zip(&delta)
++                        .enumerate()
++                        .map(|(i, (a, d))| {
++                            let t = a + length * d;
++                            if i >= n {
++                                t.max(0.0)
++                            } else {
++                                t
++                            }
++                        })
++                        .collect();
++                    if let Ok(next) = self.evaluate(&trial, amounts_ref(&amounts), &drum, &set) {
++                        if l2(&next.residual) < current {
++                            accepted = Some((trial, next));
++                            break;
++                        }
++                    }
++                    length *= 0.5;
++                }
++            }
+             let Some((trial, next)) = accepted else {
+                 return Err(self.unconverged(&evaluation, iterations));
+             };
+@@ -517,7 +592,7 @@ impl ColumnStep<'_> {
+         if temperatures.iter().any(|t| !t.is_finite() || *t <= 0.0) {
+             return Err(outside("a stage temperature left the physical region"));
+         }
+-        if vapour.iter().any(|v| !v.is_finite() || *v <= 0.0) {
++        if vapour.iter().any(|v| !v.is_finite() || *v < 0.0) {
+             return Err(outside("a vapour rate left the physical region"));
+         }
+         let (into, out) = plan.circulation(&set.loops);
+@@ -627,8 +702,22 @@ impl ColumnStep<'_> {
+         }
+ 
+         let mut residual = Vec::with_capacity(2 * n);
+-        for (row, k_row) in x.iter().zip(&k) {
+-            residual.push(row.iter().zip(k_row).map(|(x, k)| x * k).sum::<f64>() - 1.0);
++        // M74.5.0 PROBE: each stage boils (Σ K·x' = 1, V ≥ 0) or does not
++        // (V = 0, Σ K·x' ≤ 1) — the complementarity as a min-function
++        // (semismooth Newton; Hintermüller, Ito & Kunisch, SIAM J. Optim. 13
++        // (2002) 865), signed so a boiling stage's residual is today's.
++        for (j, (row, k_row)) in x.iter().zip(&k).enumerate() {
++            let bubble = row.iter().zip(k_row).map(|(x, k)| x * k).sum::<f64>() - 1.0;
++            let a = vapour[j] / VAPOUR_SCALE_MOL_S;
++            residual.push(if smoothed() {
++                // Fischer–Burmeister, φ(a, b) = a + b − √(a² + b²), b = −bubble
++                // (Fischer, Optimization 24 (1992) 269), signed as today's.
++                -(a - bubble - (a * a + bubble * bubble).sqrt())
++            } else if complementarity() {
++                bubble.max(-a)
++            } else {
++                bubble
++            });
+         }
+         let normalise = |row: &[f64]| -> Result<Vec<f64>, SimError> {
+             Ok(MoleFractions::from_amounts(row)?.fractions().to_vec())

@@ -11149,3 +11149,21 @@ drum and base, T/G the held reboiler, Y frees it, the timeline and its gate).
 reboiler free or held 80–215 MW — about 670 runs measured, every failure below 80 MW
 a stage that stops boiling (the deferred wall). Next: the start from empty's
 probe (with the feed cut, by stages that stop boiling).
+
+### M74.5.0 — **PROBED** 2026-11-10 (part A): stages that stop boiling — part B put to the user
+
+Probed (`tools/steptime/prototypes/m74_5_0/`, `FINDINGS.md`, DESIGN §79.9),
+split in two on the advisor's advice. **Part A**, a prototype on the step: a
+stage boils or sends up no vapour (a complementarity on its bubble point), a
+vapour stepped through zero lands on it, a step with no descent searched again
+on the sum of squares. Every shipped plant byte-identical (70 of 70, both
+fidelities). **The 80 MW floor was real**: its 70 runs all run (unpatched 31),
+each refused one a column whose top trays or base stop boiling; 200 random
+moves at 0–80 MW all run. **The one-tick feed cut runs with every stage
+boiling** — the old refusal was the solver's path, not the plant (both
+changes needed; neither alone). Still refused: the cut with the loops and
+reflux stopped (the pressure drops, §79.6); and with the furnace left firing,
+9.3 minutes on its tubes burst and the column drains back down the transfer
+line (the reverse-feed refusal) — with the furnace off the cut runs 20
+minutes. No engine code changed. **Part B**, the empty
+column, put to the user as decisions (§79.9).
