@@ -1,0 +1,343 @@
+diff --git a/crates/solvers/src/column_step.rs b/crates/solvers/src/column_step.rs
+index 3995b9d..18fdaa9 100644
+--- a/crates/solvers/src/column_step.rs
++++ b/crates/solvers/src/column_step.rs
+@@ -389,7 +389,7 @@ impl ColumnStep<'_> {
+         let mut cut_back = Vec::new();
+         for j in 0..n - 1 {
+             let section = crate::trays::section_for(self.spec, j as u32 + 1)?;
+-            let off = crate::trays::liquid_off_tray(
++            let outflow = crate::trays::liquid_off_tray(
+                 self.slate,
+                 section,
+                 state.stage_liquid[j],
+@@ -397,12 +397,15 @@ impl ColumnStep<'_> {
+                 state.stage_temperature[j],
+                 state.tray_vapour[j],
+                 state.tray_vapour_density[j],
+-            )?
+-            .value();
++            )?;
++            // What the tray weeps through its holes falls on the tray below
++            // (M74.5, §79.12): the draws take only what goes over the weir.
++            let weir = outflow.over_weir.value();
++            let off = weir + outflow.weeping.value();
+             // A tray short of its draws gives what it has: the side draw
+             // first, then the loop, then nothing goes down.
+-            let side_mass = side[j].min(off);
+-            let loop_mass = looped[j].min(off - side_mass);
++            let side_mass = side[j].min(weir);
++            let loop_mass = looped[j].min(weir - side_mass);
+             if side[j] > 0.0 && side_mass < side[j] {
+                 if let Some(i) = side_draw[j] {
+                     cut_back.push((i, side_mass / side[j]));
+@@ -417,7 +420,7 @@ impl ColumnStep<'_> {
+             // The tray's hydraulic slope, by a forward difference on what it
+             // holds.
+             let more = Kg(state.stage_liquid[j].value() * (1.0 + SLOPE_DIFFERENCE));
+-            let off_more = crate::trays::liquid_off_tray(
++            let more_out = crate::trays::liquid_off_tray(
+                 self.slate,
+                 section,
+                 more,
+@@ -425,8 +428,8 @@ impl ColumnStep<'_> {
+                 state.stage_temperature[j],
+                 state.tray_vapour[j],
+                 state.tray_vapour_density[j],
+-            )?
+-            .value();
++            )?;
++            let off_more = more_out.over_weir.value() + more_out.weeping.value();
+             slope[j] = (off_more - off) / (more.value() - state.stage_liquid[j].value());
+         }
+         let loops = plan
+diff --git a/crates/solvers/src/trays.rs b/crates/solvers/src/trays.rs
+index 9be3abb..e786a57 100644
+--- a/crates/solvers/src/trays.rs
++++ b/crates/solvers/src/trays.rs
+@@ -27,6 +27,10 @@
+ //!   §10 (Nutter's valve-tray method): Fig. 10-149, Tables 10-52–10-55.
+ //! - **[K]** Kister, *Distillation Operation* (1990), §6.12, §6.16, §6.19.
+ //! - **[B]** Bolles, *AIChE J.* 22 (1976) 153–158: multipass flow distribution.
++//! - **[H]** Hsieh & McNulty, *Chem. Eng. Prog.* 89 (1993) 71: weeping of
++//!   sieve and valve trays, as [L2] reproduces it.
++//! - **[L2]** Coker, *Ludwig's Applied Process Design* Vol. 2, 4th ed. (2010),
++//!   §13.44, pp. 434–436.
+ 
+ use crate::cascade::Flows;
+ use refinery_core::components::{Phase, Slate};
+@@ -403,6 +407,53 @@ pub fn capped_drop(geometry: &TrayGeometry, load: &TrayLoad) -> Pascal {
+     at(low).1
+ }
+ 
++/// Hsieh & McNulty's counter-current flow limit for sieve trays,
++/// `√J*G + m·√J*L = C` ([H] as [L2] §13.44 eqs. 13-54–13-57 reproduces it,
++/// pp. 435–436): `m` [-].
++pub const WEEP_SLOPE: f64 = 2.01;
++/// Its constant `C` [-]: `√J*G` at the weep point, and `m·√J*L` with no gas.
++pub const WEEP_LIMIT: f64 = 0.74;
++
++/// The liquid a sieve tray weeps through its holes [kg/s] (M74.5,
++/// docs/DESIGN.md §79.11–§79.12): Hsieh & McNulty's counter-current flow
++/// model ([H]), its weep point moved to Eduljee's (the user's decision, a
++/// game value — the two disagree on 5 mm holes, §79.11). The model's line,
++///
++/// ```text
++///   √J*G + m·√J*L = C,      J* = u·√(ρ/(g·Z·(ρL − ρG))),   Z = h_c^1.5 / D_h^0.5
++/// ```
++///
++/// (`u` the gas's or the weeping liquid's velocity through the holes, `h_c`
++/// the clear liquid on the deck, `D_h` the holes' diameter; `Z` in metres as
++/// it is in feet from inches, 39.37 × 0.3048 = 12), is kept with `√J*G` read
++/// as `C·u_h/u_weep` — the gas's share of Eduljee's weep velocity
++/// ([`SieveTray::weep_velocity`]). So a tray weeps only below the weep point
++/// the snapshot already reports, nothing above it, and with no gas exactly
++/// Hsieh & McNulty's dump, `√J*L = C/m`. Hsieh & McNulty measured on 3 ft
++/// trays; on an 8 ft one the weeping was over 30 % lower, along the
++/// periphery ([L2] p. 435) — on this game's 6–8.5 m trays the rate is high.
++pub fn weep_flow(
++    geometry: &TrayGeometry,
++    tray: &SieveTray,
++    clear_height: Meter,
++    liquid_density: KgPerM3,
++    vapour_density: KgPerM3,
++) -> KgPerSec {
++    let share = tray.hole_velocity.value() / tray.weep_velocity.value();
++    let height = clear_height.value();
++    if share.is_nan() || share >= 1.0 || height <= 0.0 {
++        return KgPerSec(0.0);
++    }
++    let root = WEEP_LIMIT / WEEP_SLOPE * (1.0 - share.max(0.0));
++    let rho_l = liquid_density.value();
++    let rho_g = vapour_density.value();
++    // Z = h_c^1.5/D_h^0.5 ([L2] eq. 13-54); J*L = V_L·√(ρL/(g·Z·(ρL − ρG)))
++    // (eq. 13-55), V_L through the holes.
++    let z = height.powf(1.5) / geometry.hole_diameter.value().sqrt();
++    let velocity = root * root * (G * z * (rho_l - rho_g) / rho_l).sqrt();
++    KgPerSec(rho_l * velocity * geometry.hole_area.value())
++}
++
+ /// The liquid's density at the tray [kg/m³] — a game value (§78.4.1): each
+ /// condensed cut its declared (15 °C) density less `DENSITY_SLOPE` per kelvin
+ /// above, floored, mixed by volume (ideal mixing, as `Composition` mixes).
+@@ -703,14 +754,29 @@ const LIQUID_BISECTIONS: u32 = 60;
+ /// than any load holds.
+ const LIQUID_DOUBLINGS: u32 = 60;
+ 
+-/// The liquid leaving a tray [kg/s] that holds `held` (M74, docs/DESIGN.md
+-/// §79.2): the load at which [`tray_liquid`] holds it, at the tray's vapour
+-/// (`vapour`, `vapour_density`) and its liquid's (`liquid` mole fractions at
+-/// `temperature`) — the same function the column's first tick filled the tray
+-/// with, inverted, so a column at rest stays at rest. The liquid held rises
+-/// with the load (the crest over the weir and the loss under the apron do), so
+-/// the load is found by bisection, a fixed count (deterministic). A tray that
+-/// holds no more than its weir does at no load passes nothing.
++/// The liquid leaving a tray [kg/s], over its weir and through its holes.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub(crate) struct TrayOutflow {
++    /// Over the weir, into the downcomer — what a side draw or a loop draws
++    /// from.
++    pub(crate) over_weir: KgPerSec,
++    /// Wept through the holes onto the tray below ([`weep_flow`]).
++    pub(crate) weeping: KgPerSec,
++}
++
++/// The liquid leaving a tray that holds `held` (M74, docs/DESIGN.md §79.2):
++/// over its weir, the load at which [`tray_liquid`] holds it, at the tray's
++/// vapour (`vapour`, `vapour_density`) and its liquid's (`liquid` mole
++/// fractions at `temperature`) — the same function the column's first tick
++/// filled the tray with, inverted, so a column at rest stays at rest. The
++/// liquid held rises with the load (the crest over the weir and the loss under
++/// the apron do), so the load is found by bisection, a fixed count
++/// (deterministic). A tray that holds no more than its weir does at no load
++/// passes nothing over it. And through its holes, below the weep point,
++/// [`weep_flow`] on the clear liquid over the deck (M74.5, §79.12): the weir's
++/// and its crest at the load over it; under the weir's lip, the weir's height
++/// in proportion to what the tray holds of its no-load liquid — the deck and
++/// the downcomer draining together, a game value.
+ #[allow(clippy::too_many_arguments)]
+ pub(crate) fn liquid_off_tray(
+     slate: &Slate,
+@@ -720,12 +786,12 @@ pub(crate) fn liquid_off_tray(
+     temperature: Kelvin,
+     vapour: KgPerSec,
+     vapour_density: KgPerM3,
+-) -> Result<KgPerSec, SimError> {
++) -> Result<TrayOutflow, SimError> {
+     let liquid_density = KgPerM3(liquid_density(slate, liquid, temperature.value()));
+     let surface_tension = NewtonPerMeter(surface_tension(slate, liquid, temperature.value()));
+     let geometry = TrayGeometry::of(section);
+-    let holds = |load: f64| {
+-        let tray = sieve_tray(
++    let at = |load: f64| {
++        sieve_tray(
+             &geometry,
+             &TrayLoad {
+                 vapour,
+@@ -734,8 +800,11 @@ pub(crate) fn liquid_off_tray(
+                 liquid_density,
+                 surface_tension,
+             },
+-        );
+-        tray_liquid(section, &tray, liquid_density).value()
++        )
++    };
++    let holds = |load: f64| tray_liquid(section, &at(load), liquid_density).value();
++    let weeps = |tray: &SieveTray, clear: f64| {
++        weep_flow(&geometry, tray, Meter(clear), liquid_density, vapour_density)
+     };
+     let target = held.value();
+     if !target.is_finite() {
+@@ -743,8 +812,14 @@ pub(crate) fn liquid_off_tray(
+             "a tray holds {target} kg (docs/DESIGN.md §79.2)."
+         )));
+     }
+-    if target <= holds(0.0) {
+-        return Ok(KgPerSec(0.0));
++    let at_lip = holds(0.0);
++    if target <= at_lip {
++        let tray = at(0.0);
++        let clear = section.weir_height.value() * (target / at_lip).max(0.0);
++        return Ok(TrayOutflow {
++            over_weir: KgPerSec(0.0),
++            weeping: weeps(&tray, clear),
++        });
+     }
+     let mut top = 1.0;
+     let mut doublings = 0;
+@@ -767,7 +842,12 @@ pub(crate) fn liquid_off_tray(
+             top = middle;
+         }
+     }
+-    Ok(KgPerSec(0.5 * (bottom + top)))
++    let load = 0.5 * (bottom + top);
++    let tray = at(load);
++    Ok(TrayOutflow {
++        over_weir: KgPerSec(load),
++        weeping: weeps(&tray, section.weir_height.value() + tray.weir_crest.value()),
++    })
+ }
+ 
+ /// A stage's liquid density, hot [kg/m³] — the trays' own estimate
+diff --git a/crates/solvers/tests/reference/weeping.rs b/crates/solvers/tests/reference/weeping.rs
+new file mode 100644
+index 0000000..6ebf5ab
+--- /dev/null
++++ b/crates/solvers/tests/reference/weeping.rs
+@@ -0,0 +1,103 @@
++//! Reference case for a sieve tray's weeping (M74.5, docs/DESIGN.md §79.12):
++//! Hsieh & McNulty's counter-current flow model (*Chem. Eng. Prog.* 89 (1993)
++//! 71, as Coker, *Ludwig's Applied Process Design* Vol. 2, 4th ed., 2010,
++//! §13.44 eqs. 13-54–13-57 reproduces it, pp. 435–436), its weep point moved to
++//! Eduljee's (the user's decision, §79.11), worked by hand:
++//!
++//! ```text
++//!   sieve trays: m = 2.01, C = 0.74;   √J*G + m·√J*L = C,  √J*G read as C·u_h/u_weep
++//!   Z    = h_c^1.5 / D_h^0.5              = 0.05^1.5 / 0.005^0.5 = 0.158114 m
++//!   √J*L = (C/m)·(1 − u_h/u_weep)         = 0.368159 with no gas, 0.184080 at half
++//!   V_L  = J*L·√(g·Z·(ρL − ρG)/ρL)        = 0.135541 × 1.238881 = 0.167919 m/s
++//!   W    = ρL·V_L·A_h                      = 660 × 0.167919 × 3.5157 = 389.634 kg/s
++//! ```
++//!
++//! and a quarter of it, 97.408 kg/s, at half the weep velocity; nothing at or
++//! above it. Pins a wrong constant, a unit slip, a dropped square or root —
++//! not the model's truth, which is its authors' (and on 5 mm holes disagrees
++//! with Eduljee's weep point, §79.11).
++
++use refinery_core::units::*;
++use refinery_solvers::trays::{weep_flow, SieveTray, TrayGeometry, WEEP_LIMIT, WEEP_SLOPE};
++
++/// A section of the holdup plant's middle trays as numbers: 5 mm holes over
++/// 3.5157 m² (15 % of a 7.3 m tray's active area, 22 % downcomers).
++fn tray_geometry() -> TrayGeometry {
++    TrayGeometry {
++        spacing: Meter(0.76),
++        weir_height: Meter(0.05),
++        hole_diameter: Meter(0.005),
++        net_area: SquareMeter(32.65),
++        hole_area: SquareMeter(3.5157),
++        downcomer_area: SquareMeter(2.30),
++        weir_length: Meter(5.0),
++        clearance: Meter(0.045),
++        orifice_coefficient: 0.88,
++        passes: 4,
++    }
++}
++
++/// A tray whose gas runs through its holes at `hole` against Eduljee's weep
++/// velocity `weep` [m/s] — the only two readings the weeping uses.
++fn running_at(hole: f64, weep: f64) -> SieveTray {
++    SieveTray {
++        flow_parameter: 0.0,
++        flood_velocity: MeterPerSec(1.0),
++        net_velocity: MeterPerSec(0.0),
++        hole_velocity: MeterPerSec(hole),
++        weep_velocity: MeterPerSec(weep),
++        weir_crest: Meter(0.0),
++        dry_head: Meter(0.0),
++        residual_head: Meter(0.0),
++        total_head: Meter(0.0),
++        downcomer_loss: Meter(0.0),
++        backup: Meter(0.0),
++        backup_limit: Meter(0.4),
++        pressure_drop: Pascal(0.0),
++    }
++}
++
++fn weeps(hole: f64, weep: f64, clear: f64) -> f64 {
++    weep_flow(
++        &tray_geometry(),
++        &running_at(hole, weep),
++        Meter(clear),
++        KgPerM3(660.0),
++        KgPerM3(6.7),
++    )
++    .value()
++}
++
++#[test]
++fn the_constants_are_hsieh_and_mcnulty_s_for_sieve_trays() {
++    assert_eq!(WEEP_SLOPE, 2.01);
++    assert_eq!(WEEP_LIMIT, 0.74);
++}
++
++#[test]
++fn with_no_gas_a_tray_dumps_at_the_model_s_rate() {
++    let flow = weeps(0.0, 4.0, 0.05);
++    assert!((flow / 389.634 - 1.0).abs() < 1.0e-5, "{flow}");
++}
++
++#[test]
++fn at_half_the_weep_velocity_a_quarter_of_it() {
++    let flow = weeps(2.0, 4.0, 0.05);
++    assert!((flow / 97.408 - 1.0).abs() < 1.0e-5, "{flow}");
++}
++
++#[test]
++fn at_or_above_the_weep_point_nothing_weeps() {
++    assert_eq!(weeps(4.0, 4.0, 0.05), 0.0);
++    assert_eq!(weeps(9.0, 4.0, 0.05), 0.0);
++    // And a deck with no clear liquid weeps nothing at any gas.
++    assert_eq!(weeps(0.0, 4.0, 0.0), 0.0);
++}
++
++/// The rate goes as `Z^0.5`, so as the clear liquid's height to the 0.75:
++/// a deck at a quarter of the height weeps 0.25^0.75 = 0.353553 of it.
++#[test]
++fn a_shallower_deck_weeps_as_its_height_to_three_quarters() {
++    let ratio = weeps(0.0, 4.0, 0.0125) / weeps(0.0, 4.0, 0.05);
++    assert!((ratio - 0.25f64.powf(0.75)).abs() < 1.0e-12, "{ratio}");
++}
+diff --git a/crates/solvers/tests/suite.rs b/crates/solvers/tests/suite.rs
+index 02bbfc3..7b93f1c 100644
+--- a/crates/solvers/tests/suite.rs
++++ b/crates/solvers/tests/suite.rs
+@@ -55,6 +55,8 @@ mod reference_line_flash;
+ mod reference_orifice;
+ #[path = "reference/sieve_tray.rs"]
+ mod reference_sieve_tray;
++#[path = "reference/weeping.rs"]
++mod reference_weeping;
+ #[path = "reference/steam_column.rs"]
+ mod reference_steam_column;
+ #[path = "reference/two_phase_head.rs"]

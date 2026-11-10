@@ -1,0 +1,92 @@
+70 specs: patched runs 49, no draining runs 70
+RUN  / no draining RUN   reb=0+furnace=0+reflux=0.5+flow=0+ret=-60  | cold 5979 ticks (10.0 min), 2 at once, stages [12,13], last at 36000, 2 at end | worst 30.6 ms
+RUN  / no draining RUN   reb=0+furnace=0+reflux=0.5+flow=0+ret=60  | cold 5979 ticks (10.0 min), 2 at once, stages [12,13], last at 36000, 2 at end | worst 37.4 ms
+FAIL / no draining RUN   reb=0+furnace=0+reflux=0.5+flow=2+ret=-60  | cold 137 ticks (0.2 min), 1 at once, stages [3], last at 462, 0 at end | worst 6.4 ms
+       FAIL at t=2029 (1028 after the last move; last sent reb=0+furnace=0+reflux=0.5+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 137 ticks, 1 at most, stages 3, last at 462, 0 at the end | drum 0.443-0.514 base 0.500-0.608 dry 0/0 full 0
+RUN  / no draining RUN   reb=0+furnace=0+reflux=0.5+flow=2+ret=60  | cold 5992 ticks (10.0 min), 2 at once, stages [12,13], last at 36000, 2 at end | worst 23.5 ms
+FAIL / no draining RUN   reb=0+furnace=0+reflux=15+flow=0+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 31.5 ms
+       FAIL at t=16611 (15610 after the last move; last sent reb=0+furnace=0+reflux=15+flow=0+ret=-60): {"code":"numerical","message":"numerical error: column step: the tick did not converge after 7 Newton steps — stage 13's energy balance short by 0.000 MW (the least vapour: stage 12, 16.477 mol/s) (docs/
+FAIL / no draining RUN   reb=0+furnace=0+reflux=15+flow=0+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 22.3 ms
+       FAIL at t=16611 (15610 after the last move; last sent reb=0+furnace=0+reflux=15+flow=0+ret=60): {"code":"numerical","message":"numerical error: column step: the tick did not converge after 7 Newton steps — stage 13's energy balance short by 0.000 MW (the least vapour: stage 12, 16.477 mol/s) (docs/D
+RUN  / no draining RUN   reb=0+furnace=0+reflux=15+flow=2+ret=-60  | cold 10371 ticks (17.3 min), 2 at once, stages [12,13], last at 35999, 0 at end | worst 31.8 ms
+RUN  / no draining RUN   reb=0+furnace=0+reflux=15+flow=2+ret=60  | cold 9831 ticks (16.4 min), 2 at once, stages [12,13], last at 35999, 0 at end | worst 39.3 ms
+RUN  / no draining RUN   reb=0+furnace=40+reflux=0.5+flow=0+ret=-60  | cold 11287 ticks (18.8 min), 2 at once, stages [12,13], last at 36000, 2 at end | worst 27.0 ms
+RUN  / no draining RUN   reb=0+furnace=40+reflux=0.5+flow=0+ret=60  | cold 11287 ticks (18.8 min), 2 at once, stages [12,13], last at 36000, 2 at end | worst 26.9 ms
+FAIL / no draining RUN   reb=0+furnace=40+reflux=0.5+flow=2+ret=-60  | cold 133 ticks (0.2 min), 1 at once, stages [3], last at 465, 0 at end | worst 6.4 ms
+       FAIL at t=2118 (1117 after the last move; last sent reb=0+furnace=40+reflux=0.5+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 133 ticks, 1 at most, stages 3, last at 465, 0 at the end | drum 0.443-0.535 base 0.500-0.614 dry 0/0 full 
+RUN  / no draining RUN   reb=0+furnace=40+reflux=0.5+flow=2+ret=60  | cold 13438 ticks (22.4 min), 2 at once, stages [12,13], last at 36000, 2 at end | worst 27.0 ms
+RUN  / no draining RUN   reb=0+furnace=40+reflux=15+flow=0+ret=-60  | cold 14975 ticks (25.0 min), 2 at once, stages [12,13], last at 36000, 2 at end | worst 29.5 ms
+RUN  / no draining RUN   reb=0+furnace=40+reflux=15+flow=0+ret=60  | cold 14975 ticks (25.0 min), 2 at once, stages [12,13], last at 36000, 2 at end | worst 28.5 ms
+FAIL / no draining RUN   reb=0+furnace=40+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 25.1 ms
+       FAIL at t=7359 (6358 after the last move; last sent reb=0+furnace=40+reflux=15+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: the tick did not converge after 8 Newton steps — stage 13's energy balance short by 0.000 MW (the least vapour: stage 12, 1.732 mol/s) (docs/DE
+RUN  / no draining RUN   reb=0+furnace=40+reflux=15+flow=2+ret=60  | cold 14744 ticks (24.6 min), 2 at once, stages [12,13], last at 36000, 2 at end | worst 30.0 ms
+RUN  / no draining RUN   reb=20+furnace=0+reflux=0.5+flow=0+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 30.5 ms
+RUN  / no draining RUN   reb=20+furnace=0+reflux=0.5+flow=0+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 32.3 ms
+FAIL / no draining RUN   reb=20+furnace=0+reflux=0.5+flow=2+ret=-60  | cold 102 ticks (0.2 min), 1 at once, stages [3], last at 481, 0 at end | worst 19.9 ms
+       FAIL at t=2246 (1245 after the last move; last sent reb=20+furnace=0+reflux=0.5+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 102 ticks, 1 at most, stages 3, last at 481, 0 at the end | drum 0.442-0.551 base 0.500-0.608 dry 0/0 full 
+RUN  / no draining RUN   reb=20+furnace=0+reflux=0.5+flow=2+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 35.1 ms
+RUN  / no draining RUN   reb=20+furnace=0+reflux=15+flow=0+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 10.4 ms
+RUN  / no draining RUN   reb=20+furnace=0+reflux=15+flow=0+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 33.0 ms
+RUN  / no draining RUN   reb=20+furnace=0+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 15.5 ms
+RUN  / no draining RUN   reb=20+furnace=0+reflux=15+flow=2+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 21.7 ms
+RUN  / no draining RUN   reb=20+furnace=40+reflux=0.5+flow=0+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 8.4 ms
+RUN  / no draining RUN   reb=20+furnace=40+reflux=0.5+flow=0+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 21.6 ms
+FAIL / no draining RUN   reb=20+furnace=40+reflux=0.5+flow=2+ret=-60  | cold 88 ticks (0.1 min), 1 at once, stages [3], last at 484, 0 at end | worst 13.8 ms
+       FAIL at t=2371 (1370 after the last move; last sent reb=20+furnace=40+reflux=0.5+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 88 ticks, 1 at most, stages 3, last at 484, 0 at the end | drum 0.442-0.572 base 0.500-0.611 dry 0/0 full 
+RUN  / no draining RUN   reb=20+furnace=40+reflux=0.5+flow=2+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 9.8 ms
+RUN  / no draining RUN   reb=20+furnace=40+reflux=15+flow=0+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 8.0 ms
+RUN  / no draining RUN   reb=20+furnace=40+reflux=15+flow=0+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.3 ms
+RUN  / no draining RUN   reb=20+furnace=40+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.7 ms
+RUN  / no draining RUN   reb=20+furnace=40+reflux=15+flow=2+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 7.0 ms
+RUN  / no draining RUN   reb=40+furnace=0+reflux=0.5+flow=0+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.1 ms
+RUN  / no draining RUN   reb=40+furnace=0+reflux=0.5+flow=0+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 5.9 ms
+FAIL / no draining RUN   reb=40+furnace=0+reflux=0.5+flow=2+ret=-60  | cold 24 ticks (0.0 min), 1 at once, stages [3], last at 514, 0 at end | worst 5.9 ms
+       FAIL at t=4389 (3388 after the last move; last sent reb=40+furnace=0+reflux=0.5+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 24 ticks, 1 at most, stages 3, last at 514, 0 at the end | drum 0.438-0.577 base 0.500-0.665 dry 0/0 full 0
+RUN  / no draining RUN   reb=40+furnace=0+reflux=0.5+flow=2+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 4.6 ms
+RUN  / no draining RUN   reb=40+furnace=0+reflux=15+flow=0+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.1 ms
+RUN  / no draining RUN   reb=40+furnace=0+reflux=15+flow=0+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.4 ms
+RUN  / no draining RUN   reb=40+furnace=0+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.1 ms
+RUN  / no draining RUN   reb=40+furnace=0+reflux=15+flow=2+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 8.0 ms
+RUN  / no draining RUN   reb=40+furnace=40+reflux=0.5+flow=0+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.0 ms
+RUN  / no draining RUN   reb=40+furnace=40+reflux=0.5+flow=0+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 7.8 ms
+FAIL / no draining RUN   reb=40+furnace=40+reflux=0.5+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.0 ms
+       FAIL at t=2857 (1856 after the last move; last sent reb=40+furnace=40+reflux=0.5+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.435-0.598 base 0.500-0.602 dry 0/0 full 0/0 
+RUN  / no draining RUN   reb=40+furnace=40+reflux=0.5+flow=2+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 5.9 ms
+RUN  / no draining RUN   reb=40+furnace=40+reflux=15+flow=0+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.1 ms
+RUN  / no draining RUN   reb=40+furnace=40+reflux=15+flow=0+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.1 ms
+RUN  / no draining RUN   reb=40+furnace=40+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.2 ms
+RUN  / no draining RUN   reb=40+furnace=40+reflux=15+flow=2+ret=60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 9.6 ms
+FAIL / no draining RUN   reb=45+furnace=0+reflux=0.5+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.2 ms
+       FAIL at t=4886 (3885 after the last move; last sent reb=45+furnace=0+reflux=0.5+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.436-0.580 base 0.500-0.656 dry 0/0 full 0/0 a
+RUN  / no draining RUN   reb=45+furnace=0+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 9.7 ms
+FAIL / no draining RUN   reb=45+furnace=40+reflux=0.5+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 7.2 ms
+       FAIL at t=3098 (2097 after the last move; last sent reb=45+furnace=40+reflux=0.5+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.431-0.602 base 0.500-0.600 dry 0/0 full 0/0 
+RUN  / no draining RUN   reb=45+furnace=40+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.2 ms
+FAIL / no draining RUN   reb=50+furnace=0+reflux=0.5+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.2 ms
+       FAIL at t=5563 (4562 after the last move; last sent reb=50+furnace=0+reflux=0.5+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.432-0.582 base 0.500-0.645 dry 0/0 full 0/0 a
+RUN  / no draining RUN   reb=50+furnace=0+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.2 ms
+FAIL / no draining RUN   reb=50+furnace=40+reflux=0.5+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.6 ms
+       FAIL at t=3720 (2719 after the last move; last sent reb=50+furnace=40+reflux=0.5+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.398-0.629 base 0.500-0.604 dry 0/0 full 0/0 
+RUN  / no draining RUN   reb=50+furnace=40+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.2 ms
+FAIL / no draining RUN   reb=60+furnace=0+reflux=0.5+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.1 ms
+       FAIL at t=3470 (2469 after the last move; last sent reb=60+furnace=0+reflux=0.5+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.388-0.599 base 0.500-0.605 dry 0/0 full 0/0 a
+RUN  / no draining RUN   reb=60+furnace=0+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.0 ms
+RUN  / no draining RUN   reb=60+furnace=40+reflux=0.5+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 7.6 ms
+RUN  / no draining RUN   reb=60+furnace=40+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 11.0 ms
+FAIL / no draining RUN   reb=70+furnace=0+reflux=0.5+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.0 ms
+       FAIL at t=4120 (3119 after the last move; last sent reb=70+furnace=0+reflux=0.5+flow=2+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.379-0.632 base 0.500-0.597 dry 0/0 full 0/0 a
+RUN  / no draining RUN   reb=70+furnace=0+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 7.8 ms
+RUN  / no draining RUN   reb=70+furnace=40+reflux=0.5+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.1 ms
+RUN  / no draining RUN   reb=70+furnace=40+reflux=15+flow=2+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.2 ms
+FAIL / no draining RUN   reb=30+furnace=0+reflux=0.5+flow=1.5+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.0 ms
+       FAIL at t=2832 (1831 after the last move; last sent reb=30+furnace=0+reflux=0.5+flow=1.5+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.445-0.580 base 0.500-0.627 dry 0/0 full 0/0
+FAIL / no draining RUN   reb=30+furnace=0+reflux=0.5+flow=2+ret=-40  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.0 ms
+       FAIL at t=2648 (1647 after the last move; last sent reb=30+furnace=0+reflux=0.5+flow=2+ret=-40): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.449-0.594 base 0.500-0.614 dry 0/0 full 0/0 a
+FAIL / no draining RUN   reb=40+furnace=0+reflux=0.5+flow=1.5+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.0 ms
+       FAIL at t=3337 (2336 after the last move; last sent reb=40+furnace=0+reflux=0.5+flow=1.5+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.412-0.597 base 0.500-0.631 dry 0/0 full 0/0
+FAIL / no draining RUN   reb=40+furnace=0+reflux=0.5+flow=2+ret=-40  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.0 ms
+       FAIL at t=2835 (1834 after the last move; last sent reb=40+furnace=0+reflux=0.5+flow=2+ret=-40): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.447-0.601 base 0.500-0.608 dry 0/0 full 0/0 a
+FAIL / no draining RUN   reb=50+furnace=0+reflux=0.5+flow=1.5+ret=-60  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 5.9 ms
+       FAIL at t=3701 (2700 after the last move; last sent reb=50+furnace=0+reflux=0.5+flow=1.5+ret=-60): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.410-0.617 base 0.500-0.620 dry 0/0 full 0/0
+FAIL / no draining RUN   reb=50+furnace=0+reflux=0.5+flow=2+ret=-40  | cold 0 ticks (0.0 min), 0 at once, stages [], last at 0, 0 at end | worst 6.2 ms
+       FAIL at t=3148 (2147 after the last move; last sent reb=50+furnace=0+reflux=0.5+flow=2+ret=-40): {"code":"numerical","message":"numerical error: column step: stage 3 ran out of liquid"} | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.444-0.609 base 0.500-0.602 dry 0/0 full 0/0 a

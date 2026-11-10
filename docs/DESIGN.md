@@ -31132,3 +31132,33 @@ practice, the reverse. At ½-inch holes the same trays would sit at the weep
 point (`√J*G` × 1.26). Taken as published, the holdup plant weeps at rest:
 its trays hold less, its fingerprint moves, and the screen's "weeping" flag
 (Eduljee's) disagrees with the drain. **Put to the user** before building.
+
+### 79.12 M74.5 step 2 built and held back — trays that drain without vapour (2026-11-10)
+
+**Decided (2026-11-10), the user**: Eduljee's weep point decides when a
+tray weeps, Hsieh & McNulty's line how fast — `√J*G` read as `C·u_h/u_weep`
+(§79.11), so nothing weeps above the point the snapshot reports, and with no
+gas exactly their dump (`√J*L = C/m`). Built (`trays::weep_flow`, the
+weeping through the holes added to what falls to the tray below, the draws
+taking only what goes over the weir; under the weir's lip the clear height the
+weir's in proportion to the no-load liquid held) with its reference case
+against a hand calculation (389.634 kg/s on a 5 mm-hole tray at 50 mm with no
+gas, a quarter at half the weep velocity, `h_c^0.75`). Every plant at rest
+unchanged (no tray under Eduljee's point).
+
+Measured (`tools/steptime/prototypes/m74_5/`, `drain_*.txt`): the 70 held
+runs, 49 run (all 70 without it) — 18 refused because stage 3 **ran out of
+liquid** (the loops cold and full, the reflux low: a tray over a stage that
+stops boiling dumps, and the one under it empties), 3 a new stall at the
+base at 0 MW (stage 13 short by under 0.001 MW); the 200 below the floor, 199
+(one dry tray); the feed-cut set, 3 of 7 (one dry tray, and the feed back at
+20 MW stalling at the base); 39 of 40 walks identical to the printed digits,
+one within 0.05 %.
+
+A tray that empties is a state the step cannot hold (no moles, no
+composition) — the start from empty's to build (each tray's steel its
+temperature, §79.9 decision 3). **Decided (2026-11-10), the user: ship the
+shorter step now** — stages that stop boiling (§79.10) and key 8 to 0 MW —
+the draining kept as `tools/steptime/prototypes/m74_5/draining.patch` (the
+code, its reference test; applies to 67cbbd0) and built with the empty
+trays (C29).

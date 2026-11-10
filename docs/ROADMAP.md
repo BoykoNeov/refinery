@@ -11189,3 +11189,10 @@ corpus byte-identical but where a stage stops boiling.
 back onto a stage not boiling — failing first, then passing; every plant
 byte-identical. Next: step 2, the trays that drain without vapour (Hsieh &
 McNulty's weeping, a prototype first), then step 3, key 8 to 0 MW.
+
+**Step 2 built and held back** (DESIGN §79.11–§79.12): the two weep points
+disagree on 5 mm holes — decided, Eduljee's when, Hsieh & McNulty's how fast;
+built with its reference case, but a tray over a stage that stops boiling
+then empties, which the step cannot hold (49 of the 70 held runs). **Decided
+2026-11-10, the user: ship the shorter step** — the draining kept as a patch
+for the start from empty (C29). Next: step 3, key 8 to 0 MW.
