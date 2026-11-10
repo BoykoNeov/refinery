@@ -11167,3 +11167,19 @@ reflux stopped (the pressure drops, §79.6); and with the furnace left firing,
 line (the reverse-feed refusal) — with the furnace off the cut runs 20
 minutes. No engine code changed. **Part B**, the empty
 column, put to the user as decisions (§79.9).
+No engine code changed. **Part B**, the empty
+column, put to the user as decisions (§79.9).
+
+**Decided 2026-11-10, the user**: the stop-boiling step built now as its own
+slice, **M74.5**, key 8's held reboiler opened to 0 MW, and a tray with no
+vapour under it draining through its holes (with it); then the start from
+empty with each tray's steel as a heat store and a total-reflux start mode
+(§79.9). The burst tube's drain-back is C28.
+
+### M74.5 — next: stages that stop boiling, trays that drain without vapour, key 8 to 0 MW
+
+The prototype (`tools/steptime/prototypes/m74_5_0/stop_boiling.patch`, its
+`l2` variant without the switch) built into `column_step`; a tray with no
+vapour (or too little) passing liquid through its holes at a published
+weeping rate; key 8's held reboiler 0–215 MW, its gate moved to 0 MW; the
+corpus byte-identical but where a stage stops boiling.

@@ -31058,3 +31058,26 @@ empty stage has no state (no moles, no composition); a sieve tray with no
 vapour holds its liquid at its weir here, where a real one dumps it through
 its holes; and what the column is fed while it fills (Kister §12.1,
 pp. 313–314, the start-up order).
+
+**Decided (2026-11-10), the user**, on four questions:
+
+1. **Stages that stop boiling built now, as their own step (M74.5)** —
+   not with the start from empty — and key 8's held reboiler opened to
+   0 MW (the 80 MW floor of §79.8 lifted).
+2. **A tray with no vapour under it drains through its holes**, as a real
+   sieve tray does — not held at its weir. Built with (1): the trays above a
+   stage that stops boiling are such trays. Needs a published weeping rate
+   (the library first).
+3. **An empty tray has its steel's temperature** — each tray's metal a heat
+   store, the rising vapour condensing on it while it warms (about a quarter
+   of the warm-up's heat, M74.0) — not a token of liquid.
+4. **A total-reflux start mode**: the products shut, the reflux holding the
+   drum's level, then the normal level loops — the player's switch (Kister
+   §12.8).
+
+Taken as the defaults, said to the user: the feed as its file declares it
+(the crude at its 270 °C preheat); the level loops' reference flows from the
+running column solved at load, the state then emptied; the burst tube's
+drain back down the transfer line a ledger row of its own (C28), a feed shut
+meaning the furnace shut until then; the pressure-drop wall (the cut with the
+loops and reflux stopped) open.
