@@ -36,7 +36,7 @@ use refinery_core::traits::{
     ThermoModel,
 };
 use refinery_core::units::{
-    Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, R_GAS, T_AMBIENT,
+    CubicMeter, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, R_GAS, T_AMBIENT,
 };
 
 use crate::bubble::{bubble_temperature, bubble_temperature_unnormalized};
@@ -1109,6 +1109,7 @@ impl HeatBalanceCascade {
                         capacity: Watt(condenser_duty.value() * (1.0 + condenser.margin)),
                         at_capacity: false,
                         at_design: false,
+                        flooded_share: 0.0,
                     })
                 }
                 None => None,
@@ -1147,6 +1148,11 @@ impl HeatBalanceCascade {
                 drum_loop_at_max: false,
                 base_loop_at_max: false,
                 total_reflux: false,
+                drain_shut: spec
+                    .holdup
+                    .as_deref()
+                    .is_some_and(|declared| declared.slop_drain_shut),
+                condenser_flooded: 0.0,
                 condenser,
             }),
             holdup,
@@ -1275,6 +1281,37 @@ fn condenser_ua(
     ))
 }
 
+/// A condenser's overall heat-transfer coefficient for sizing its area
+/// [W/(m²·K)]: Ludwig, *Applied Process Design* Vol. 1 (4th ed.), Rules of
+/// Thumb, Heat Exchangers rule 9 (p. xxii) — "condensers, 850 W/m² °C (150
+/// Btu/h·ft²·°F)", for estimating purposes.
+const CONDENSER_U: f64 = 850.0;
+
+/// A standard tube's outside diameter and its triangular pitch [m]: Ludwig
+/// Vol. 1, Heat Exchangers rule 3 (p. xxii) — 19.0 mm (3/4 in.) OD on
+/// 25.4 mm (1 in.) triangular spacing; the condensing side the shell's
+/// (rule 5).
+const TUBE_OD: f64 = 0.019;
+const TUBE_PITCH: f64 = 0.0254;
+
+/// The liquid a column's condenser holds flooded whole [m³] (M75.2,
+/// docs/DESIGN.md §80.3) — a GAME VALUE derived from its `UA`: the area
+/// `A = UA / U` ([`CONDENSER_U`]) as standard tubes on their triangular
+/// pitch ([`TUBE_OD`], [`TUBE_PITCH`]), the shell side's free volume per
+/// tube area the lattice's: each tube's cell `(√3/2)·p²` less its own
+/// section `π·d²/4`, over its surface `π·d` per metre — 4.61 litres a
+/// square metre. The shell's clearance round the bundle is not counted.
+/// (Ludwig's own areas per shell, rule 3, hold about a third of the tubes
+/// that lattice packs — six times the free volume; the lattice is taken.)
+/// On the holdup plant, `UA` 0.58 MW/K: ≈ 680 m², ≈ 3.1 m³ — a sixth of
+/// its 18.7 m³ drum.
+pub(crate) fn condenser_liquid_volume(ua: WattPerKelvin) -> CubicMeter {
+    let pi = std::f64::consts::PI;
+    let cell = 3.0f64.sqrt() / 2.0 * TUBE_PITCH * TUBE_PITCH;
+    let per_area = (cell - pi * TUBE_OD * TUBE_OD / 4.0) / (pi * TUBE_OD);
+    CubicMeter(ua.value() / CONDENSER_U * per_area)
+}
+
 /// A column's condenser's balance at a trial top pressure (M75.1,
 /// docs/DESIGN.md §80.1).
 struct Balance {
@@ -1299,12 +1336,18 @@ struct Balance {
 /// `V·dP/(R·T)` moles, `λ` joules each. The step itself condenses all it is
 /// sent at `pressure`, so the books are the step's: the uncondensed vapour
 /// is a pressure, not a stock.
+///
+/// `flooded` [-] is the share of the tubes the drum's liquid has backed up
+/// into, its drain shut (M75.2, docs/DESIGN.md §80.3): the capacity is the
+/// rest's, `C(P)·(1 − flooded)`. Read off the start-of-tick drum, the same
+/// on every trial of a tick.
 #[allow(clippy::too_many_arguments)]
 fn condenser_balance(
     slate: &Slate,
     thermo: &dyn ThermoModel,
     condenser: &ColumnCondenser,
     ua: WattPerKelvin,
+    flooded: f64,
     separation: &Separation,
     pressure: Pascal,
     previous: Pascal,
@@ -1323,7 +1366,12 @@ fn condenser_balance(
     };
     let x = MoleFractions::from_mass(&next.drum_composition, slate)?;
     let bubble = bubble_temperature(slate, thermo, &x, pressure, "the column's condensate")?;
-    let capacity = ua.value() * (bubble.value() - condenser.coolant.value()).max(0.0);
+    let mut capacity = ua.value() * (bubble.value() - condenser.coolant.value()).max(0.0);
+    if flooded > 0.0 {
+        // The tubes the drum's back-up floods condense nothing (Kister,
+        // *Distillation Operation*, §13.3).
+        capacity *= 1.0 - flooded;
+    }
     let top = profile.temperatures[0];
     let latent = mixture_dh_vap(slate, thermo, x.fractions(), top)?;
     if latent.is_nan() || latent <= 0.0 {
@@ -1415,11 +1463,17 @@ fn stepped_pass(
             };
             stepped_pass_at(&moved, holdup, state, feed_vapour_fraction)?
         };
+        // The share of the tubes backed up (M75.2, §80.3): the step's
+        // reading of the start-of-tick drum, so every trial's is the same.
+        let flooded = separation
+            .holdup_reading
+            .map_or(0.0, |reading| reading.condenser_flooded);
         let balance = condenser_balance(
             setup.pass.slate,
             setup.thermo,
             condenser,
             ua,
+            flooded,
             &separation,
             Pascal(pressure),
             Pascal(previous),
@@ -1481,6 +1535,9 @@ fn stepped_pass(
         capacity: Watt(balance.capacity),
         at_capacity: pressure > set,
         at_design: pressure >= design,
+        flooded_share: separation
+            .holdup_reading
+            .map_or(0.0, |reading| reading.condenser_flooded),
     };
     separation.holdup_reading = separation.holdup_reading.map(|before| HoldupReading {
         condenser: Some(reading),

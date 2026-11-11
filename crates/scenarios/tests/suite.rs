@@ -37,6 +37,8 @@ mod coil_cell_reference;
 mod coil_trip_reference;
 #[path = "column_condenser.rs"]
 mod column_condenser;
+#[path = "column_drain.rs"]
+mod column_drain;
 #[path = "column_empty.rs"]
 mod column_empty;
 #[path = "column_holdup.rs"]

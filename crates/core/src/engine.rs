@@ -819,6 +819,38 @@ impl Engine {
                 holdup.total_reflux = on;
                 Ok(())
             }
+            // The drum's drain to slop open or shut (M75.2, docs/DESIGN.md
+            // §80.3): a column that holds liquid only, and shut only where its
+            // condenser is a limit, whose tubes the drum's back-up floods.
+            Command::SetSlopDrain { node, open } => {
+                let model = self.separation.name();
+                let name = self.graph.node(node).name.clone();
+                let NodeKind::Column { cascade, .. } = &mut self.graph.node_mut(node).kind else {
+                    return Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{name}') is not a column"
+                    )));
+                };
+                let holdup = match cascade.as_mut().and_then(|spec| spec.holdup.as_mut()) {
+                    Some(holdup) if model == "heat_balance" => holdup,
+                    _ => {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{name}') holds no liquid under separation \
+                             \"heat_balance\": the slop drain is a reflux drum's, and only a \
+                             column that holds liquid has a drum (docs/DESIGN.md §80.3)"
+                        )))
+                    }
+                };
+                if !open && holdup.condenser.is_none() {
+                    return Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{name}') declares no condenser limit: a shut drain backs \
+                         the drum's liquid up into its condenser's tubes, and only a condenser \
+                         declared as a limit has tubes to flood (docs/DESIGN.md §80.3) — \
+                         declare condenser_limit in its file"
+                    )));
+                }
+                holdup.slop_drain_shut = !open;
+                Ok(())
+            }
             // One pumparound's duty (M60, docs/DESIGN.md §65.4).
             Command::SetPumparoundDuty {
                 node,
@@ -3908,7 +3940,8 @@ impl Engine {
             | Command::SetLoopFlow { node, .. }
             | Command::SetLoopReturnTemperature { node, .. }
             | Command::SetReboilerDuty { node, .. }
-            | Command::SetTotalReflux { node, .. } => {
+            | Command::SetTotalReflux { node, .. }
+            | Command::SetSlopDrain { node, .. } => {
                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
             }
             Command::PuncturePipe { edge, .. } => {
@@ -4159,6 +4192,7 @@ impl Engine {
                                 drum_loop_at_max: reading.drum_loop_at_max,
                                 base_loop_at_max: reading.base_loop_at_max,
                                 total_reflux: reading.total_reflux,
+                                drain_shut: reading.drain_shut,
                                 condenser: reading.condenser.map(|condenser| {
                                     crate::snapshot::CondenserOperation {
                                         pressure_pa: condenser.pressure.value(),
@@ -4166,6 +4200,7 @@ impl Engine {
                                         capacity_w: condenser.capacity.value(),
                                         at_capacity: condenser.at_capacity,
                                         at_design: condenser.at_design,
+                                        flooded_share: condenser.flooded_share,
                                     }
                                 }),
                             }),

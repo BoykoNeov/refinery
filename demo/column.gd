@@ -1840,7 +1840,7 @@ func _limit_color(limit: String) -> Color:
 	match limit:
 		"dry":
 			return WARN
-		"full":
+		"full", "backed_up":
 			return BAD
 	return DIM
 
@@ -2114,7 +2114,7 @@ func _draw_holdup_panel(y: float) -> float:
 	y += 22
 	for vessel in [["drum", "drum_level", "drum_limit", "drum_loop_at_max", "the distillate"], ["base", "base_level", "base_limit", "base_loop_at_max", "the reboiler" if not bool(h["reboiler_held"]) else "the bottoms"]]:
 		var limit := str(h[vessel[2]])
-		var words: String = {"normal": "", "dry": "  DRY: its outflow cut to what it holds", "full": "  FULL: the excess leaves with its product"}[limit]
+		var words: String = {"normal": "", "dry": "  DRY: its outflow cut to what it holds", "full": "  FULL: the excess leaves with its product", "backed_up": "  BACKED UP: its drain shut, the excess floods the condenser"}[limit]
 		_text(Vector2(PANEL_X, y), "%-14s %5.0f %%%s" % [vessel[0], float(h[vessel[1]]) * 100.0, words], _limit_color(limit) if limit != "normal" else INK)
 		y += 18
 		if bool(h[vessel[3]]):

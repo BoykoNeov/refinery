@@ -203,6 +203,7 @@ fn referent(cmd: &Command) -> Referent {
         Command::SetLoopReturnTemperature { node, .. } => Referent::Node(*node),
         Command::SetReboilerDuty { node, .. } => Referent::Node(*node),
         Command::SetTotalReflux { node, .. } => Referent::Node(*node),
+        Command::SetSlopDrain { node, .. } => Referent::Node(*node),
     }
 }
 

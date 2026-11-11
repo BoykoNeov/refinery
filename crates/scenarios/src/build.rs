@@ -4837,6 +4837,7 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                             steel,
                             start_empty,
                             total_reflux: false,
+                            slop_drain_shut: false,
                             condenser,
                             state: None,
                         }))

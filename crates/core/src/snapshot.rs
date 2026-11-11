@@ -281,6 +281,21 @@ pub enum Command {
         node: NodeId,
         on: bool,
     },
+    /// Open or shut a column's reflux-drum drain to slop (M75.2,
+    /// docs/DESIGN.md §80.3): from the next tick on, shut, a drum past full
+    /// holds its excess, which backs up into the condenser and floods its
+    /// tubes — the condenser condensing less, the column's pressure rising;
+    /// open, the excess drains to slop within the tick (§79.18), all a shut
+    /// drain held at once. Open by default. Refused off a heat-balance
+    /// column that holds liquid, and — to shut it — on a column whose
+    /// condenser is not a limit (`condenser_limit`), which has no tubes for
+    /// its back-up to flood. The drum's drain only: a base past full goes to
+    /// slop either way. Its consequence is `holdup.slop_drain_shut` on the
+    /// column's `kind` and `holdup.drain_shut` on its `column_operation`.
+    SetSlopDrain {
+        node: NodeId,
+        open: bool,
+    },
 }
 
 /// A held reboiler duty a column declined (M66.2, docs/DESIGN.md §71.2).
@@ -834,6 +849,13 @@ pub struct HoldupOperation {
     /// serialized, while off.
     #[serde(default, skip_serializing_if = "is_false")]
     pub total_reflux: bool,
+    /// The drum's drain to slop shut (M75.2, docs/DESIGN.md §80.3): past
+    /// full, its excess backs up into the condenser (`drum_limit`
+    /// `"backed_up"`, `condenser.flooded_share`); past the condenser flooded
+    /// whole, to slop all the same (`"full"` with this set). Absent, not
+    /// serialized, while open.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub drain_shut: bool,
     /// Its condenser and the pressure it holds (M75.1, docs/DESIGN.md
     /// §80.1). Absent, not serialized, on a column that declares none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -855,6 +877,12 @@ pub struct CondenserOperation {
     pub at_capacity: bool,
     /// The pressure at the column's design pressure, the most it rises to.
     pub at_design: bool,
+    /// The share of its tubes the drum's liquid has backed up into [-]
+    /// (M75.2, docs/DESIGN.md §80.3), its drain shut: 0 to 1, the
+    /// capacity `capacity_w` that of the rest. Absent, not serialized,
+    /// while nothing backs up.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub flooded_share: f64,
 }
 
 /// Whether a flag is off — what keeps `HoldupOperation::total_reflux` off

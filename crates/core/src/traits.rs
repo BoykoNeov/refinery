@@ -856,6 +856,14 @@ pub struct HoldupReading {
     pub base_loop_at_max: bool,
     /// The column on total reflux this tick (M74.6, docs/DESIGN.md §79.17).
     pub total_reflux: bool,
+    /// The drum's drain to slop shut this tick (M75.2, docs/DESIGN.md
+    /// §80.3).
+    pub drain_shut: bool,
+    /// The share of the condenser's tubes the drum's liquid backs up into
+    /// [-], 0 to 1 (M75.2, §80.3): the drum's start-of-tick liquid past full
+    /// over the condenser's liquid volume, its drain shut; 0 while the drain
+    /// is open or the drum not past full.
+    pub condenser_flooded: f64,
     /// Its condenser and the pressure it holds (M75.1, docs/DESIGN.md
     /// §80.1), where the column declares one.
     pub condenser: Option<CondenserReading>,
@@ -876,6 +884,9 @@ pub struct CondenserReading {
     pub at_capacity: bool,
     /// The pressure at the column's design pressure, the most it rises to.
     pub at_design: bool,
+    /// The share of its tubes the drum's liquid has backed up into [-]
+    /// (M75.2, docs/DESIGN.md §80.3); `capacity` is the rest's.
+    pub flooded_share: f64,
 }
 
 /// A drum's or a base's excess past full, sent to the slop line this pass
@@ -916,6 +927,11 @@ pub enum LevelLimit {
     Normal,
     Dry,
     Full,
+    /// A drum past full whose drain is shut (M75.2, docs/DESIGN.md §80.3):
+    /// its excess held, backed up into the condenser's tubes — the "drum
+    /// backed up" alarm. Past the condenser flooded whole the drum reads
+    /// `Full` again, its excess to slop with the drain shut.
+    BackedUp,
 }
 
 /// How one sieve tray ran this pass (M73.1, docs/DESIGN.md §78.3, §78.4.1):

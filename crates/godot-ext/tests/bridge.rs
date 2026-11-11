@@ -284,6 +284,7 @@ fn wire_text(cmd: &Command) -> &'static str {
         }
         Command::SetReboilerDuty { .. } => r#"{"cmd":"set_reboiler_duty","node":2,"duty":0.0}"#,
         Command::SetTotalReflux { .. } => r#"{"cmd":"set_total_reflux","node":2,"on":true}"#,
+        Command::SetSlopDrain { .. } => r#"{"cmd":"set_slop_drain","node":2,"open":true}"#,
         Command::SetLoopFlow { .. } => {
             r#"{"cmd":"set_loop_flow","node":2,"pumparound_loop":1,"flow":110.0}"#
         }
@@ -369,6 +370,11 @@ fn every_variant() -> Vec<Command> {
             node: NodeId(2),
             on: true,
         },
+        // M75.2: a column's reflux-drum drain to slop.
+        Command::SetSlopDrain {
+            node: NodeId(2),
+            open: true,
+        },
         // M72.2: a pumparound loop's two handles.
         Command::SetLoopFlow {
             node: NodeId(2),
@@ -409,7 +415,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 23, "a Command variant was added");
+    assert_eq!(every_variant().len(), 24, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -470,6 +476,9 @@ fn fixture(cmd: &Command) -> Fixture {
         Command::SetReboilerDuty { .. } => Fixture::shipped("crude_unit_stripped.toml", "column"),
         // M74.6: the empty-start plant, its steel declared.
         Command::SetTotalReflux { .. } => Fixture::shipped("crude_unit_empty.toml", "column"),
+        // M75.2: the drain opened — legal on any column that holds liquid
+        // (shut needs a condenser limit, which no shipped plant declares yet).
+        Command::SetSlopDrain { .. } => Fixture::shipped("crude_unit_empty.toml", "column"),
         // M72.4: the crude unit whose pumparounds are loops on the map.
         Command::SetLoopFlow { .. } | Command::SetLoopReturnTemperature { .. } => {
             Fixture::shipped("crude_unit_loops.toml", "column")

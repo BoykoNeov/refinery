@@ -11354,3 +11354,29 @@ holdup plant rises smoothly, 1.8 → 3.2 bar in five minutes, the column's
 store of heat setting the pace; at rest bit-identical to the plant without
 the limit; the books closing; every plant byte-identical (71 of 71, both
 fidelities). Inline fixtures (`crates/scenarios/tests/column_condenser.rs`).
+
+**The pressure solve's far-end trials fixed** (2026-11-11, found building
+M75.2; DESIGN §80.2): a column at rest whose drum was put past full rose to
+2.39 bar and, turning, tried a whole step at the set 1.8 bar — the column
+flashed, the tick refused. The bracket now grows from last tick's pressure
+(the root's bound `|r|/store`, capped at 1 bar/s, doubled, clamped); the
+peaking plant turns once and lands on its set; every plant byte-identical.
+
+### M75.2 — **DONE** 2026-11-11: the drum's drain an operator's, a shut drain backing the drum up into the condenser
+
+`Command::SetSlopDrain { node, open }`, open by default and off the wire
+while open; shutting refused without a condenser limit; the drum's drain
+only (the base past full to slop either way). Shut, a drum past full holds
+its excess, which floods the condenser's tubes — the share its volume past
+full over the condenser's liquid volume (derived from `UA`: Ludwig Vol. 1's
+850 W/m²·K and standard tubes, ≈ 3.1 m³ on the holdup plant), the capacity
+the free tubes'; the drum reading `"backed_up"`; past the condenser flooded
+whole, to slop with the drain shut, reported. Flooded whole and kept so,
+the pressure rises to the design pressure in 54 s; opened, the drain takes
+the back-up in one tick (DESIGN §80.3). Found: a drum past full raises its
+own condenser's duty by a third through its level loop's reflux, and on
+total reflux the pressure reaches its design ~3.5 minutes in, long before
+the drum fills — the back-up matters once relief holds the pressure. The
+model still books all the condensate into the drum when the condenser is
+flooded whole (until relief, M75.3). Seven tests, twelve mutations caught,
+every plant byte-identical (`crates/scenarios/tests/column_drain.rs`).

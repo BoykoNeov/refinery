@@ -586,9 +586,27 @@ impl ColumnStep<'_> {
             bottoms_mass *= (base_level / LOW_LEVEL).max(0.0);
             base_limit = LevelLimit::Dry;
         }
+        // Its drain shut (M75.2, docs/DESIGN.md §80.3), a drum past full holds
+        // its excess, backed up into the condenser's tubes — the share of
+        // them flooded its volume over the condenser's liquid volume — and
+        // only past the condenser flooded whole goes to slop. Before its
+        // first tick sizes the condenser the drain drains, as when open.
+        let drain_shut = self.holdup.slop_drain_shut;
+        let condenser_volume = state
+            .condenser_ua
+            .filter(|_| drain_shut)
+            .map(|ua| crate::heat_balance::condenser_liquid_volume(ua).value());
+        let full = condenser_volume.map_or(1.0, |volume| 1.0 + volume / drum_volume);
+        let mut condenser_flooded = 0.0;
         if drum_level > 1.0 {
-            overflow = state.drum_liquid.value() * (1.0 - 1.0 / drum_level) / dt;
-            drum_limit = LevelLimit::Full;
+            if let Some(volume) = condenser_volume {
+                condenser_flooded = ((drum_level - 1.0) * drum_volume / volume).min(1.0);
+                drum_limit = LevelLimit::BackedUp;
+            }
+            if drum_level > full {
+                overflow = state.drum_liquid.value() * (1.0 - full / drum_level) / dt;
+                drum_limit = LevelLimit::Full;
+            }
         }
         let mut base_overflow = 0.0;
         if base_level > 1.0 {
@@ -635,6 +653,8 @@ impl ColumnStep<'_> {
                 drum_loop_at_max,
                 base_loop_at_max,
                 total_reflux,
+                drain_shut,
+                condenser_flooded,
                 // Read after the step (M75.1, `heat_balance`).
                 condenser: None,
             },

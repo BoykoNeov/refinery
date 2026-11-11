@@ -17,11 +17,11 @@ const STEEL_LINE: &str =
 
 /// The probe's condenser: 5 % spare over the settled duty, 35 °C coolant,
 /// 100 m³ overhead.
-const PROBE: &str = "margin = 0.05, coolant_c = 35.0, overhead_m3 = 100.0";
+pub(crate) const PROBE: &str = "margin = 0.05, coolant_c = 35.0, overhead_m3 = 100.0";
 
 /// The holdup plant with its steel and the condenser `limit` (the keys
 /// inside `condenser_limit = { … }`).
-fn with_limit(limit: &str) -> String {
+pub(crate) fn with_limit(limit: &str) -> String {
     let steel = holdup_with(", steel = \"derived\"");
     assert!(steel.contains(STEEL_LINE));
     steel.replace(

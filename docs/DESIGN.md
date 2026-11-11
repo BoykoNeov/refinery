@@ -31711,3 +31711,83 @@ set at 753 s, every tick converging, the books at 2e-10 kg/s and 4.9 W;
 removed, each caught by its slow test; `illinois` now orders its ends
 itself, and its order flipped survives — on brackets a few pascals wide its
 first secant lands within the 1-Pa tolerance (an equivalent mutation here).
+
+### 80.3 M75.2 landed — the drum's drain an operator's, its back-up flooding the condenser (2026-11-11)
+
+**The drain.** `Command::SetSlopDrain { node, open }` — open by default,
+`holdup.slop_drain_shut` on the column's kind only while shut (every plant
+byte-identical). Refused off a heat-balance column that holds liquid, and
+shutting it on a column whose condenser is not a limit: the back-up floods
+tubes, and only a declared condenser has them. Open is taken wherever it
+applies, before the first tick too. **The drum's drain only**: a base past
+full goes to slop either way (its back-up into the bottom trays and the
+reboiler's return, Kister §13.2, the base side still deferred, C30).
+
+**The condenser's liquid volume** (a game value derived from its `UA`):
+the area `A = UA/U` at Ludwig Vol. 1's 850 W/m²·K for condensers (Rules of
+Thumb, Heat Exchangers rule 9, p. xxii), its tubes rule 3's standard 19.0 mm
+OD on a 25.4 mm triangle, the condensing side the shell's (rule 5); the
+shell side's free volume per tube area the lattice's, `((√3/2)·p² −
+π·d²/4)/(π·d)` = 4.61 L/m². On the holdup plant (`UA` 0.58 MW/K, margin
+0.05) ≈ 680 m², 3.1 m³ — a sixth of its 18.7 m³ drum. Ludwig's own areas
+per shell (rule 3: 9.3, 37.2, 102 m² in a 0.3, 0.6, 0.9 m shell — the PDF
+drops the decimal point of 37.2) hold about a third of the tubes the lattice
+packs and would give six times the volume, ≈ 18 m³; the lattice is taken.
+
+**Shut, a drum past full backs up** (Kister §13.3): its excess held, the
+share of the tubes flooded `f = (L − 1)·V_drum/V_condenser` (`L` the drum's
+level), at most 1; the condenser's capacity `C(P)·(1 − f)`. `f` is read off
+the start-of-tick drum — the level the drum's limit reads — so every
+pressure trial of a tick sees the same share (the drum a slow state; a share
+a tick late cannot ring as the pressure did, §80.2). The drum reads the new
+limit `"backed_up"`; past `L = 1 + V_condenser/V_drum` (the condenser
+flooded whole, `f = 1`, nothing condensed) the excess past both goes to slop
+within the tick, the drum reading `"full"` with `drain_shut` set — reported.
+Opened, the drain takes all it held in one tick (§79.18's drain, unchanged):
+a burst of slop, the tubes clear the next tick. Faceplate:
+`holdup.drain_shut`, `condenser.flooded_share` (each off the wire at its
+default).
+
+**What it reads** (the holdup plant with its steel, inline fixtures in
+`crates/scenarios/tests/column_drain.rs`):
+- **A drum past full raises its own condenser's duty**: its level loop runs
+  at its ceiling and the reflux, a multiple of the distillate, with it —
+  about 60 MW at the set pressure on the first tick past full against the
+  settled 45.2. On the probe's 5 % margin even 3 % of the tubes flooded
+  lifted the pressure 124 Pa; with the drain open, the full drum's own surge
+  lifts it too (a drum put at 1.2 of its volume, the excess to slop, rose to
+  2.39 bar over 200 s — the run that found §80.2's far-end fault). On a
+  condenser with its duty to spare again (`margin = 1.0`) a fifth flooded
+  holds the set pressure exactly, half flooded and it rises. A risen
+  pressure reads a duty near its capacity whatever the shortfall at the
+  set: the column answers ~93 kW a pascal (§80.2).
+- **At rest a back-up does not last**: the level loop at its ceiling draws
+  half the condenser's back-up out of the drum in about 13 s; the pressure
+  peaks 1.5 kPa up and is back on its set as the tubes clear.
+- **Flooded whole and kept so** (the drum re-planted past both volumes
+  every tick): the pressure rises 1.8 → 3.52 bar, the design pressure, in
+  54 s (≈ 0.03 bar/s) and holds there exactly, `at_design`.
+- **On total reflux the back-up never comes first**: from a drum planted at
+  0.99, the level loop pulls it back to ≈ 0.52 within 90 s while the
+  pressure rises on the condenser's own limit to the design pressure at
+  ≈ 210 s — long before the drum refills (M75.0: 26 minutes from half
+  full). On this plant the back-up only matters once relief (M75.3) holds the
+  pressure below the design.
+- The books close every tick in every story (mass ≤ 3e-10 kg/s, heat
+  ≤ 6.4 W).
+
+**A gap, written down**: the step still condenses all the column sends and
+books it into the drum, so a condenser flooded whole still fills the drum
+— where Kister §13.3 has the back-up stop the level rising. That follows
+from the books being the step's (§80.2: the uncondensed vapour is a
+pressure, not a stock) and stands until relief (M75.3) gives the vapour a
+way out.
+
+**Gates.** Seven tests (refusals; shut and not full bit-identical to open;
+the back-up's share and capacity by hand, holding and rising; past flooded
+whole to slop; opened; drawn down read every tick; flooded whole to the
+design); twelve mutations, every one caught (the threshold, the cap at 1,
+the capacity's share, the limit, the refusal, the flag, `U`, the pitch, the
+share in the balance and on the faceplate, the first tick's flag). Every
+plant byte-identical, 71 of 71 on both fidelities. The column screen
+(`demo/column.gd`) reads `"backed_up"` (its key is M75.4's).

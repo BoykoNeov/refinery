@@ -980,6 +980,18 @@ pub struct ColumnHoldup {
     /// not serialized.
     #[serde(default, skip_serializing_if = "is_false")]
     pub total_reflux: bool,
+    /// The reflux drum's drain to slop shut (M75.2, docs/DESIGN.md §80.3):
+    /// a drum past full then holds its excess, which backs up into its
+    /// condenser and floods its tubes (Kister, *Distillation Operation*,
+    /// §13.3) — the condenser condensing less, the column's pressure
+    /// rising; past the condenser flooded whole the excess goes to slop
+    /// all the same, reported. Open (`false`, not serialized), a drum past
+    /// full drains to slop within the tick, as since M74.6 (§79.18). Set by
+    /// `Command::SetSlopDrain`, shut only on a column whose condenser is a
+    /// limit. The drum's only: the base past full goes to slop either way
+    /// (its back-up into the bottom trays is not modelled, C30).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub slop_drain_shut: bool,
     /// The column's condenser as a limit, and the pressure control on it
     /// (M75.1, docs/DESIGN.md §80.1), or `None`: the condenser condenses all
     /// it is sent and the column runs at its declared pressure, as before
