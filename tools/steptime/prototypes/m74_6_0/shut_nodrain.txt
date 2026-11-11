@@ -1,0 +1,10 @@
+
+running 1 test
+test m74_6_0_empty::m74_6_0_empty ... == valved WARM 1000 GAP 300 RUN 12000
+RESULT valve=0+furnace=0+reb=0: RUNS held drum 0.330 normal base 0.373 normal | flood - weep 1,2,3,4,5,6,7,8,9,10,11,12 | loops 0.0MW/0.0MW/0.0MW R 4.000 coil 358.5 cond 0.00 reb 0.00 MW | products 0.00/0.00/0.00/0.00/0.00 | empty 0 ticks, 0 at most, stages , last at 0, 0 at the end, least held 960.1 kg | cold 10359 ticks, 10 at most, stages 1,2,3,4,5,6,7,8,9,10, last at 12000, 10 at the end | drum 0.329-0.500 base 0.373-0.552 dry 0/0 full 0/0 atmax 0/0 reb 0.0-0.0 MW least vapour 0 mol/s on 3 declined 0 dry trays 26 ticks, 1 at most, last at 4095 worst 13.3 ms
+RESULT valve=0+furnace=0+reb=0>valve=1+furnace=20+reb=86.7@6000: RUNS held drum 0.501 normal base 0.503 normal | flood - weep - | loops 15.2MW/17.4MW/13.2MW R 4.000 coil 356.7 cond 44.62 reb 86.70 MW | products 22.57/16.39/20.49/14.34/27.92 | empty 0 ticks, 0 at most, stages , last at 0, 0 at the end, least held 1427.4 kg | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.382-0.509 base 0.490-0.530 dry 0/0 full 0/0 atmax 0/0 reb 0.0-86.7 MW least vapour 113 mol/s on 11 declined 0 dry trays 4 ticks, 7 at most, last at 305 worst 18.2 ms
+RESULT valve=0+furnace=0: RUNS held drum 0.470 normal base 0.221 normal | flood 11,12 weep 1,2,3,4,5 | loops 26.2MW/27.1MW/26.5MW R 4.000 coil 358.5 cond 5.99 reb 86.23 MW | products 3.04/0.00/0.00/0.00/0.00 | empty 0 ticks, 0 at most, stages , last at 0, 0 at the end, least held 1168.6 kg | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.396-0.500 base 0.221-0.500 dry 0/0 full 0/0 atmax 0/0 reb 86.2-86.2 MW least vapour 100 mol/s on 1 declined 0 dry trays 0 ticks, 0 at most, last at 0 worst 13.3 ms
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 17.75s
+

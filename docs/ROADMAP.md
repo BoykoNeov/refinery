@@ -11176,7 +11176,7 @@ vapour under it draining through its holes (with it); then the start from
 empty with each tray's steel as a heat store and a total-reflux start mode
 (§79.9). The burst tube's drain-back is C28.
 
-### M74.5 — next: stages that stop boiling, trays that drain without vapour, key 8 to 0 MW
+### M74.5 — **DONE** 2026-11-10: stages that stop boiling, key 8 to 0 MW (the draining held back, C29)
 
 The prototype (`tools/steptime/prototypes/m74_5_0/stop_boiling.patch`, its
 `l2` variant without the switch) built into `column_step`; a tray with no
@@ -11202,3 +11202,26 @@ the 70 holds and 200 single moves re-measured on the committed engine, all
 run; the screen names the stages not boiling. **M74.5 done.** Next: part B of
 the start from empty — each tray's steel its temperature, an empty tray a state
 the step holds (then the draining, C29), the total-reflux start; its own probe.
+
+### M74.6.0 — **PROBED** 2026-11-11: the start from empty — three decisions put to the user
+
+Probed (`tools/steptime/prototypes/m74_6_0/`, `FINDINGS.md`, DESIGN §79.14),
+in the advisor's order: each stage's steel a heat store first (what makes an
+empty stage solvable), an empty stage's branches in the step, C29's draining
+as the gate, then the start. **The holdup plant starts from empty and lines
+out**: the hot feed's vapour condensing on the cold steel tray by tray, up to
+12 stages holding nothing at once (the last 3 minutes in), the drum 10 % at 4
+minutes, the side products from 6, the base 10 % at 15, the four top products
+settled from 21 — the bottoms and the base's level still swinging at an hour;
+the base overshooting the running column's 592 °C by about 20 K. Total reflux
+for 20 minutes then the normal loops runs; for the whole hour with the crude
+coming in, the drum and base fill and the trays flood. Without steel the
+start is refused on its first step. Every shipped plant byte-identical with
+every switch off (70 of 70, both fidelities). **The draining does not pass its
+gate**: with the steel 65 of the 70 held runs run (the 5, the draining's base
+stall at 0 MW), but no tray ever empties in them — the steel keeps the stage
+under it boiling — and shut down with the draining, trays holding grams stall
+the step as a stage stops boiling; the candidate a third branch, a stage that
+boils dry. No engine code changed. Put to the user: total reflux with the feed
+on (feed off, cut back, or as prototyped), the steel declared or derived, and
+the draining after the third branch.

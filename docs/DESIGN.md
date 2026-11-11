@@ -31178,3 +31178,59 @@ gate `slow_the_holdup_reboiler_held_at_nothing_runs_at_its_worst_corner`
 0 MW in the worst corner stages stop boiling and the column runs on; held
 back at 86 MW, every stage boils again. **M74.5 done**; the draining (C29)
 waits for the start from empty.
+
+### 79.14 M74.6.0 — the start from empty, its probe (2026-11-11)
+
+The user's decisions of §79.9 (2–4) prototyped on 6d3ad27
+(`tools/steptime/prototypes/m74_6_0/prototype.patch`, `FINDINGS.md`; M74.5's
+`draining.patch` in it), each change behind a probe switch; no engine code
+changed.
+
+**The steel** — each stage's metal lumped at the stage's temperature, the heat
+it stores `m·cp·(T' − T)/dt` beside its liquid's; the mass from the trays'
+geometry (M74.0's game estimate: a 15 mm shell over the spacing, a deck at
+60 kg/m², the base a shell around its volume; 500 J/(kg·K)): 59 t on the
+holdup plant's trays, 13 t at the base. It is what makes an empty stage
+solvable — with no liquid and nothing flowing, nothing else in its energy
+balance reads its temperature (without it the start is refused on its first
+step). A condensing stage needs nothing new: under its bubble point it sends
+up nothing and keeps what arrives (the complementarity of §79.10).
+
+**An empty stage** — no moles, a label (the last liquid it held) for its
+composition; a sweep row holding nothing with nothing coming or going holds
+none; the drum's temperature carried when empty; a tray's slope read over
+1 kg when it holds none; the liquid going down capped so a tray ends a tick at
+exactly nothing; Newton restarted from the state with no vapour where the hint
+cannot be reached; the Jacobian's difference on an empty stage's vapour, at
+its bound, allowed a shortfall of twice itself. Each acts only where a tick is
+refused today: 70 of 70 byte-identical, both fidelities, every switch off.
+
+**The start** — the level loops' references from the first tick's settled
+solve, the state then emptied at 20 °C. On the holdup plant (the crude at
+104 kg/s and 270 °C, the reboiler held at 86.7 MW): the feed's vapour
+condenses on the steel tray by tray from stage 11 up, up to 12 stages empty at
+once, the last 3.0 minutes in; the drum 10 % at 4 minutes, the side products
+from 6, the base 10 % at 15, the four top products within 2 % of their end
+from 21; at an hour the bottoms and the base's level still swing (0.48–0.59).
+Each tray within a few per cent of the running column; the base 613 °C at its
+peak against its running 592 °C. The reboiler shut 10 minutes first: settled
+from 34. **Total reflux** (the distillate and side draws shut, the drum's
+level on the reflux, `(R + 1)` times its loop's output) for 20 minutes then
+the normal loops: settled from 50; held the hour with the crude coming in,
+the drum and the base fill, trays 1–11 flood — Kister's has no feed (§12.8).
+
+**The draining's gate (C29) not passed.** The 70 held runs: the steel alone
+70 of 70, the steel and the draining 65 of 70 (the 5, the draining's base at
+0 MW, §79.12) — but no tray reaches 0 kg in them (the least 1.7 kg): the steel
+keeps stage 3 boiling, so the tray over it does not dump. A wet tray emptying
+to nothing within a run is not shown. Shut down with the draining (feed,
+furnace and reboiler at once), the trays drain to grams on the stored heat and
+at 16 minutes Newton stalls on stage 11's bubble point as stage 12 stops
+boiling. The candidate: **a third branch, a stage that boils dry** — its
+vapour capped at what arrives, the complementarity a mid-function on
+`[0, held/dt + arriving]`, its temperature its energy balance's.
+
+Put to the user: total reflux with the feed on (the feed off — so the
+furnace, C28 — cut back, or as prototyped); the steel declared per plant or
+derived from its trays (off unless asked for: it moves any plant holding
+liquid); the draining after the third branch.

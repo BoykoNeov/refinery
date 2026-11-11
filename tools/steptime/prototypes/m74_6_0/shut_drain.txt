@@ -1,0 +1,10 @@
+
+running 1 test
+test m74_6_0_empty::m74_6_0_empty ... == valved WARM 1000 GAP 300 RUN 12000
+RESULT valve=0+furnace=0+reb=0: FAIL at t=10944 (9943 after the last move; last sent valve=0+furnace=0+reb=0): {"code":"numerical","message":"numerical error: column step: the tick did not converge after 8 Newton steps — stage 11's bubble point off by -1.512e-4 (the least vapour: stage 12, 0.000 mol/s) (docs/DESIGN.md §79.2)."} | empty 0 ticks, 0 at most, stages , last at 0, 0 at the end, least held 0.0 kg | cold 146 ticks, 1 at most, stages 3,12,13, last at 9943, 1 at the end | drum 0.352-0.500 base 0.406-0.598 dry 0/0 full 0/0 atmax 0/0 reb 0.0-0.0 MW least vapour 0 mol/s on 3 declined 0 dry trays 130 ticks, 3 at most, last at 4910 worst 19.7 ms
+RESULT valve=0+furnace=0+reb=0>valve=1+furnace=20+reb=86.7@6000: RUNS held drum 0.501 normal base 0.503 normal | flood - weep - | loops 15.2MW/17.4MW/13.3MW R 4.000 coil 356.7 cond 44.61 reb 86.70 MW | products 22.57/16.39/20.49/14.34/27.80 | empty 0 ticks, 0 at most, stages , last at 0, 0 at the end, least held 1365.2 kg | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.397-0.508 base 0.489-0.531 dry 0/0 full 0/0 atmax 0/0 reb 0.0-86.7 MW least vapour 113 mol/s on 11 declined 0 dry trays 13 ticks, 9 at most, last at 314 worst 19.5 ms
+RESULT valve=0+furnace=0: RUNS held drum 0.480 normal base 0.230 normal | flood 11,12 weep 1,2,3,4 | loops 25.1MW/26.6MW/25.5MW R 4.000 coil 358.5 cond 8.90 reb 86.23 MW | products 4.62/0.00/0.00/0.00/0.00 | empty 0 ticks, 0 at most, stages , last at 0, 0 at the end, least held 583.9 kg | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.403-0.500 base 0.230-0.500 dry 0/0 full 0/0 atmax 0/0 reb 86.2-86.2 MW least vapour 143 mol/s on 11 declined 0 dry trays 0 ticks, 0 at most, last at 0 worst 23.3 ms
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 23.77s
+
