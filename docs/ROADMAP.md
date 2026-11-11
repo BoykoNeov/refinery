@@ -11225,3 +11225,17 @@ the step as a stage stops boiling; the candidate a third branch, a stage that
 boils dry. No engine code changed. Put to the user: total reflux with the feed
 on (feed off, cut back, or as prototyped), the steel declared or derived, and
 the draining after the third branch.
+
+### M74.6.1 — **DECIDED** 2026-11-11: "closer to reality" — total reflux a product switch, the steel derived and checked
+
+The user's answer to M74.6.0's questions, applied (DESIGN §79.15,
+`tools/steptime/prototypes/m74_6_1/FINDINGS.md`): **total reflux shuts the
+products, not the feed** (Kister §12.8: a crude unit cannot stabilise without
+its feed; the feed stays the operator's valve, the column floods if held too
+long on full feed; with the feed shut it is the feed-interruption mode, which
+runs with the steel); **the steel derived from the trays with an optional
+per-plant override**, off unless asked for — its guessed mass checked at half
+and double: the start from empty and the draining's 65 of 70 unchanged;
+**the draining after a stage that boils dry**. No engine code changed. Next:
+the building slice — the start from empty with the steel and total reflux,
+then the third branch, then the draining (C29).

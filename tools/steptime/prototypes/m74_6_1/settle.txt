@@ -1,0 +1,13 @@
+== W:/Claude_projects/refinery/tools/steptime/prototypes/m74_6_1/start_x0.5_trace.txt
+tr=1@12000>tr=0: to 59 min | top four settled 49 min | base peak 611 C | drum 10% 3 min side products 21 min base 10% 9 min | end products 23.00/16.60/20.70/14.50/25.60 | end levels ('0.496', '0.520')
+tr=0: to 59 min | top four settled 21 min | base peak 613 C | drum 10% 3 min side products 5 min base 10% 16 min | end products 22.60/16.60/20.70/14.50/32.80 | end levels ('0.500', '0.481')
+== W:/Claude_projects/refinery/tools/steptime/prototypes/m74_6_1/start_x1_trace.txt
+tr=0: to 59 min | top four settled 21 min | base peak 613 C | drum 10% 4 min side products 6 min base 10% 15 min | end products 22.60/16.60/20.70/14.50/32.30 | end levels ('0.500', '0.480')
+tr=1@12000>tr=0: to 59 min | top four settled 50 min | base peak 612 C | drum 10% 4 min side products 21 min base 10% 9 min | end products 22.90/16.60/20.70/14.50/25.20 | end levels ('0.497', '0.520')
+== W:/Claude_projects/refinery/tools/steptime/prototypes/m74_6_1/start_x2_trace.txt
+tr=1@12000>tr=0: to 59 min | top four settled 50 min | base peak 609 C | drum 10% 6 min side products 21 min base 10% 4 min | end products 22.90/16.60/20.70/14.50/24.40 | end levels ('0.497', '0.517')
+tr=0: to 59 min | top four settled 20 min | base peak 613 C | drum 10% 6 min side products 6 min base 10% 4 min | end products 22.70/16.60/20.70/14.50/33.40 | end levels ('0.500', '0.484')
+== W:/Claude_projects/refinery/tools/steptime/prototypes/m74_6_1/interrupt_trace.txt
+valve=0+furnace=0+tr=1+reb=40: to 30 min | top four settled 1 min | base peak 565 C | drum 10% 1 min side products - base 10% 1 min | end products 0.00/0.00/0.00/0.00/0.00 | end levels ('0.499', '0.388')
+valve=0+furnace=0+tr=1: to 30 min | top four settled 1 min | base peak 608 C | drum 10% 1 min side products - base 10% 1 min | end products 0.00/0.00/0.00/0.00/0.00 | end levels ('0.500', '0.361')
+valve=0+furnace=0+tr=1@18000>valve=1+furnace=20+tr=0: to 60 min | top four settled 34 min | base peak 608 C | drum 10% 1 min side products 31 min base 10% 1 min | end products 22.40/16.40/20.50/14.30/33.80 | end levels ('0.500', '0.491')

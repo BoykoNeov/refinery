@@ -31234,3 +31234,39 @@ Put to the user: total reflux with the feed on (the feed off — so the
 furnace, C28 — cut back, or as prototyped); the steel declared per plant or
 derived from its trays (off unless asked for: it moves any plant holding
 liquid); the draining after the third branch.
+
+### 79.15 M74.6.1 — the user's decisions, and the steel's guess checked (2026-11-11)
+
+The user's answer to §79.14's questions: **"do what is closer to reality"**,
+applied with the sources and checked (`tools/steptime/prototypes/m74_6_1/`,
+`FINDINGS.md`; M74.6.0's patch plus `M74_6_1_STEEL_SCALE`). No engine code
+changed.
+
+**Total reflux is a product switch, not a feed switch.** Kister §12.8
+(pp. 329–331): a total-reflux start-up runs on a feed-like charge, then admits
+the feed — and is least attractive where reflux to feed is low, the
+stabilising only possible with the feed in: a crude unit. So the distillate
+and side draws shut, the drum's level on the reflux, the bottoms on the base's
+level, the feed left to the operator. A start from empty keeps the crude
+coming in; held too long with the full feed the column floods (§79.14), an
+operator's mistake left to happen. With the feed shut it is §12.8's feed
+interruption, run on the valved holdup plant at design: the feed and furnace
+shut, total reflux, 30 minutes — runs with the steel at the file's 86.2 MW
+(trays 9 and 12 flooding, the base to 608 °C) and at 40 MW (nothing flooding);
+the feed back, the four top products settled four minutes later. Without the
+steel the shipped step refuses it at 86.2 MW 54 s in (the cascade's pressure
+drops not settling) and runs it at 40 MW. This reverses §79.14's suggestion.
+
+**The steel derived from the trays, with an optional per-plant override**,
+off unless a plant asks for it. The shell term is Ludwig Vol. 1 eq. 11-55's;
+the deck's 60 kg/m² has no source in the library (a 10-gauge deck alone is
+27 kg/m²). Checked at half and double: the start from empty runs at both, the
+stages empty for 1.5 / 3.0 / 5.2 minutes, the four top products settled from
+21 / 21 / 20 minutes, the base's peak 613 °C at all three; the draining with
+the steel 65 of 70 held runs at all three, the same 5 failing, the least any
+tray held 0.5 / 1.7 / 2.0 kg — the guess is not load-bearing.
+
+**The draining after the third branch** (a stage that boils dry): no tray
+empties within the held runs at any scale. Not changed: only the column
+starts empty — the crude at its full preheat from the first tick, where a real
+crude unit warms its heater over hours (outside M74).

@@ -1,0 +1,9 @@
+
+running 1 test
+test m74_6_0_empty::m74_6_0_empty ... == holdup WARM 1 GAP 300 RUN 12000
+RESULT tr=0: RUNS held drum 0.500 normal base 0.479 normal | flood - weep - | loops 15.0MW/17.4MW/13.3MW R 4.000 coil 355.9 cond 44.57 reb 86.69 MW | products 22.63/16.57/20.71/14.50/31.98 | empty 894 ticks, 12 at most, stages 1,2,3,4,5,6,7,8,9,10,12,13, last at 894, 0 at the end, least held 0.0 kg | cold 1547 ticks, 13 at most, stages 1,2,3,4,5,6,7,8,9,10,11,12,13, last at 1547, 0 at the end | drum 0.000-0.554 base 0.000-0.586 dry 1391/9427 full 0/0 atmax 0/0 reb 0.0-86.7 MW least vapour 0 mol/s on 1 declined 0 dry trays 5369 ticks, 12 at most, last at 5369 worst 33.0 ms
+RESULT tr=1@12000>tr=0: RUNS held drum 0.497 normal base 0.523 normal | flood 11 weep - | loops 15.6MW/17.3MW/12.4MW R 4.000 coil 355.9 cond 46.00 reb 86.69 MW | products 22.93/16.57/20.71/14.50/26.48 | empty 894 ticks, 12 at most, stages 1,2,3,4,5,6,7,8,9,10,12,13, last at 894, 0 at the end, least held 0.0 kg | cold 1547 ticks, 13 at most, stages 1,2,3,4,5,6,7,8,9,10,11,12,13, last at 1547, 0 at the end | drum 0.000-0.659 base 0.000-0.690 dry 1391/5267 full 0/0 atmax 0/0 reb 0.0-86.7 MW least vapour 0 mol/s on 1 declined 0 dry trays 4399 ticks, 12 at most, last at 4399 worst 12.5 ms
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 43.71s
+
