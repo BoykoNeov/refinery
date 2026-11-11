@@ -1,0 +1,784 @@
+diff --git a/crates/core/src/energy.rs b/crates/core/src/energy.rs
+index 1b88a2a..d80ec44 100644
+--- a/crates/core/src/energy.rs
++++ b/crates/core/src/energy.rs
+@@ -2205,7 +2205,13 @@ pub fn resolve_node_states(
+                                     slate,
+                                     draws,
+                                     smearing: *smearing,
+-                                    pressure: *pressure,
++                                    // The condenser's running pressure,
++                                    // where it declares one (M75.1,
++                                    // docs/DESIGN.md §80.1).
++                                    pressure: crate::graph::running_column_pressure(
++                                        *pressure,
++                                        cascade.as_deref(),
++                                    ),
+                                     feed,
+                                     feed_flow: column_feed_flow(graph, edge_mass_flow, id),
+                                     temperature: mixed,
+diff --git a/crates/core/src/engine.rs b/crates/core/src/engine.rs
+index 498e32c..8ea2e72 100644
+--- a/crates/core/src/engine.rs
++++ b/crates/core/src/engine.rs
+@@ -4159,6 +4159,15 @@ impl Engine {
+                                 drum_loop_at_max: reading.drum_loop_at_max,
+                                 base_loop_at_max: reading.base_loop_at_max,
+                                 total_reflux: reading.total_reflux,
++                                condenser: reading.condenser.map(|condenser| {
++                                    crate::snapshot::CondenserOperation {
++                                        pressure_pa: condenser.pressure.value(),
++                                        set_pressure_pa: condenser.set_pressure.value(),
++                                        capacity_w: condenser.capacity.value(),
++                                        at_capacity: condenser.at_capacity,
++                                        at_design: condenser.at_design,
++                                    }
++                                }),
+                             }),
+                             // A vessel past full's excess, to slop (M74.6,
+                             // §79.18).
+diff --git a/crates/core/src/graph.rs b/crates/core/src/graph.rs
+index c21be8b..f923c80 100644
+--- a/crates/core/src/graph.rs
++++ b/crates/core/src/graph.rs
+@@ -980,6 +980,13 @@ pub struct ColumnHoldup {
+     /// not serialized.
+     #[serde(default, skip_serializing_if = "is_false")]
+     pub total_reflux: bool,
++    /// The column's condenser as a limit, and the pressure control on it
++    /// (M75.1, docs/DESIGN.md §80.1), or `None`: the condenser condenses all
++    /// it is sent and the column runs at its declared pressure, as before
++    /// M75. Absent, and then not serialized, on every column that predates
++    /// it.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub condenser: Option<ColumnCondenser>,
+     /// The liquid held: a STATE, `None` until the column's first tick fills it
+     /// from its settled loads, then written back by the engine at the end of
+     /// every tick that moves it (as a furnace's coil, §37).
+@@ -987,6 +994,36 @@ pub struct ColumnHoldup {
+     pub state: Option<HoldupState>,
+ }
+ 
++/// A column's condenser as a limit (M75.1, docs/DESIGN.md §80.1): a flooded
++/// condenser (Kister, *Distillation Operation*, §17.2.2) holding the
++/// column's declared pressure — the set pressure — by flooding the share of
++/// its tubes it does not need, until its free area cannot condense what
++/// arrives; then the pressure rises, the condensate's bubble point with it,
++/// until it can. Its `UA` is derived on the column's first tick from the
++/// duty it settled on, with `margin` to spare
++/// (`HoldupState::condenser_ua`).
++#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
++pub struct ColumnCondenser {
++    /// The condenser's spare capacity at the set pressure over the duty the
++    /// column settled on [-], ≥ 0 — a GAME VALUE per plant.
++    pub margin: f64,
++    /// The cooling water's (or air's) temperature [K], the condensate's
++    /// sink; taken as constant along the tubes.
++    pub coolant: Kelvin,
++    /// The vapour space the column's pressure acts on [m³]: the column's
++    /// top, the vapour line and the condenser's shell — what the vapour the
++    /// condenser cannot condense fills.
++    pub overhead_volume: CubicMeter,
++    /// The pressure its control holds [Pa]: the column's declared pressure,
++    /// copied by the loader (the column's own field is not moved).
++    pub set_pressure: Pascal,
++    /// The most the pressure rises to [Pa]: the column's design pressure, a
++    /// GAME VALUE derived by the loader (the larger of 110 % of the set
++    /// pressure and the set pressure plus 1.72 bar, the common rule) until
++    /// M75.3's relief takes the column off it.
++    pub design_pressure: Pascal,
++}
++
+ /// A column's steel, the heat its metal stores (M74.6, docs/DESIGN.md
+ /// §79.16): each stage's lumped at the stage's temperature. Its mass is
+ /// derived from the trays' geometry (`refinery_solvers::trays::stage_steel`);
+@@ -1048,6 +1085,31 @@ pub struct HoldupState {
+     pub held: bool,
+     pub last_bottoms: KgPerSec,
+     pub last_reboiler: Watt,
++    /// The pressure the column runs at next tick [Pa] — its top stage's, the
++    /// trays' below it by their drops (M75.1, docs/DESIGN.md §80.1): the
++    /// declared (set) pressure while the condenser condenses what arrives,
++    /// above it while it cannot. `None`, and not serialized, without a
++    /// declared condenser: the column at its declared pressure.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub column_pressure: Option<Pascal>,
++    /// The condenser's `UA` [W/K], derived on the first tick: the settled
++    /// duty with the margin over the condensate's bubble point less the
++    /// coolant's. `None`, not serialized, without a declared condenser.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub condenser_ua: Option<WattPerKelvin>,
++}
++
++/// The pressure a column runs at [Pa] (M75.1, docs/DESIGN.md §80.1): its
++/// condenser's running pressure where it declares one and has run a tick,
++/// else `declared` — the column's own. What the network pins the column at,
++/// what its draw lines start at and what its stages are solved from.
++pub fn running_column_pressure(declared: Pascal, cascade: Option<&CascadeSpec>) -> Pascal {
++    cascade
++        .and_then(|spec| spec.holdup.as_deref())
++        .filter(|holdup| holdup.condenser.is_some())
++        .and_then(|holdup| holdup.state.as_ref())
++        .and_then(|state| state.column_pressure)
++        .unwrap_or(declared)
+ }
+ 
+ /// A pumparound loop on a heat-balance cascade (M72, docs/DESIGN.md §77.1):
+diff --git a/crates/core/src/snapshot.rs b/crates/core/src/snapshot.rs
+index 3b544bb..3d8a25f 100644
+--- a/crates/core/src/snapshot.rs
++++ b/crates/core/src/snapshot.rs
+@@ -834,6 +834,27 @@ pub struct HoldupOperation {
+     /// serialized, while off.
+     #[serde(default, skip_serializing_if = "is_false")]
+     pub total_reflux: bool,
++    /// Its condenser and the pressure it holds (M75.1, docs/DESIGN.md
++    /// §80.1). Absent, not serialized, on a column that declares none.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub condenser: Option<CondenserOperation>,
++}
++
++/// A column's condenser's faceplate (M75.1, docs/DESIGN.md §80.1) — see
++/// `HoldupOperation::condenser`.
++#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
++pub struct CondenserOperation {
++    /// The pressure the column ran at [Pa], its top stage's.
++    pub pressure_pa: f64,
++    /// The pressure its control holds while it can [Pa]: the declared one.
++    pub set_pressure_pa: f64,
++    /// What the condenser could condense at that pressure [W].
++    pub capacity_w: f64,
++    /// The pressure out of control: the column asks more than the condenser
++    /// condenses at the set pressure — "column pressure high".
++    pub at_capacity: bool,
++    /// The pressure at the column's design pressure, the most it rises to.
++    pub at_design: bool,
+ }
+ 
+ /// Whether a flag is off — what keeps `HoldupOperation::total_reflux` off
+diff --git a/crates/core/src/traits.rs b/crates/core/src/traits.rs
+index 93104d5..108bd99 100644
+--- a/crates/core/src/traits.rs
++++ b/crates/core/src/traits.rs
+@@ -856,6 +856,26 @@ pub struct HoldupReading {
+     pub base_loop_at_max: bool,
+     /// The column on total reflux this tick (M74.6, docs/DESIGN.md §79.17).
+     pub total_reflux: bool,
++    /// Its condenser and the pressure it holds (M75.1, docs/DESIGN.md
++    /// §80.1), where the column declares one.
++    pub condenser: Option<CondenserReading>,
++}
++
++/// A column's condenser as it ran a pass (M75.1, docs/DESIGN.md §80.1).
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct CondenserReading {
++    /// The pressure the column ran at this pass [Pa], its top stage's.
++    pub pressure: Pascal,
++    /// The pressure its control holds while the condenser can [Pa]: the
++    /// column's declared pressure.
++    pub set_pressure: Pascal,
++    /// What its free area could condense at the pressure it ran at [W].
++    pub capacity: Watt,
++    /// The pressure out of its control: the duty the column asked more than
++    /// the condenser could condense at the set pressure.
++    pub at_capacity: bool,
++    /// The pressure at the column's design pressure, the most it rises to.
++    pub at_design: bool,
+ }
+ 
+ /// A drum's or a base's excess past full, sent to the slop line this pass
+diff --git a/crates/scenarios/src/build.rs b/crates/scenarios/src/build.rs
+index 055b3cc..131c744 100644
+--- a/crates/scenarios/src/build.rs
++++ b/crates/scenarios/src/build.rs
+@@ -4552,6 +4552,7 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
+             draws: draw_defs,
+             cascade,
+             smearing_k,
++            pressure_bar,
+             ..
+         } = def
+         else {
+@@ -4695,6 +4696,56 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
+                         scenario.fidelity.separation
+                     )));
+                 }
++                if def.condenser_limit.is_some() && def.holdup.is_none() {
++                    return Err(SimError::Scenario(format!(
++                        "column '{name}' declares condenser_limit without holdup: its pressure \
++                         rises on what its condenser cannot condense into the drum, so only a \
++                         column that holds liquid declares one (docs/DESIGN.md §80.1)."
++                    )));
++                }
++                // The condenser (M75.1, docs/DESIGN.md §80.1).
++                let condenser = match &def.condenser_limit {
++                    None => None,
++                    Some(condenser) => {
++                        if !condenser.margin.is_finite() || condenser.margin < 0.0 {
++                            return Err(SimError::Scenario(format!(
++                                "column '{name}' declares condenser_limit.margin = {}: its spare \
++                                 capacity over the duty it settles on, finite and not below \
++                                 zero (docs/DESIGN.md §80.1).",
++                                condenser.margin
++                            )));
++                        }
++                        if !condenser.coolant_c.is_finite() || condenser.coolant_c <= -273.15 {
++                            return Err(SimError::Scenario(format!(
++                                "column '{name}' declares condenser_limit.coolant_c = {}: its \
++                                 coolant's temperature in °C, finite and above absolute zero \
++                                 (docs/DESIGN.md §80.1).",
++                                condenser.coolant_c
++                            )));
++                        }
++                        if !condenser.overhead_m3.is_finite() || condenser.overhead_m3 <= 0.0 {
++                            return Err(SimError::Scenario(format!(
++                                "column '{name}' declares condenser_limit.overhead_m3 = {}: the \
++                                 vapour space its pressure acts on, finite and above zero \
++                                 (docs/DESIGN.md §80.1).",
++                                condenser.overhead_m3
++                            )));
++                        }
++                        let set_pressure = bar_to_pa(*pressure_bar);
++                        Some(refinery_core::graph::ColumnCondenser {
++                            margin: condenser.margin,
++                            coolant: c_to_k(condenser.coolant_c),
++                            overhead_volume: CubicMeter(condenser.overhead_m3),
++                            set_pressure,
++                            // GAME VALUE until M75.3: the larger of 110 % of
++                            // the operating pressure and it plus 25 psi
++                            // (1.72 bar), the common design-pressure rule.
++                            design_pressure: refinery_core::units::Pascal(
++                                (1.1 * set_pressure.value()).max(set_pressure.value() + 1.72e5),
++                            ),
++                        })
++                    }
++                };
+                 let holdup = match &def.holdup {
+                     None => None,
+                     Some(holdup) => {
+@@ -4786,6 +4837,7 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
+                             steel,
+                             start_empty,
+                             total_reflux: false,
++                            condenser,
+                             state: None,
+                         }))
+                     }
+diff --git a/crates/scenarios/src/schema.rs b/crates/scenarios/src/schema.rs
+index 2a62516..5674186 100644
+--- a/crates/scenarios/src/schema.rs
++++ b/crates/scenarios/src/schema.rs
+@@ -803,6 +803,25 @@ pub struct CascadeDef {
+     /// "heat_balance"` models it, on a column with trays.
+     #[serde(default)]
+     pub holdup: Option<HoldupDef>,
++    /// The condenser as a limit and the pressure control on it (M75.1,
++    /// docs/DESIGN.md §80.1): `condenser_limit = { margin = 0.2, coolant_c = 35.0,
++    /// overhead_m3 = 100.0 }`. Absent, the condenser condenses all it is
++    /// sent and the column runs at its declared pressure. Only on a column
++    /// that holds liquid.
++    #[serde(default)]
++    pub condenser_limit: Option<CondenserDef>,
++}
++
++/// A column's condenser (M75.1, docs/DESIGN.md §80.1): its spare capacity
++/// at the declared pressure over the duty the column settles on (`margin`,
++/// ≥ 0), its coolant's temperature [°C] and the vapour space its pressure
++/// acts on [m³]. **`deny_unknown_fields`**.
++#[derive(Debug, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct CondenserDef {
++    pub margin: f64,
++    pub coolant_c: f64,
++    pub overhead_m3: f64,
+ }
+ 
+ /// A column's liquid held: the reflux drum's and the base's working volumes
+diff --git a/crates/scenarios/tests/column_condenser.rs b/crates/scenarios/tests/column_condenser.rs
+new file mode 100644
+index 0000000..1a3f08c
+--- /dev/null
++++ b/crates/scenarios/tests/column_condenser.rs
+@@ -0,0 +1,50 @@
++//! M75.1 — a column's condenser as a limit, and the pressure that rises past
++//! it (docs/DESIGN.md §80.1): the holdup plant (`crude_unit_holdup.toml`,
++//! untouched) with its steel and a `condenser_limit` declared inline.
++
++use crate::column_empty::{
++    engine_of, holdup, holdup_with, reading, run, set_total_reflux, state, Books,
++};
++
++/// The holdup plant with its steel and the condenser `limit` (the keys
++/// inside `condenser_limit = { … }`).
++fn with_limit(limit: &str) -> String {
++    let steel = holdup_with(", steel = \"derived\"");
++    let line = "holdup = { drum_m3 = 18.7, base_m3 = 115.4, reboiler = \"held\", steel = \"derived\" }";
++    assert!(steel.contains(line));
++    steel.replace(line, &format!("{line}\ncondenser_limit = {{ {limit} }}"))
++}
++
++#[test]
++fn probe_m75_1() {
++    let mut engine = engine_of(&with_limit("margin = 0.05, coolant_c = 35.0, overhead_m3 = 100.0")).unwrap();
++    let books = Books::of(&engine);
++    run(&mut engine, 100);
++    eprintln!("UA {:?} cond {:?}", state(&engine).condenser_ua, holdup(&engine).condenser);
++    set_total_reflux(&mut engine, true).unwrap();
++    let mut worst = (0.0f64, 0.0f64);
++    for tick in 0..3000 {
++        let before = state(&engine);
++        engine.tick().unwrap_or_else(|e| panic!("tick {tick}: {e}"));
++        let (mass, heat) = books.close(&engine, &before);
++        worst = (worst.0.max(mass.abs()), worst.1.max(heat.abs()));
++        if tick % 100 == 0 {
++            let s = engine.snapshot();
++            let r = reading(&s);
++            let c = r.condenser.unwrap();
++            let duty = s.nodes.iter().find(|n| n.name == "column").unwrap().column_duty.unwrap();
++            eprintln!(
++                "t={:>5.0}s P {:.4} bar cap {:.2} MW duty {:.2} MW atcap {} drum {:.3} books {:.2e} kg/s {:.2e} W",
++                tick as f64 * 0.1,
++                c.pressure_pa / 1e5,
++                c.capacity_w / 1e6,
++                duty.condenser_w / 1e6,
++                c.at_capacity,
++                r.drum_level,
++                mass,
++                heat
++            );
++        }
++    }
++    eprintln!("worst books {:.2e} kg/s {:.2e} W", worst.0, worst.1);
++}
+diff --git a/crates/scenarios/tests/column_empty.rs b/crates/scenarios/tests/column_empty.rs
+index 46d62ef..16df97c 100644
+--- a/crates/scenarios/tests/column_empty.rs
++++ b/crates/scenarios/tests/column_empty.rs
+@@ -12,15 +12,15 @@ use refinery_core::units::{CubicMeter, Kg};
+ use refinery_scenarios::{build_engine, load_str};
+ 
+ const EMPTY_PLANT: &str = include_str!("../../../scenarios/crude_unit_empty.toml");
+-const HOLDUP_PLANT: &str = include_str!("../../../scenarios/crude_unit_holdup.toml");
++pub(crate) const HOLDUP_PLANT: &str = include_str!("../../../scenarios/crude_unit_holdup.toml");
+ 
+ /// The holdup plant's holdup line, and the empty plant's.
+-const HOLDUP_LINE: &str = "holdup = { drum_m3 = 18.7, base_m3 = 115.4, reboiler = \"held\" }";
++pub(crate) const HOLDUP_LINE: &str = "holdup = { drum_m3 = 18.7, base_m3 = 115.4, reboiler = \"held\" }";
+ const EMPTY_LINE: &str = "holdup = { drum_m3 = 18.7, base_m3 = 115.4, reboiler = \"held\", \
+                           steel = \"derived\", start = \"empty\" }";
+ 
+ /// The holdup plant with its holdup line's keys replaced by `keys`.
+-fn holdup_with(keys: &str) -> String {
++pub(crate) fn holdup_with(keys: &str) -> String {
+     let src = HOLDUP_PLANT.replace("\r\n", "\n");
+     assert!(src.contains(HOLDUP_LINE), "the holdup plant's holdup line");
+     src.replace(
+@@ -29,19 +29,19 @@ fn holdup_with(keys: &str) -> String {
+     )
+ }
+ 
+-fn engine_of(src: &str) -> Result<Engine, String> {
++pub(crate) fn engine_of(src: &str) -> Result<Engine, String> {
+     let file = load_str(src).map_err(|e| e.to_string())?;
+     build_engine(&file).map_err(|e| e.to_string())
+ }
+ 
+-fn refused(src: &str) -> String {
++pub(crate) fn refused(src: &str) -> String {
+     match engine_of(src) {
+         Ok(_) => panic!("built a plant that should have been refused"),
+         Err(e) => e,
+     }
+ }
+ 
+-fn holdup(engine: &Engine) -> ColumnHoldup {
++pub(crate) fn holdup(engine: &Engine) -> ColumnHoldup {
+     let node = engine.graph.find_node("column").unwrap();
+     match &engine.graph.node(node).kind {
+         NodeKind::Column {
+@@ -52,7 +52,7 @@ fn holdup(engine: &Engine) -> ColumnHoldup {
+     }
+ }
+ 
+-fn state(engine: &Engine) -> HoldupState {
++pub(crate) fn state(engine: &Engine) -> HoldupState {
+     holdup(engine)
+         .state
+         .expect("the first tick filled the state")
+@@ -73,14 +73,14 @@ fn state_mut(engine: &mut Engine) -> &mut HoldupState {
+     }
+ }
+ 
+-fn run(engine: &mut Engine, ticks: u32) -> Snapshot {
++pub(crate) fn run(engine: &mut Engine, ticks: u32) -> Snapshot {
+     for tick in 0..ticks {
+         engine.tick().unwrap_or_else(|e| panic!("tick {tick}: {e}"));
+     }
+     engine.snapshot()
+ }
+ 
+-fn line_flow(snapshot: &Snapshot, name: &str) -> f64 {
++pub(crate) fn line_flow(snapshot: &Snapshot, name: &str) -> f64 {
+     snapshot
+         .edges
+         .iter()
+@@ -91,7 +91,7 @@ fn line_flow(snapshot: &Snapshot, name: &str) -> f64 {
+         .value()
+ }
+ 
+-fn reading(snapshot: &Snapshot) -> refinery_core::snapshot::HoldupOperation {
++pub(crate) fn reading(snapshot: &Snapshot) -> refinery_core::snapshot::HoldupOperation {
+     let node = snapshot.nodes.iter().find(|n| n.name == "column").unwrap();
+     node.column_operation
+         .as_ref()
+@@ -185,7 +185,7 @@ fn steel_of(engine: &Engine) -> Vec<Kg> {
+ /// hold [kg/s], the worst; and the heat's [W] — the reboiler and the feed
+ /// less the products, the condenser and the loops' coolers, less what its
+ /// liquid and steel came to hold.
+-struct Books {
++pub(crate) struct Books {
+     feed: EdgeId,
+     draws: Vec<(EdgeId, usize)>,
+     cp: Vec<f64>,
+@@ -193,7 +193,7 @@ struct Books {
+ }
+ 
+ impl Books {
+-    fn of(engine: &Engine) -> Self {
++    pub(crate) fn of(engine: &Engine) -> Self {
+         Books {
+             feed: edge(engine, "transfer_line"),
+             draws: DRAWS
+@@ -208,7 +208,7 @@ impl Books {
+     }
+ 
+     /// The worst component's imbalance [kg/s] and the heat's [W].
+-    fn close(&self, engine: &Engine, before: &HoldupState) -> (f64, f64) {
++    pub(crate) fn close(&self, engine: &Engine, before: &HoldupState) -> (f64, f64) {
+         let dt = 0.1;
+         let after = state(engine);
+         let snapshot = engine.snapshot();
+@@ -529,7 +529,7 @@ fn slow_the_empty_column_fills_and_lines_out() {
+     assert!(heat < 20.0, "{heat}");
+ }
+ 
+-fn set_total_reflux(engine: &mut Engine, on: bool) -> Result<(), String> {
++pub(crate) fn set_total_reflux(engine: &mut Engine, on: bool) -> Result<(), String> {
+     let node = engine.graph.find_node("column").unwrap();
+     engine
+         .apply(refinery_core::snapshot::Command::SetTotalReflux { node, on })
+diff --git a/crates/scenarios/tests/suite.rs b/crates/scenarios/tests/suite.rs
+index 94f4211..17b363e 100644
+--- a/crates/scenarios/tests/suite.rs
++++ b/crates/scenarios/tests/suite.rs
+@@ -35,6 +35,8 @@ mod choked_flow_reference;
+ mod coil_cell_reference;
+ #[path = "coil_trip_reference.rs"]
+ mod coil_trip_reference;
++#[path = "column_condenser.rs"]
++mod column_condenser;
+ #[path = "column_empty.rs"]
+ mod column_empty;
+ #[path = "column_holdup.rs"]
+diff --git a/crates/solvers/src/column_step.rs b/crates/solvers/src/column_step.rs
+index 3399387..c5f6c3e 100644
+--- a/crates/solvers/src/column_step.rs
++++ b/crates/solvers/src/column_step.rs
+@@ -635,6 +635,8 @@ impl ColumnStep<'_> {
+                 drum_loop_at_max,
+                 base_loop_at_max,
+                 total_reflux,
++                // Read after the step (M75.1, `heat_balance`).
++                condenser: None,
+             },
+             base_integral,
+             bottoms_before_limits,
+@@ -1094,6 +1096,10 @@ impl ColumnStep<'_> {
+             held: reading.held,
+             last_bottoms: KgPerSec(set.bottoms_before_limits),
+             last_reboiler: Watt(set.reboiler_before_limits),
++            // Moved after the step, by the condenser (M75.1,
++            // `heat_balance::next_column_pressure`).
++            column_pressure: state.column_pressure,
++            condenser_ua: state.condenser_ua,
+         };
+         Ok(Stepped {
+             temperatures: u[..n].to_vec(),
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index 7d11861..375e09c 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -29,12 +29,15 @@
+ use refinery_core::components::{Composition, Slate};
+ use refinery_core::energy::T_REF;
+ use refinery_core::error::SimError;
+-use refinery_core::graph::{CascadeSpec, ColumnHoldup, HoldupState, Pumparound};
++use refinery_core::graph::{CascadeSpec, ColumnCondenser, ColumnHoldup, HoldupState, Pumparound};
+ use refinery_core::traits::{
+-    CascadeProfile, ColumnPass, CutBackDraw, DeclinedHold, DrawSeparation, HoldupReading,
++    CascadeProfile, ColumnPass, CondenserReading, CutBackDraw, DeclinedHold, DrawSeparation,
++    HoldupReading,
+     LevelLimit, LoopRun, Separation, SeparationModel, SlopFlow, SlopVessel, ThermoModel,
+ };
+-use refinery_core::units::{Kelvin, Kg, KgPerSec, Pascal, Watt, T_AMBIENT};
++use refinery_core::units::{
++    Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, R_GAS, T_AMBIENT,
++};
+ 
+ use crate::bubble::{bubble_temperature, bubble_temperature_unnormalized};
+ use crate::cascade::{
+@@ -1074,7 +1077,7 @@ impl HeatBalanceCascade {
+             .collect();
+         // A column that holds liquid starts full on its first tick, from these
+         // settled loads (M74, docs/DESIGN.md §79.2).
+-        let holdup = match &spec.holdup {
++        let mut holdup = match &spec.holdup {
+             Some(declared) if declared.state.is_none() => Some(starting_holdup(
+                 slate,
+                 spec,
+@@ -1092,6 +1095,26 @@ impl HeatBalanceCascade {
+             )?),
+             _ => None,
+         };
++        // Its condenser sized on these loads (M75.1, docs/DESIGN.md §80.1):
++        // the duty settled on, with its margin, at the set pressure.
++        let condenser = match (spec.holdup.as_deref(), holdup.as_mut()) {
++            (Some(declared), Some(state)) => match &declared.condenser {
++                Some(condenser) => {
++                    let ua = condenser_ua(condenser, condenser_duty, condenser_t)?;
++                    state.condenser_ua = Some(ua);
++                    state.column_pressure = Some(pass.pressure);
++                    Some(CondenserReading {
++                        pressure: pass.pressure,
++                        set_pressure: condenser.set_pressure,
++                        capacity: Watt(condenser_duty.value() * (1.0 + condenser.margin)),
++                        at_capacity: false,
++                        at_design: false,
++                    })
++                }
++                None => None,
++            },
++            _ => None,
++        };
+ 
+         Ok(Separation {
+             draws: result,
+@@ -1124,6 +1147,7 @@ impl HeatBalanceCascade {
+                 drum_loop_at_max: false,
+                 base_loop_at_max: false,
+                 total_reflux: false,
++                condenser,
+             }),
+             holdup,
+             draw_flows: Vec::new(),
+@@ -1218,9 +1242,130 @@ fn starting_holdup(
+         held: declared.start_held,
+         last_bottoms: settled.bottoms,
+         last_reboiler: settled.reboiler,
++        // Set by the settled pass where the column declares its condenser.
++        column_pressure: None,
++        condenser_ua: None,
+     })
+ }
+ 
++/// A condenser's `UA` [W/K] from the duty its column settled on (M75.1,
++/// docs/DESIGN.md §80.1): `UA = Q₀·(1 + margin) / (T_b − T_coolant)` — so at
++/// the set pressure, with the condensate leaving at its bubble point `T_b`
++/// (a total condenser), it condenses the settled duty with its margin to
++/// spare. The coolant taken at one temperature along the tubes (a GAME VALUE
++/// of the plant's), the driving difference the condensate's.
++fn condenser_ua(
++    condenser: &ColumnCondenser,
++    settled_duty: Watt,
++    condensate: Kelvin,
++) -> Result<WattPerKelvin, SimError> {
++    let difference = condensate.value() - condenser.coolant.value();
++    if difference <= 0.0 || settled_duty.value() <= 0.0 {
++        return Err(SimError::Numerical(format!(
++            "the column's condenser cannot be sized: it settled on {:.3} MW with its \
++             condensate at {:.1} °C and its coolant at {:.1} °C — a condenser condenses \
++             something, onto a coolant colder than its condensate (docs/DESIGN.md §80.1).",
++            settled_duty.value() / 1.0e6,
++            condensate.value() - 273.15,
++            condenser.coolant.value() - 273.15,
++        )));
++    }
++    Ok(WattPerKelvin(
++        settled_duty.value() * (1.0 + condenser.margin) / difference,
++    ))
++}
++
++/// The pressure a column with a declared condenser runs at next tick, and
++/// its condenser's reading this tick (M75.1, docs/DESIGN.md §80.1).
++///
++/// The condenser's capacity at a pressure `P`: `C(P) = UA·(T_b(x, P) −
++/// T_coolant)`, `x` the drum's liquid (the condensate), `T_b` its bubble
++/// point. The vapour it cannot condense fills the overhead volume `V` at
++/// the top's temperature `T` (ideal gas): `dP/dt = (R·T/V)·(Q − C(P))/λ`,
++/// `Q` the duty the tick's step condensed, `λ` the condensate's molar latent
++/// heat. One linearly implicit Euler step on `dt` (`C` linear in `P` about
++/// this tick's, `dC/dP = UA / (dP_b/dT)` at the bubble point,
++/// Clausius–Clapeyron's slope read off the thermo's bubble pressure), so it
++/// is stable on any overhead volume. Then the control: the condenser floods
++/// its tubes to hold the set pressure, never lower; and no higher than the
++/// design pressure. The step itself condenses all it is sent at the tick's
++/// pressure, so the books are the step's: the uncondensed vapour is a
++/// pressure, not a stock.
++#[allow(clippy::too_many_arguments)]
++fn next_column_pressure(
++    slate: &Slate,
++    thermo: &dyn ThermoModel,
++    condenser: &ColumnCondenser,
++    ua: WattPerKelvin,
++    pressure: Pascal,
++    duty: Watt,
++    drum: &Composition,
++    top: Kelvin,
++    tick: Seconds,
++) -> Result<(Pascal, CondenserReading), SimError> {
++    let x = MoleFractions::from_mass(drum, slate)?;
++    let what = "the column's condensate";
++    let capacity_of =
++        |bubble: Kelvin| ua.value() * (bubble.value() - condenser.coolant.value()).max(0.0);
++    let bubble = bubble_temperature(slate, thermo, &x, pressure, what)?;
++    let capacity = capacity_of(bubble);
++    let at_set = if pressure == condenser.set_pressure {
++        capacity
++    } else {
++        capacity_of(bubble_temperature(
++            slate,
++            thermo,
++            &x,
++            condenser.set_pressure,
++            what,
++        )?)
++    };
++    // Clausius–Clapeyron's slope, dP_b/dT at the bubble point, central.
++    const DT: f64 = 0.01;
++    let rise = (thermo
++        .bubble_pressure(slate, drum, Kelvin(bubble.value() + DT))?
++        .value()
++        - thermo
++            .bubble_pressure(slate, drum, Kelvin(bubble.value() - DT))?
++            .value())
++        / (2.0 * DT);
++    let slope = if capacity > 0.0 && rise > 0.0 {
++        ua.value() / rise
++    } else {
++        0.0
++    };
++    let latent = mixture_dh_vap(slate, thermo, x.fractions(), top)?;
++    if latent.is_nan() || latent <= 0.0 {
++        return Err(SimError::Numerical(format!(
++            "the column's condensate reads a latent heat of {latent:.4e} J/mol at {:.1} K: its \
++             overhead pressure cannot be followed (docs/DESIGN.md §80.1).",
++            top.value()
++        )));
++    }
++    // Ideal gas in the overhead: dP per joule left uncondensed.
++    let rate = R_GAS * top.value() / (condenser.overhead_volume.value() * latent);
++    let dt = tick.value();
++    let change = dt * rate * (duty.value() - capacity) / (1.0 + dt * rate * slope);
++    let next = (pressure.value() + change)
++        .max(condenser.set_pressure.value())
++        .min(condenser.design_pressure.value());
++    if !next.is_finite() {
++        return Err(SimError::Numerical(format!(
++            "the column's overhead pressure came to {next} Pa (docs/DESIGN.md §80.1)."
++        )));
++    }
++    Ok((
++        Pascal(next),
++        CondenserReading {
++            pressure,
++            set_pressure: condenser.set_pressure,
++            capacity: Watt(capacity),
++            at_capacity: duty.value() > at_set,
++            at_design: pressure.value() >= condenser.design_pressure.value(),
++        },
++    ))
++}
++
+ /// A column's settled first-tick state emptied (M74.6, docs/DESIGN.md
+ /// §79.16): every stage and the drum holding nothing, each keeping its settled
+ /// composition as its label; every stage, its steel and the drum at ambient;
+@@ -1332,6 +1477,26 @@ fn stepped_pass(
+     .unzip();
+     next.tray_vapour = tray_vapour;
+     next.tray_vapour_density = tray_vapour_density;
++    // The pressure its condenser leaves for next tick (M75.1,
++    // docs/DESIGN.md §80.1).
++    let condenser = match (&holdup.condenser, state.condenser_ua) {
++        (Some(condenser), Some(ua)) => {
++            let (pressure, reading) = next_column_pressure(
++                slate,
++                setup.thermo,
++                condenser,
++                ua,
++                pass.pressure,
++                Watt(stepped.condenser_duty),
++                &next.drum_composition,
++                Kelvin(stepped.temperatures[0]),
++                holdup.tick,
++            )?;
++            next.column_pressure = Some(pressure);
++            Some(reading)
++        }
++        _ => None,
++    };
+ 
+     let throughput = pass.throughput().value();
+     let mut draws = Vec::with_capacity(plan.locations.len());
+@@ -1446,7 +1611,10 @@ fn stepped_pass(
+         stage_liquid,
+         trays,
+         holdup: Some(next),
+-        holdup_reading: Some(stepped.reading),
++        holdup_reading: Some(HoldupReading {
++            condenser,
++            ..stepped.reading
++        }),
+         draw_flows,
+         slop,
+     })
+diff --git a/crates/solvers/src/network.rs b/crates/solvers/src/network.rs
+index fc7cf37..a03d420 100644
+--- a/crates/solvers/src/network.rs
++++ b/crates/solvers/src/network.rs
+@@ -700,7 +700,11 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
+         // exactly like a Source/Sink/Tank, so the feed edge is an ordinary
+         // pressure-driven edge into a fixed node and the draws (fixed→fixed) never
+         // enter the Jacobian (DESIGN §5).
+-        NodeKind::Column { pressure, .. } => Some(pressure.value()),
++        // Its condenser's running pressure, where it declares one (M75.1,
++        // docs/DESIGN.md §80.1): the last tick's, as every pin here.
++        NodeKind::Column {
++            pressure, cascade, ..
++        } => Some(refinery_core::graph::running_column_pressure(*pressure, cascade.as_ref()).value()),
+         // Furnaces, coolers and reactors pin no pressure: all are hydraulically
+         // pass-throughs, so they are free nodes whose pressure the network
+         // determines. A reactor is hydraulically a furnace (DESIGN §5).
+@@ -4770,7 +4774,10 @@ fn line_stage_pressure(
+     column: NodeId,
+     stage: Option<u32>,
+ ) -> Result<f64, SimError> {
+-    let NodeKind::Column { pressure, .. } = &graph.node(column).kind else {
++    let NodeKind::Column {
++        pressure, cascade, ..
++    } = &graph.node(column).kind
++    else {
+         return Err(SimError::Numerical(format!(
+             "internal: a draw line starts at '{}', which is no column",
+             graph.node(column).name
+@@ -4783,7 +4790,10 @@ fn line_stage_pressure(
+                 .get(&column)?
+                 .stage_pressure(stage)
+         })
+-        .map_or(pressure.value(), |stage_pressure| stage_pressure.value()))
++        .map_or(
++            refinery_core::graph::running_column_pressure(*pressure, cascade.as_ref()).value(),
++            |stage_pressure| stage_pressure.value(),
++        ))
+ }
+ 
+ /// One draw or loop line marched from its column at `mass_flow` [kg/s]
