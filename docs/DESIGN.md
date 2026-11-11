@@ -31706,7 +31706,10 @@ tick 1 929 was refused. Doubled until it brackets, clamped to [set, design],
 where the exact ends still hold (`r(set) ≥ 0` is the set exactly,
 `r(design) ≤ 0` the design). The peaking plant now turns once, back at the
 set at 753 s, every tick converging, the books at 2e-10 kg/s and 4.9 W;
-§80.2's figures above unmoved at their digits; every plant byte-identical
+M75.1's tests' ranges hold (the 1.89 bar a minute into total reflux among
+them; the five-minute 3.17 bar and the 2.02-bar peak above not re-measured,
+the peaking run's pressure ~10 Pa off the old solve's at 50 s, within the
+1-Pa tolerance a tick accumulated); every plant byte-identical
 (71 of 71, both fidelities). Mutations: the far end restored, and the cap
 removed, each caught by its slow test; `illinois` now orders its ends
 itself, and its order flipped survives — on brackets a few pascals wide its
@@ -31761,20 +31764,22 @@ default).
   holds the set pressure exactly, half flooded and it rises. A risen
   pressure reads a duty near its capacity whatever the shortfall at the
   set: the column answers ~93 kW a pascal (§80.2).
-- **At rest a back-up does not last**: the level loop at its ceiling draws
-  half the condenser's back-up out of the drum in about 13 s; the pressure
-  peaks 1.5 kPa up and is back on its set as the tubes clear.
+- **At rest a back-up does not last**: on the condenser with its duty to
+  spare again (`margin = 1.0`, its liquid ≈ 5.9 m³), the level loop at its
+  ceiling draws half the condenser's back-up out of the drum in about 13 s;
+  the pressure peaks 1.5 kPa up and is back on its set as the tubes clear.
 - **Flooded whole and kept so** (the drum re-planted past both volumes
   every tick): the pressure rises 1.8 → 3.52 bar, the design pressure, in
   54 s (≈ 0.03 bar/s) and holds there exactly, `at_design`.
-- **On total reflux the back-up never comes first**: from a drum planted at
+- **On total reflux the back-up never comes first** (one measured run, not
+  kept as a test): from a drum planted at
   0.99, the level loop pulls it back to ≈ 0.52 within 90 s while the
   pressure rises on the condenser's own limit to the design pressure at
   ≈ 210 s — long before the drum refills (M75.0: 26 minutes from half
   full). On this plant the back-up only matters once relief (M75.3) holds the
   pressure below the design.
-- The books close every tick in every story (mass ≤ 3e-10 kg/s, heat
-  ≤ 6.4 W).
+- The books close every tick in every story (asserted to 1e-8 kg/s and
+  20 W; measured at most 2.1e-10 kg/s and 3.6 W, the flooded-whole run).
 
 **A gap, written down**: the step still condenses all the column sends and
 books it into the drum, so a condenser flooded whole still fills the drum
