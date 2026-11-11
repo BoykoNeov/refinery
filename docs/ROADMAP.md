@@ -11310,3 +11310,17 @@ of its condenser, how fast its pressure would rise on a capped condenser, the
 pressure-control scheme (Kister), relief on a column; then decisions for the
 user (the drum or the base first, slop against back-up, the condenser's
 capacity, the control scheme, relief as a line or a reading).
+
+### M75.0 — **PROBED** 2026-11-11: what an overfilling column asks of its condenser — decisions put to the user
+
+Probed (`tools/steptime/prototypes/m75_0/`, `FINDINGS.md`, DESIGN §80.0), no
+engine code changed. Kister read first: an overflowing accumulator backs up
+into the condenser, which condenses less and the pressure rises towards relief
+(§13.3); the flooded condenser is the usual pressure control (§17.2.2); a base
+too full floods the bottom trays (§13.2). On total reflux with the feed on the
+drum fills at 26 minutes and the base at 36, but the condenser is asked 1.2
+times its running duty at one minute and 1.8 at six — so with a real
+condenser the pressure climbs within minutes, long before the drum fills. The
+column settles at 1.8–4.5 bar, the products within 4 %. Put to the user: the
+drum or the base first; slop against back-up; the condenser's capacity; the
+pressure control; relief as a line or a reading.

@@ -31534,3 +31534,37 @@ vapour and a stage that boils dry (C29, §79.12, §79.14, §79.19); the burst
 tube's drain-back (C28); the overfull column's knock-on effects (C30); only
 the column starts empty (C31); the feed cut with the loops and reflux stopped
 (C26's pressure-drop wall).
+
+## 80. An overfull column's knock-on effects (M75) — probed before specifying
+
+Asked after M74 (2026-11-11): the user chose C30. Since M74.6 step 3 a drum or
+base past full sends its excess to slop (§79.18); the column's pressure is
+pinned (`NodeKind::Column`'s fixed-pressure contract) and its condenser takes
+any duty (`column_step`'s `condenser_duty`, what the top vapour brings).
+
+### 80.0 M75.0 — the probe (2026-11-11)
+
+`tools/steptime/prototypes/m75_0/` (`FINDINGS.md`); no engine code changed.
+**Read first, Kister 1990**: §13.3 p. 345 — an all-liquid top product's
+overflowing accumulator backs up into the condenser, flooding tubes, which
+condenses less and stops the level rising; the column's pressure rises and the
+relief may lift. §13.2 pp. 343–345 — a base above its reboiler return: vapour
+slugging, trays lifted, the bottom trays flooded. §17.2.2 pp. 528–531 — the
+flooded condenser, the common pressure control on a total condenser: its
+flooded area varied, less free area condensing less.
+
+**Measured**: total reflux with the feed on (M74.6.0's operator's mistake) on
+the holdup plant with its steel — the drum full at 26 minutes, the base at 36,
+trays 1–11 flooding; the condenser asked 1.2 times its running 44.8 MW at one
+minute, 1.8 at six, 2.6 at the hour (the top's vapour about tripled, the lights
+held in the column). The plant declared at 1.8–4.5 bar settles at each, the top
+163–207 °C, the products within 4 %, the feed unchanged. **By hand**: the
+pressure moves ~0.3 bar a second on a 30 MW shortfall into ~100 m³ — an
+algebraic balance per tick, not a slow state; a condenser capped a fifth over
+its design would need the top at ~230 °C six minutes into the mistake, past the
+4.5-bar plant's 207 °C — on this story the condenser's limit, not the full
+drum, is the first act. A relief line needs a vapour outlet the column does not
+have (a new edge, a new plant file) or a reading. Put to the user: the drum or
+the base first; slop against back-up; the condenser's capacity declared or
+derived; the flooded condenser or a floating pressure; relief as a line or a
+reading.

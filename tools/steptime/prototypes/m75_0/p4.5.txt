@@ -1,0 +1,12 @@
+
+running 1 test
+test m75_0::m75_0 ... == holdup WARM 1000 GAP 300 RUN 12000
+RESULT reflux=4: RUNS held drum 0.500 normal base 0.500 normal | flood 11 weep - | loops 23.9MW/28.5MW/21.7MW R 4.000 coil 359.3 cond 43.37 reb 125.01 MW | products 21.66/15.76/19.70/13.79/27.59 | empty 0 ticks, 0 at most, stages , last at 0, 0 at the end, least held 1704.5 kg | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.500-0.500 base 0.500-0.500 dry 0/0 full 0/0 atmax 0/0 reb 125.0-125.0 MW least vapour 827 mol/s on 13 declined 0 dry trays 0 ticks, 0 at most, last at 0 worst 1.6 ms
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 7.02s
+
+TRACE reflux=4 t=1500: feed 98.5 held[t] [1.7,1.7,3.4,3.4,2.8,4.8,4.9,4.1,5.2,5.1,3.7,5.7,31.8] drum 5.9 t V [932,866,836,1269,1229,1103,1455,1446,1353,1545,1384,857,827] T [207,243,270,288,310,339,365,391,416,441,477,587,672] drum 0.500 base 0.500 reb 125.0 R 4.00 cond 43.4 MW products 21.7/15.8/19.7/13.8/27.6
+TRACE reflux=4 t=3000: feed 98.5 held[t] [1.7,1.7,3.4,3.4,2.8,4.8,4.9,4.1,5.2,5.1,3.7,5.7,31.8] drum 5.9 t V [932,866,836,1269,1229,1103,1455,1446,1353,1545,1384,857,827] T [207,243,270,288,310,339,365,391,416,441,477,587,672] drum 0.500 base 0.500 reb 125.0 R 4.00 cond 43.4 MW products 21.7/15.8/19.7/13.8/27.6
+TRACE reflux=4 t=4500: feed 98.5 held[t] [1.7,1.7,3.4,3.4,2.8,4.8,4.9,4.1,5.2,5.1,3.7,5.7,31.8] drum 5.9 t V [932,866,836,1269,1229,1103,1455,1446,1353,1545,1384,857,827] T [207,243,270,288,310,339,365,391,416,441,477,587,672] drum 0.500 base 0.500 reb 125.0 R 4.00 cond 43.4 MW products 21.7/15.8/19.7/13.8/27.6
+TRACE reflux=4 t=6000: feed 98.5 held[t] [1.7,1.7,3.4,3.4,2.8,4.8,4.9,4.1,5.2,5.1,3.7,5.7,31.8] drum 5.9 t V [932,866,836,1269,1229,1103,1455,1446,1353,1545,1384,857,827] T [207,243,270,288,310,339,365,391,416,441,477,587,672] drum 0.500 base 0.500 reb 125.0 R 4.00 cond 43.4 MW products 21.7/15.8/19.7/13.8/27.6
