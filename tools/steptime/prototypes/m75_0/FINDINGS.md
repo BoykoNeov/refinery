@@ -86,3 +86,12 @@ About 3 minutes of machine time.
    arrives — or the pressure simply floating?
 5. Relief: a real relief line to a flare in the new plant file, or a reading
    on the column (as the slop)?
+
+**Decided (2026-11-11), the user**: **the drum side first** (the condenser and
+the pressure; the base side, Kister §13.2, after); **the slop line an
+operator's drain**, opened or shut — shut, the drum overfills and backs up
+into the condenser, open it drains as since §79.18; **the flooded condenser**
+(Kister §17.2.2) holding the declared pressure until its free area cannot
+condense what arrives, the condenser sized from its running duty with a
+margin (a game value); **relief a real line to a flare** in the new plant
+file, on the engine's relief valves — the column given a vapour outlet.

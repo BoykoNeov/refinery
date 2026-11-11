@@ -11324,3 +11324,12 @@ condenser the pressure climbs within minutes, long before the drum fills. The
 column settles at 1.8–4.5 bar, the products within 4 %. Put to the user: the
 drum or the base first; slop against back-up; the condenser's capacity; the
 pressure control; relief as a line or a reading.
+
+**Decided (2026-11-11), the user**: **the drum side first** (the condenser and
+the pressure; the base side, Kister §13.2, after); **the slop line an
+operator's drain**, opened or shut — shut, the drum overfills and backs up
+into the condenser, open it drains as since §79.18; **the flooded condenser**
+(Kister §17.2.2) holding the declared pressure until its free area cannot
+condense what arrives, the condenser sized from its running duty with a
+margin (a game value); **relief a real line to a flare** in the new plant
+file, on the engine's relief valves — the column given a vapour outlet.
