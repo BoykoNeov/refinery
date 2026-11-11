@@ -11239,4 +11239,6 @@ and double: the start from empty and the draining's 65 of 70 unchanged;
 **the draining after a stage that boils dry**. No engine code changed. Next:
 the building slice — the start from empty with the steel and total reflux
 (total reflux only where the steel is on: without it the prototype refuses it
-at full reboiler, §79.15), then the third branch, then the draining (C29).
+at full reboiler, §79.15; a drum or base past full sent to slop with an
+alarm, not to product — the user's decision, its knock-on effects C30), then
+the third branch, then the draining (C29).

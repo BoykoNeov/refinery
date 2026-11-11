@@ -31273,3 +31273,12 @@ tray held 0.5 / 1.7 / 2.0 kg — the guess is not load-bearing.
 empties within the held runs at any scale. Not changed: only the column
 starts empty — the crude at its full preheat from the first tick, where a real
 crude unit warms its heater over hours (outside M74).
+
+**A full drum or base (the user's decision, 2026-11-11).** Since M74.3 the
+liquid past full leaves with the drum's or the base's product within the tick
+(§79.5) — under total reflux, 15 kg/s of naphtha off a full drum (§79.14),
+the operator's mistake partly hiding itself. Decided: from the building slice
+the excess goes to a **slop line, off-spec and not counted as product**, with a
+**"drum full" / "base full" alarm**; the real knock-on effects (the condenser
+backed up and the pressure rising, the bottom trays flooded) deferred (C30).
+It moves only a plant whose drum or base reaches full.
