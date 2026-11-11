@@ -31475,3 +31475,40 @@ temperature, the snapshot's mapping, the key's skip while empty).
 
 Next (M74.6 part 2): the third branch, a stage that boils dry; then the
 held-back draining (C29).
+
+### 79.19 M74.6.2.0 — a stage that boils dry, its probe (2026-11-11)
+
+Probed before building (`tools/steptime/prototypes/m74_6_2/`, `FINDINGS.md`;
+the held-back draining, C29, merged onto 469efbc; every change behind a
+switch). No engine code changed.
+
+**The third branch** — each stage's first residual
+`max(−V/V_s, min(bubble, max(H'/(dt·V_s), Σx' − 1)))`, `H'` the stage's
+end-of-tick holdup unclamped (a residual, no longer a refusal; the sweep reads
+it clamped at nothing): a stage boils, does not, or boils dry with its vapour
+over its dew point. Where `H'` is not near nothing it is §79.10's
+`max(bubble, −V/V_s)` to the bit. **Its dew guard is inert** where a dry tray
+passes no liquid: the sweep then pins `ΣK·x' ≈ 1`, so the `min` reads ≈ 0
+whatever `Σx' − 1` — a cold dry tray passing vapour would be accepted; the dry
+state needs a row of its own.
+
+**Measured** on the valved holdup plant with steel and draining, shut down
+(feed, furnace, reboiler at once; §79.14's finding 8): the engine as built
+refuses at 7.8 minutes (the base stopping boiling, 0.001 MW short), not 16.6
+as the probe of §79.14; a primal-dual active-set rescue on refused ticks only
+(each stage held on a branch, solved, re-chosen by sign) carries the base and
+reaches 16.6 minutes, where stage 12 has **no consistent branch** — held not
+boiling 0.007 K over its bubble point, held boiling it needs −0.011 mol/s;
+with the trays' within-tick slope off in the rescue, 17 minutes and four trays
+boiled dry, then stage 11 cycles between boiling (past empty) and dry (under
+its dew point). A tray's slope `dL/dM` grows without bound as it empties
+(`slope·dt` 0.005 running, 0.1–1.03 on trays holding grams): capped at 0.02
+every tick, the 7.8-minute stall goes with no rescue and the run reaches 17
+minutes. The bubble row stays informative near dry (`∂S/∂T` 0.012–0.019 per
+K at 1–3 mol). **The 70 held hours: 65 of 70 in every variant**, the same 5
+(the base at 0 MW, the reflux at 15), their failures moved later, not away.
+
+Each fix buys about 30 s of a column whose trays hold grams and whose vapour
+is a few mol/s, then a new cycle: the approach does not converge. The dry
+state can only be tested with the draining (nothing else empties a tray). Put
+to the user (§79.19's choices, the roadmap's M74.6.2.0).

@@ -11272,3 +11272,20 @@ vessel's `"full"` limit is the alarm. The column's own step unchanged — only
 the published products split — so on total reflux a full drum's naphtha
 reads exactly 0. 71 of 71 byte-identical: no shipped plant reaches full.
 Next: the third branch (a stage that boils dry), then the draining (C29).
+
+### M74.6.2.0 — **PROBED** 2026-11-11: a stage that boils dry — the approach does not converge; put to the user
+
+Probed (`tools/steptime/prototypes/m74_6_2/`, `FINDINGS.md`, DESIGN §79.19)
+on the draining's shut-down and its 70 held hours, no engine code changed.
+The third branch (a stage's end-of-tick holdup a residual, the median of
+three) leaves every wet stage's residual today's to the bit and lets trays
+boil dry; a choose-each-stage's-branch rescue on refused ticks, and a cap on a
+near-empty tray's within-tick slope (which grows without bound as it empties),
+each move the shut-down's first refusal (7.8 → 17 minutes) — but **the 70
+held hours stay 65 of 70 in every variant** (the same 5, the base at 0 MW),
+and each fix buys ~30 s of a column whose trays hold grams before a new
+two-branch cycle (ticks with no consistent branch). The dry formula's dew
+guard is inert where a dry tray passes no liquid: not shippable as written.
+Put to the user: rework the trays' liquid into the tick's unknowns, sub-step a
+refused tick, a minimum liquid film, or defer the dry state with the draining
+(C29) and close M74.

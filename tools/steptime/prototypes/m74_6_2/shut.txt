@@ -1,0 +1,8 @@
+
+running 1 test
+test m74_6_2_dry::m74_6_2_dry ... == valved WARM 1000 GAP 300 RUN 12000
+RESULT valve=0+furnace=0+reb=0: FAIL at t=5667 (4666 after the last move; last sent valve=0+furnace=0+reb=0): {"code":"numerical","message":"numerical error: column step: the tick did not converge after 11 Newton steps — stage 13's energy balance short by -0.001 MW (the least vapour: stage 13, 0.052 mol/s) (docs/DESIGN.md §79.2)."} | empty 0 ticks, 0 at most, stages , last at 0, 0 at the end, least held 93.6 kg | cold 37 ticks, 1 at most, stages 3,13, last at 4665, 0 at the end | drum 0.352-0.500 base 0.500-0.598 dry 0/0 full 0/0 atmax 0/0 reb 0.0-0.0 MW least vapour 0 mol/s on 3 declined 0 dry trays 37 ticks, 3 at most, last at 4666 worst 5.1 ms
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 8.56s
+
