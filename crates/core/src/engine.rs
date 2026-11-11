@@ -15,8 +15,8 @@ use crate::graph::{
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, ColumnOperation, Command, ComponentSnapshot, ControlSnapshot,
     DrawCutBack, EdgeSnapshot, HoldupOperation, LoopOperation, NodeSnapshot, PumpSuctionSnapshot,
-    PumpTwoPhaseSnapshot, ReboilerDeclined, RestartBar, Snapshot, SupplyBoiling, TrayOperation,
-    TripSnapshot, TripStop,
+    PumpTwoPhaseSnapshot, ReboilerDeclined, RestartBar, SlopOperation, Snapshot, SupplyBoiling,
+    TrayOperation, TripSnapshot, TripStop,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, LineFlashModel, ReactionModel,
@@ -4160,6 +4160,18 @@ impl Engine {
                                 base_loop_at_max: reading.base_loop_at_max,
                                 total_reflux: reading.total_reflux,
                             }),
+                            // A vessel past full's excess, to slop (M74.6,
+                            // §79.18).
+                            slop: s
+                                .slop
+                                .iter()
+                                .map(|slop| SlopOperation {
+                                    vessel: slop.vessel,
+                                    flow_kg_s: slop.flow.value(),
+                                    temperature_k: slop.temperature.value(),
+                                    composition: slop.composition.clone(),
+                                })
+                                .collect(),
                         })
                     }),
                     // Absent wherever the criterion does not apply, which is

@@ -32,7 +32,7 @@ use refinery_core::error::SimError;
 use refinery_core::graph::{CascadeSpec, ColumnHoldup, HoldupState, Pumparound};
 use refinery_core::traits::{
     CascadeProfile, ColumnPass, CutBackDraw, DeclinedHold, DrawSeparation, HoldupReading,
-    LevelLimit, LoopRun, Separation, SeparationModel, ThermoModel,
+    LevelLimit, LoopRun, Separation, SeparationModel, SlopFlow, SlopVessel, ThermoModel,
 };
 use refinery_core::units::{Kelvin, Kg, KgPerSec, Pascal, Watt, T_AMBIENT};
 
@@ -776,6 +776,7 @@ impl HeatBalanceCascade {
                 holdup: None,
                 holdup_reading: None,
                 draw_flows: Vec::new(),
+                slop: Vec::new(),
             });
         }
 
@@ -1126,6 +1127,7 @@ impl HeatBalanceCascade {
             }),
             holdup,
             draw_flows: Vec::new(),
+            slop: Vec::new(),
         })
     }
 }
@@ -1370,6 +1372,22 @@ fn stepped_pass(
             },
         });
     }
+    // A vessel past full's excess, to slop (M74.6, docs/DESIGN.md §79.18).
+    let slop = stepped
+        .slop
+        .iter()
+        .map(|(vessel, masses)| {
+            Ok(SlopFlow {
+                vessel: *vessel,
+                flow: KgPerSec(masses.iter().sum()),
+                composition: Composition::from_weights(masses)?,
+                temperature: match vessel {
+                    SlopVessel::Drum => stepped.drum_temperature,
+                    SlopVessel::Base => Kelvin(stepped.temperatures[plan.stages - 1]),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, SimError>>()?;
     let profile = Profile {
         temperatures: stepped.temperatures,
         liquid: stepped.liquid,
@@ -1430,6 +1448,7 @@ fn stepped_pass(
         holdup: Some(next),
         holdup_reading: Some(stepped.reading),
         draw_flows,
+        slop,
     })
 }
 
@@ -2938,6 +2957,7 @@ fn oil_free_feed(
         holdup: None,
         holdup_reading: None,
         draw_flows: Vec::new(),
+        slop: Vec::new(),
     })
 }
 
@@ -3135,6 +3155,7 @@ fn flooded_pass_through(
             holdup: None,
             holdup_reading: None,
             draw_flows: Vec::new(),
+            slop: Vec::new(),
         });
     }
     let mut draws: Vec<DrawSeparation> = (0..plan.mass_ratios.len())
@@ -3175,6 +3196,7 @@ fn flooded_pass_through(
         holdup: None,
         holdup_reading: None,
         draw_flows: Vec::new(),
+        slop: Vec::new(),
     })
 }
 
@@ -3411,6 +3433,7 @@ fn water_only_inflow(
         holdup: None,
         holdup_reading: None,
         draw_flows: Vec::new(),
+        slop: Vec::new(),
     })
 }
 

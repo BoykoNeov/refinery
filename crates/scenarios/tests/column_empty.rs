@@ -7,7 +7,7 @@ use refinery_core::components::Composition;
 use refinery_core::engine::Engine;
 use refinery_core::graph::{ColumnHoldup, ColumnSteel, EdgeId, HoldupState, NodeKind};
 use refinery_core::snapshot::Snapshot;
-use refinery_core::traits::LevelLimit;
+use refinery_core::traits::{LevelLimit, SlopVessel};
 use refinery_core::units::{CubicMeter, Kg};
 use refinery_scenarios::{build_engine, load_str};
 
@@ -56,6 +56,21 @@ fn state(engine: &Engine) -> HoldupState {
     holdup(engine)
         .state
         .expect("the first tick filled the state")
+}
+
+fn state_mut(engine: &mut Engine) -> &mut HoldupState {
+    let node = engine.graph.find_node("column").unwrap();
+    match &mut engine.graph.node_mut(node).kind {
+        NodeKind::Column {
+            cascade: Some(spec),
+            ..
+        } => spec
+            .holdup
+            .as_mut()
+            .and_then(|h| h.state.as_mut())
+            .expect("the first tick filled the state"),
+        _ => panic!("the column is a cascade column"),
+    }
 }
 
 fn run(engine: &mut Engine, ticks: u32) -> Snapshot {
@@ -204,6 +219,9 @@ impl Books {
                 e.stream.composition.fractions().to_vec(),
             )
         };
+        let node = snapshot.nodes.iter().find(|n| n.name == "column").unwrap();
+        let duty = node.column_duty.unwrap();
+        let op = node.column_operation.clone().unwrap();
         let (fed, z) = flow(self.feed);
         let (held_before, held_after) = (inventory(before), inventory(&after));
         let mut worst: f64 = 0.0;
@@ -213,12 +231,14 @@ impl Books {
                 let (drawn, w) = flow(*id);
                 balance -= drawn * w[c];
             }
+            // And what went to slop, on no pipe (M74.6, docs/DESIGN.md
+            // §79.18).
+            for slop in &op.slop {
+                balance -= slop.flow_kg_s * slop.composition.fractions()[c];
+            }
             worst = worst.max(balance.abs());
         }
 
-        let node = snapshot.nodes.iter().find(|n| n.name == "column").unwrap();
-        let duty = node.column_duty.unwrap();
-        let op = node.column_operation.clone().unwrap();
         let carried = |id: EdgeId, t: f64| {
             let (mass, w) = flow(id);
             let cp_mix: f64 = w.iter().zip(&self.cp).map(|(w, c)| w * c).sum();
@@ -235,6 +255,16 @@ impl Books {
                 stage => after.stage_temperature[stage - 1].value(),
             };
             heat -= carried(*id, t);
+        }
+        for slop in &op.slop {
+            let cp_mix: f64 = slop
+                .composition
+                .fractions()
+                .iter()
+                .zip(&self.cp)
+                .map(|(w, c)| w * c)
+                .sum();
+            heat -= slop.flow_kg_s * cp_mix * (slop.temperature_k - 273.15);
         }
         (worst, heat)
     }
@@ -597,6 +627,48 @@ fn on_total_reflux_the_products_shut() {
         "{back} against {kerosene}"
     );
     assert!(line_flow(&off, "naphtha_draw") > 0.0);
+}
+
+/// **On total reflux a drum past full sends its excess to slop, not to the
+/// naphtha** (M74.6, docs/DESIGN.md §79.18 — the case §79.14 named: before,
+/// 15 kg/s of naphtha off a full drum, the operator's mistake partly hiding
+/// itself): the holdup plant with its steel on total reflux, its drum put at
+/// 1.2 of its volume — the naphtha line exactly 0, the slop the sixth of the
+/// drum over full in the tick, the drum reading `"full"` (the alarm), the
+/// books closing with the slop counted.
+#[test]
+fn on_total_reflux_a_full_drum_goes_to_slop() {
+    let mut engine = engine_of(&holdup_with(", steel = \"derived\"")).unwrap();
+    let books = Books::of(&engine);
+    run(&mut engine, 100);
+    set_total_reflux(&mut engine, true).unwrap();
+    let now = reading(&run(&mut engine, 10)).drum_level;
+    let held = state_mut(&mut engine);
+    held.drum_liquid = Kg(held.drum_liquid.value() * 1.2 / now);
+    let held_kg = held.drum_liquid.value();
+    let start = state(&engine);
+    let after = run(&mut engine, 1);
+    let read = reading(&after);
+    assert!(read.total_reflux);
+    assert_eq!(read.drum_limit, LevelLimit::Full);
+    assert_eq!(line_flow(&after, "naphtha_draw"), 0.0);
+    let node = after.nodes.iter().find(|n| n.name == "column").unwrap();
+    let slop = &node.column_operation.as_ref().unwrap().slop;
+    assert_eq!(slop.len(), 1, "{slop:?}");
+    assert_eq!(slop[0].vessel, SlopVessel::Drum);
+    let overflow = held_kg * (1.0 - 1.0 / read.drum_level) / 0.1;
+    assert!(
+        (slop[0].flow_kg_s / overflow - 1.0).abs() < 1.0e-4,
+        "{} kg/s against {overflow}",
+        slop[0].flow_kg_s
+    );
+    let (mass, heat) = books.close(&engine, &start);
+    println!(
+        "M74_6 slop on total reflux: {} kg/s against {overflow}; books {mass} kg/s, {heat} W",
+        slop[0].flow_kg_s
+    );
+    assert!(mass < 1.0e-8, "{mass}");
+    assert!(heat.abs() < 20.0, "{heat}");
 }
 
 /// **A start from empty on total reflux** (Kister §12.8's start-up, the

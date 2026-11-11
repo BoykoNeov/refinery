@@ -31416,3 +31416,58 @@ refusal, the switch's value).
 
 Next (M74.6 step 3): a drum or base past full to a slop line with its alarm
 (C30).
+
+### 79.18 M74.6 step 3 built — a drum or base past full to slop (2026-11-11)
+
+The user's decision of §79.15 built: the liquid past full no longer leaves
+with the drum's or the base's product. It goes to a **slop line**, off-spec
+and not product, and the vessel reads `"full"` — `HoldupOperation`'s
+`drum_limit` / `base_limit`, which **is** the "drum full" / "base full"
+alarm. The engine has no alarm system of its own; the limit already on the
+wire is the flag a frontend raises.
+
+**Where the slop goes: a reading on the column, on no pipe.** A declared
+slop pipe would need a new edge in the plant file, and the shipped files are
+not edited; so the slop leaves the plant's books as
+`ColumnOperation::slop` — each overflowing vessel's flow [kg/s], its
+composition (the vessel's liquid, as its product carries it) and its
+temperature (the drum's, or the base stage's), the drum's before the
+base's; absent, not serialized, while neither is past full. A declared slop
+tank, its line a real pipe, is left for when a story asks for it. Every
+mass or heat book on a column that holds liquid counts it (the holdup and
+empty-start tests' `Books`, `heat_imbalance`); no plant-wide audit sees such
+a column.
+
+**The step runs on the whole; only the products are split.** The excess
+leaves the drum or base within the tick as before (§79.5), so every
+expression of the solve stands (`distillate`, the base's draw, the drum's
+sweep row, the condenser's duty): `SetFlows` carries the excess's share,
+`drum_slop` and `base_slop` [mol/s], and `finish` takes it off the product
+(`(rate − slop) · x'`) and puts it in the slop (`slop · x'`). A plant that
+never reaches full is byte-identical; one that does keeps its column's
+state to the bit, only the published split moving. The bottoms is split by
+its place in the draw list, not its stage. On total reflux the distillate
+is the excess alone, so the naphtha reads exactly 0: `(0 + e)/m − e/m`.
+
+Measured (`column_holdup::a_full_drum_or_base_sends_its_excess_to_slop`,
+`column_empty::on_total_reflux_a_full_drum_goes_to_slop`): put at 1.2 of
+its volume, the product carries its loop's output alone (to 2.3e-6), the
+slop the sixth of the vessel over full in the tick (to 7.3e-6 — the drum's
+26 366 kg/s for that one tick: a level put at 1.2 at once, its whole excess
+out in 0.1 s), at the product's composition (to 1e-12) and the vessel's
+temperature (exact); the next tick no slop and no `"slop"` key. On total
+reflux the naphtha 0 to the bit, the slop 24 668 kg/s. The books close on
+the tick with the slop counted (6.3e-11 to 1.4e-10 kg/s, under 0.04 W).
+
+Not changed: what an overfull drum or base does to the column — the
+condenser backed up, the pressure climbing, the bottom trays flooded (C30).
+The column screen shows the limit, not the slop's flow.
+
+Checked: FAST and FULL tiers, clippy (and the godot feature's), fmt; the
+corpus 71 of 71 byte-identical on both fidelities — no shipped plant reaches
+full in 6 000 ticks; the mutation pass, 7 of 7 caught (the drum's split, the
+base's, the drum's slop zeroed, a slop listed while zero, the base slop's
+temperature, the snapshot's mapping, the key's skip while empty).
+
+Next (M74.6 part 2): the third branch, a stage that boils dry; then the
+held-back draining (C29).

@@ -51,7 +51,7 @@
 use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;
 use refinery_core::graph::{CascadeSpec, ColumnHoldup, HoldupState};
-use refinery_core::traits::{HoldupReading, LevelLimit, ThermoModel};
+use refinery_core::traits::{HoldupReading, LevelLimit, SlopVessel, ThermoModel};
 use refinery_core::units::{Kelvin, Kg, KgPerSec, Pascal, Watt};
 
 use crate::bubble::bubble_temperature_unnormalized;
@@ -165,6 +165,10 @@ pub(crate) struct Stepped {
     /// Each draw's component flows [kg/s per component], in the plan's order:
     /// the distillate, the side draws, the bottoms.
     pub(crate) draw_masses: Vec<Vec<f64>>,
+    /// A vessel past full's excess sent to slop, its component flows [kg/s
+    /// per component]: the drum's before the base's, each only while past
+    /// full (M74.6, docs/DESIGN.md §79.18).
+    pub(crate) slop: Vec<(SlopVessel, Vec<f64>)>,
     /// The reboiler's duty [W] and the condenser's [W].
     pub(crate) reboiler_duty: f64,
     pub(crate) condenser_duty: f64,
@@ -195,8 +199,16 @@ struct SetFlows {
     drawn: Vec<f64>,
     /// Each running loop's circulation.
     loops: Vec<f64>,
+    /// What leaves the drum but the reflux: the distillate and, past full,
+    /// the drum's excess.
     distillate: f64,
     reflux: f64,
+    /// The shares of the distillate and of the base's draw that are a full
+    /// vessel's excess, sent to slop, not product (M74.6, docs/DESIGN.md
+    /// §79.18); zero while the vessel is not past full. The step runs on the
+    /// whole; only the products are split.
+    drum_slop: f64,
+    base_slop: f64,
     /// The reboiler's duty [W].
     reboiler: f64,
     /// Each side draw's share of its set flow it ran at, where under one.
@@ -555,8 +567,9 @@ impl ColumnStep<'_> {
         // The physical limits (§79.2): a drum low enough that the reflux
         // pump loses its suction sends out only what that leaves, reflux and
         // distillate alike; a base low enough that the reboiler's tubes
-        // uncover boils only in proportion; a drum or base past full passes
-        // its excess on with its product within the tick.
+        // uncover boils only in proportion; a drum or base past full sends
+        // its excess out within the tick — to slop, not product (M74.6,
+        // docs/DESIGN.md §79.18).
         let (bottoms_before_limits, reboiler_before_limits) = (bottoms_mass, reboiler);
         let mut drum_limit = LevelLimit::Normal;
         let mut base_limit = LevelLimit::Normal;
@@ -577,13 +590,16 @@ impl ColumnStep<'_> {
             overflow = state.drum_liquid.value() * (1.0 - 1.0 / drum_level) / dt;
             drum_limit = LevelLimit::Full;
         }
+        let mut base_overflow = 0.0;
         if base_level > 1.0 {
-            bottoms_mass += state.stage_liquid[n - 1].value() * (1.0 - 1.0 / base_level) / dt;
+            base_overflow = state.stage_liquid[n - 1].value() * (1.0 - 1.0 / base_level) / dt;
+            bottoms_mass += base_overflow;
             base_limit = LevelLimit::Full;
         }
         drawn[n - 1] = bottoms_mass / mean(&stage_x[n - 1]);
-        // On total reflux (§79.17) no distillate but a full drum's excess, and
-        // all the drum's level loop asks sent back as reflux: `(R + 1)` times
+        // On total reflux (§79.17) no distillate (a full drum's excess goes
+        // to slop), and all the drum's level loop asks sent back as reflux:
+        // `(R + 1)` times
         // its output, so the drum's outflow is the same either way and the
         // switch moves no level by itself.
         let (product_share, reflux_share) = if total_reflux {
@@ -606,6 +622,8 @@ impl ColumnStep<'_> {
             loops,
             distillate,
             reflux,
+            drum_slop: overflow / mean(&drum_x),
+            base_slop: base_overflow / mean(&stage_x[n - 1]),
             reboiler,
             cut_back,
             reading: HoldupReading {
@@ -1013,12 +1031,33 @@ impl ColumnStep<'_> {
         let flows_of = |rate: f64, x: &[f64]| -> Vec<f64> {
             x.iter().zip(&mw).map(|(x, m)| rate * x * m).collect()
         };
+        // A vessel past full's excess is split off its product to slop
+        // (M74.6, docs/DESIGN.md §79.18): the step ran on the whole.
+        let bottoms = plan.locations.len() - 1;
         let mut draw_masses = Vec::with_capacity(plan.locations.len());
-        for location in &plan.locations {
+        for (i, location) in plan.locations.iter().enumerate() {
             draw_masses.push(match location {
-                DrawLocation::Condenser => flows_of(set.distillate, &evaluation.x_drum),
+                DrawLocation::Condenser => {
+                    flows_of(set.distillate - set.drum_slop, &evaluation.x_drum)
+                }
+                DrawLocation::Stage(j) if i == bottoms => {
+                    flows_of(set.drawn[*j] - set.base_slop, &evaluation.x[*j])
+                }
                 DrawLocation::Stage(j) => flows_of(set.drawn[*j], &evaluation.x[*j]),
             });
+        }
+        let mut slop = Vec::new();
+        if set.drum_slop > 0.0 {
+            slop.push((
+                SlopVessel::Drum,
+                flows_of(set.drum_slop, &evaluation.x_drum),
+            ));
+        }
+        if set.base_slop > 0.0 {
+            slop.push((
+                SlopVessel::Base,
+                flows_of(set.base_slop, &evaluation.x[n - 1]),
+            ));
         }
 
         // The level loops' integrals, each held while its stream is pinned at
@@ -1064,6 +1103,7 @@ impl ColumnStep<'_> {
             drum_liquid: evaluation.drum_liquid,
             drum_temperature: evaluation.drum_temperature,
             draw_masses,
+            slop,
             reboiler_duty: set.reboiler,
             condenser_duty: evaluation.condenser_duty,
             cut_back: set.cut_back.clone(),

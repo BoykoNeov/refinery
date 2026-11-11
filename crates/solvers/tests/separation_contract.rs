@@ -57,6 +57,7 @@ impl SeparationModel for ShortSplitter {
             holdup: None,
             holdup_reading: None,
             draw_flows: Vec::new(),
+            slop: Vec::new(),
         })
     }
 }
@@ -249,6 +250,7 @@ fn a_short_draw_list_is_refused_by_the_composition_reader() {
             holdup: None,
             holdup_reading: None,
             draw_flows: Vec::new(),
+            slop: Vec::new(),
         },
     );
 
@@ -317,6 +319,7 @@ impl SeparationModel for Recorder {
             holdup: None,
             holdup_reading: None,
             draw_flows: Vec::new(),
+            slop: Vec::new(),
         })
     }
 }
@@ -404,6 +407,7 @@ impl SeparationModel for RunningRecorder {
             holdup: None,
             holdup_reading: None,
             draw_flows: Vec::new(),
+            slop: Vec::new(),
         })
     }
 }

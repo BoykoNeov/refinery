@@ -11243,7 +11243,7 @@ at full reboiler, §79.15; a drum or base past full sent to slop with an
 alarm, not to product — the user's decision, its knock-on effects C30), then
 the third branch, then the draining (C29).
 
-### M74.6 — **IN PROGRESS** 2026-11-11: the start from empty — steps 1 and 2 of 3 done (the steel, the start, total reflux)
+### M74.6 — **IN PROGRESS** 2026-11-11: the start from empty — part 1 done (the steel, the start, total reflux, the slop line); the third branch and the draining to come
 
 **Step 1 — DONE** (DESIGN §79.16): the column's steel a heat store
 (`steel = "derived"` from its trays, or `steel_t` its whole mass), the start
@@ -11262,5 +11262,13 @@ the reflux (`R + 1` times its loop's output), the bottoms on the base's
 level, the feed the operator's; refused where the steel is off. An empty
 start on total reflux six minutes: only the bottoms leaves, the drum fills
 and holds at 0.46, nothing floods; off, the products come in. 71 of 71
-byte-identical. Next: **step 3**, a drum or base past full to a slop line
-with its alarm (C30); then the third branch, then the draining (C29).
+byte-identical.
+
+**Step 3 — DONE** (DESIGN §79.18): a drum or base past full sends its
+excess to a slop line, off-spec and not product, where it went out with the
+product since M74.3. The slop is a reading on the column
+(`ColumnOperation::slop`: flow, composition, temperature), on no pipe; the
+vessel's `"full"` limit is the alarm. The column's own step unchanged — only
+the published products split — so on total reflux a full drum's naphtha
+reads exactly 0. 71 of 71 byte-identical: no shipped plant reaches full.
+Next: the third branch (a stage that boils dry), then the draining (C29).

@@ -828,6 +828,11 @@ pub struct Separation {
     /// products are its level loops' and its trays' (M74, §79.2). Empty from
     /// every other column: there each draw is `split` times the feed.
     pub draw_flows: Vec<KgPerSec>,
+    /// What a column that holds liquid sent to its slop line this pass, the
+    /// drum's before the base's (M74.6, docs/DESIGN.md §79.18): a vessel past
+    /// full. Not in `draw_flows` and on no pipe. Empty while neither is past
+    /// full, and from every other column.
+    pub slop: Vec<SlopFlow>,
 }
 
 /// What a column that holds liquid read on a pass (M74, docs/DESIGN.md
@@ -853,10 +858,38 @@ pub struct HoldupReading {
     pub total_reflux: bool,
 }
 
+/// A drum's or a base's excess past full, sent to the slop line this pass
+/// (M74.6, docs/DESIGN.md §79.18): off-spec, not product, and on no pipe —
+/// it leaves the plant as this reading (the user's decision, §79.15; the
+/// knock-on effects of an overfull drum or base deferred, C30).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlopFlow {
+    /// Which vessel overflowed.
+    pub vessel: SlopVessel,
+    /// Its flow [kg/s].
+    pub flow: KgPerSec,
+    /// Its composition (mass fractions, `Σ = 1`): the vessel's liquid, as
+    /// its product carries it.
+    pub composition: Composition,
+    /// The temperature it leaves at [K]: the drum's, or the base stage's.
+    pub temperature: Kelvin,
+}
+
+/// The vessel a slop flow overflowed from (§79.18).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlopVessel {
+    /// The reflux drum.
+    Drum,
+    /// The column's base.
+    Base,
+}
+
 /// A drum's or a base's level against its limits (M74, docs/DESIGN.md
 /// §79.2): low enough that what it feeds runs short — the reflux pump's
-/// suction, the reboiler's tubes uncovering — or past full, the excess
-/// passing on with its product.
+/// suction, the reboiler's tubes uncovering — or past full, its excess sent
+/// to the slop line (M74.6, §79.18): `Full` is the "drum full" / "base full"
+/// alarm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LevelLimit {

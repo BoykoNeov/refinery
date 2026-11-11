@@ -7,7 +7,7 @@ use crate::graph::{
     NodeKind, TankState, TripDirection, TripId, TripReset, TripState,
 };
 use crate::stream::Stream;
-use crate::traits::{LevelLimit, SolveDiagnostics};
+use crate::traits::{LevelLimit, SlopVessel, SolveDiagnostics};
 use crate::units::{Kelvin, KgPerSec, Pascal, Seconds, SquareMeter, Watt};
 use serde::{Deserialize, Serialize};
 
@@ -784,6 +784,27 @@ pub struct ColumnOperation {
     /// §79.2). Absent, and not serialized, on every other column.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holdup: Option<HoldupOperation>,
+    /// What a column that holds liquid sent to its slop line this tick, the
+    /// drum's before the base's (M74.6, docs/DESIGN.md §79.18): a vessel past
+    /// full, its excess off-spec and not product, on no pipe. Its
+    /// `HoldupOperation` limit reads `"full"` — the alarm. Absent, and not
+    /// serialized, while neither is past full.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slop: Vec<SlopOperation>,
+}
+
+/// A drum's or a base's excess past full, sent to slop — see
+/// `ColumnOperation::slop`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlopOperation {
+    /// The vessel that overflowed: `"drum"` or `"base"`.
+    pub vessel: SlopVessel,
+    /// Its flow [kg/s].
+    pub flow_kg_s: f64,
+    /// The temperature it leaves at [K].
+    pub temperature_k: f64,
+    /// Its composition (mass fractions).
+    pub composition: Composition,
 }
 
 /// A column's liquid held, as it ran this tick (M74, docs/DESIGN.md §79.2):
@@ -799,8 +820,8 @@ pub struct HoldupOperation {
     pub drum_level: f64,
     pub base_level: f64,
     /// `"dry"` where a drum's reflux pump or a base's reboiler runs short,
-    /// `"full"` where the excess passes on with the product, else
-    /// `"normal"`.
+    /// `"full"` where its excess goes to the slop line — the "drum full" /
+    /// "base full" alarm (M74.6, `ColumnOperation::slop`) — else `"normal"`.
     pub drum_limit: LevelLimit,
     pub base_limit: LevelLimit,
     /// The distillate at its maximum, its level loop asking for more; the

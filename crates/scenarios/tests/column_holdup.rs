@@ -8,7 +8,7 @@ use refinery_core::components::Composition;
 use refinery_core::engine::Engine;
 use refinery_core::graph::{HoldupState, NodeKind};
 use refinery_core::snapshot::{Command, Snapshot};
-use refinery_core::traits::LevelLimit;
+use refinery_core::traits::{LevelLimit, SlopVessel};
 use refinery_core::units::{Kg, Pascal, Watt};
 use refinery_scenarios::{build_engine, load_str};
 
@@ -579,6 +579,9 @@ fn each_component_is_conserved_every_tick() {
                 let (drawn, w) = flow(*edge);
                 balance -= drawn * w[c];
             }
+            for slop in slop_of(&snapshot) {
+                balance -= slop.flow_kg_s * slop.composition.fractions()[c];
+            }
             worst = worst.max(balance.abs());
         }
     }
@@ -655,6 +658,17 @@ fn heat_imbalance(
             stage => held.stage_temperature[stage - 1].value(),
         };
         balance -= carried(edge, t);
+    }
+    // And what went to slop, at its vessel's temperature (M74.6, §79.18).
+    for slop in &op.slop {
+        let cp_mix: f64 = slop
+            .composition
+            .fractions()
+            .iter()
+            .zip(cp)
+            .map(|(w, c)| w * c)
+            .sum();
+        balance -= slop.flow_kg_s * cp_mix * (slop.temperature_k - 273.15);
     }
     balance
 }
@@ -803,6 +817,15 @@ fn reading(snapshot: &Snapshot) -> refinery_core::snapshot::HoldupOperation {
         .as_ref()
         .and_then(|op| op.holdup)
         .expect("a column that holds liquid reads its holdup")
+}
+
+/// What the column sent to slop this tick (M74.6, §79.18).
+fn slop_of(snapshot: &Snapshot) -> Vec<refinery_core::snapshot::SlopOperation> {
+    let node = snapshot.nodes.iter().find(|n| n.name == "column").unwrap();
+    node.column_operation
+        .as_ref()
+        .map(|op| op.slop.clone())
+        .unwrap_or_default()
 }
 
 /// `settled × min(2.5, max(0, 1 + 2·e + I))`, `e` the level's departure from
@@ -999,13 +1022,14 @@ fn a_dry_drum_sends_out_in_proportion() {
     assert!((ratio / op.reflux_ratio - 1.0).abs() < 1.0e-3, "{ratio}");
 }
 
-/// **A drum or base past full passes its excess on with its product within
-/// the tick** (§79.2): put at 1.2 of its volume, its product carries its
-/// loop's output plus the sixth of what it holds over full in the tick, it
-/// reads `"full"`, its loop's integral stands, and the next tick finds it at
-/// full.
+/// **A drum or base past full sends its excess to slop within the tick**
+/// (§79.2; M74.6, docs/DESIGN.md §79.18, the user's decision): put at 1.2 of
+/// its volume, its product carries its loop's output alone and the slop the
+/// sixth of what it holds over full, at the vessel's liquid and temperature;
+/// it reads `"full"` (the alarm), its loop's integral stands, and the next
+/// tick finds it at full and the slop gone — off the wire.
 #[test]
-fn a_full_drum_or_base_passes_its_excess_on() {
+fn a_full_drum_or_base_sends_its_excess_to_slop() {
     for (vessel, line) in [("drum", "naphtha_draw"), ("base", "residue_draw")] {
         let mut engine = engine_of(&fixture()).unwrap();
         let first = run(&mut engine, 100);
@@ -1031,7 +1055,15 @@ fn a_full_drum_or_base_passes_its_excess_on() {
                 )
             }
         };
-        let after = run(&mut engine, 1);
+        let mut books = Books::of(&engine);
+        let after = books.tick(&mut engine);
+        // The books close on the tick, the slop counted.
+        println!(
+            "M74_6 {vessel} to slop: books {} kg/s, {} W",
+            books.mass, books.heat
+        );
+        assert!(books.mass < 1.0e-8, "{vessel}: {}", books.mass);
+        assert!(books.heat < 20.0, "{vessel}: {}", books.heat);
         let read = reading(&after);
         let (limit, level, standing) = if vessel == "drum" {
             (
@@ -1051,14 +1083,52 @@ fn a_full_drum_or_base_passes_its_excess_on() {
         assert_eq!(standing, integral, "{vessel}: the integral wound");
         let dt = 0.1;
         let overflow = held_kg * (1.0 - 1.0 / level) / dt;
-        let expected = settled * loop_output(level, integral) + overflow;
+        let expected = settled * loop_output(level, integral);
         let flow = line_flow(&after, line);
         // To 1e-4, as the dry drum's (measured 5.0e-6).
         assert!(
             (flow / expected - 1.0).abs() < 1.0e-4,
             "{vessel}: {flow} kg/s against {expected}"
         );
+        let slop = slop_of(&after);
+        assert_eq!(slop.len(), 1, "{vessel}: {slop:?}");
+        let slop = &slop[0];
+        println!(
+            "M74_6 {vessel} to slop: {} kg/s against {overflow}, product {flow} against {expected}",
+            slop.flow_kg_s
+        );
+        let want = if vessel == "drum" {
+            SlopVessel::Drum
+        } else {
+            SlopVessel::Base
+        };
+        assert_eq!(slop.vessel, want);
+        assert!(
+            (slop.flow_kg_s / overflow - 1.0).abs() < 1.0e-4,
+            "{vessel}: slop {} kg/s against {overflow}",
+            slop.flow_kg_s
+        );
+        // The vessel's liquid, as its product carries it, at its temperature.
+        let product = after.edges.iter().find(|e| e.name == line).unwrap();
+        let apart = slop
+            .composition
+            .fractions()
+            .iter()
+            .zip(product.stream.composition.fractions())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        assert!(apart < 1.0e-12, "{vessel}: {apart}");
+        let held = state(&engine).unwrap();
+        let t = if vessel == "drum" {
+            held.drum_temperature.value()
+        } else {
+            held.stage_temperature[12].value()
+        };
+        assert_eq!(slop.temperature_k, t, "{vessel}");
         let next = run(&mut engine, 1);
+        assert!(slop_of(&next).is_empty(), "{vessel}: {:?}", slop_of(&next));
+        let json = serde_json::to_string(&next).unwrap();
+        assert!(!json.contains("\"slop\""), "{vessel}: on the wire");
         let level = if vessel == "drum" {
             reading(&next).drum_level
         } else {
@@ -1568,6 +1638,9 @@ fn slow_a_tray_short_within_the_tick_gives_what_it_has() {
                 let (drawn, w) = flow(*edge);
                 balance -= drawn * w[c];
             }
+            for slop in slop_of(&snapshot) {
+                balance -= slop.flow_kg_s * slop.composition.fractions()[c];
+            }
             worst = worst.max(balance.abs());
         }
         let node = snapshot.nodes.iter().find(|n| n.name == "column").unwrap();
@@ -1684,6 +1757,9 @@ impl Books {
             for edge in &self.draws {
                 let (drawn, w) = flow(*edge);
                 balance -= drawn * w[c];
+            }
+            for slop in slop_of(&snapshot) {
+                balance -= slop.flow_kg_s * slop.composition.fractions()[c];
             }
             self.mass = self.mass.max(balance.abs());
         }
