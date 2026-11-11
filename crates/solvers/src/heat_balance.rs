@@ -1122,6 +1122,7 @@ impl HeatBalanceCascade {
                 base_limit: LevelLimit::Normal,
                 drum_loop_at_max: false,
                 base_loop_at_max: false,
+                total_reflux: false,
             }),
             holdup,
             draw_flows: Vec::new(),

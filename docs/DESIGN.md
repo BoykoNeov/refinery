@@ -31377,3 +31377,42 @@ two left-out changes as above.
 
 Next (M74.6 steps 2 and 3): total reflux a command, refused where the steel is
 off (§79.15); then the drum or base past full to a slop line with its alarm.
+
+### 79.17 M74.6 step 2 built — total reflux, a command (2026-11-11)
+
+**`Command::SetTotalReflux { node, on }`** (the user's decision of §79.15,
+Kister §12.8): from the next tick on, the distillate and the side draws shut;
+all the drum's level loop asks goes back as reflux, `(R + 1)` times its
+output, so the drum's outflow is what it was and the switch moves no level by
+itself; the bottoms stays on the base's level, the pumparound loops run, and
+the feed is the operator's valve — held too long on its full feed the column
+fills and floods (§79.14). With the feed shut it is §12.8's feed interruption
+(§79.15). A drum past full still passes its excess on with the distillate
+until step 3. Refused off a heat-balance column that holds liquid, and — to
+put it on — on a column without its steel: total reflux without it is refused
+at full reboiler (§79.15). Off is taken wherever the column holds liquid.
+
+In the plant, `ColumnHoldup::total_reflux` (the column's `kind`), on the
+snapshot `HoldupOperation::total_reflux`; neither serialized while off, so
+every plant that never uses it is byte-identical. The first tick of a column
+that starts running settles it as declared; total reflux takes hold from the
+second (an empty start's first tick is a step and takes it at once).
+
+Measured (`column_empty::`): the holdup plant with its steel, switched on
+after 10 s — the four products exactly 0 from the next tick, the bottoms on,
+the drum 0.500 to 0.511 over 30 s (with the reflux alone sent back, a fifth of
+its outflow short, it would rise by about a tenth); switched off, the side
+draws at their set flows on the next tick (to 1.9e-5: set in moles, carried
+at the tick's end composition). **A start from empty on total reflux**, on
+before the first tick, six minutes: nothing but the bottoms leaves, the drum
+fills to 0.46 and holds on its reflux, nothing floods; switched off, the
+kerosene at its set draw on the next tick, the gas oil within four minutes.
+The books close every tick on it (6.1e-11 kg/s, 5.1 W).
+
+Checked: FAST and FULL tiers, clippy (and the godot feature's), fmt; the
+corpus 71 of 71 byte-identical on both fidelities; the mutation pass, 5 of 5
+caught (the `R + 1`, the side draws' shut, the distillate's shut, the steel's
+refusal, the switch's value).
+
+Next (M74.6 step 3): a drum or base past full to a slop line with its alarm
+(C30).

@@ -418,13 +418,16 @@ impl ColumnStep<'_> {
         let drum_x = labelled(drum, &state.drum_composition)?;
         let mean = |x: &[f64]| x.iter().zip(&mw).map(|(x, m)| x * m).sum::<f64>();
 
+        // On total reflux the side draws are shut (M74.6, docs/DESIGN.md
+        // §79.17; Kister §12.8).
+        let total_reflux = self.holdup.total_reflux;
         // The side draws' and the loops' set mass flows on each tray [kg/s].
         let mut side = vec![0.0; n];
         let mut side_draw: Vec<Option<usize>> = vec![None; n];
         let last = plan.mass_ratios.len() - 1;
         for (i, location) in plan.locations.iter().enumerate() {
             if let DrawLocation::Stage(j) = location {
-                if i != 0 && i != last {
+                if i != 0 && i != last && !total_reflux {
                     side[*j] = plan.mass_ratios[i] * self.feed_mass;
                     side_draw[*j] = Some(i);
                 }
@@ -579,8 +582,17 @@ impl ColumnStep<'_> {
             base_limit = LevelLimit::Full;
         }
         drawn[n - 1] = bottoms_mass / mean(&stage_x[n - 1]);
-        let distillate = (controlled * drum_out_share + overflow) / mean(&drum_x);
-        let reflux = self.spec.reflux_ratio * controlled * drum_out_share / mean(&drum_x);
+        // On total reflux (§79.17) no distillate but a full drum's excess, and
+        // all the drum's level loop asks sent back as reflux: `(R + 1)` times
+        // its output, so the drum's outflow is the same either way and the
+        // switch moves no level by itself.
+        let (product_share, reflux_share) = if total_reflux {
+            (0.0, self.spec.reflux_ratio + 1.0)
+        } else {
+            (1.0, self.spec.reflux_ratio)
+        };
+        let distillate = (product_share * controlled * drum_out_share + overflow) / mean(&drum_x);
+        let reflux = reflux_share * controlled * drum_out_share / mean(&drum_x);
         let enthalpy = (0..n)
             .map(|j| liquid_enthalpy(self.slate, &stage_x[j], state.stage_temperature[j]))
             .collect();
@@ -604,6 +616,7 @@ impl ColumnStep<'_> {
                 base_limit,
                 drum_loop_at_max,
                 base_loop_at_max,
+                total_reflux,
             },
             base_integral,
             bottoms_before_limits,

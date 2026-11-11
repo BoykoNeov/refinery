@@ -498,3 +498,170 @@ fn slow_the_empty_column_fills_and_lines_out() {
     assert!(mass < 1.0e-8, "{mass}");
     assert!(heat < 20.0, "{heat}");
 }
+
+fn set_total_reflux(engine: &mut Engine, on: bool) -> Result<(), String> {
+    let node = engine.graph.find_node("column").unwrap();
+    engine
+        .apply(refinery_core::snapshot::Command::SetTotalReflux { node, on })
+        .map_err(|e| e.to_string())
+}
+
+/// **Total reflux is refused where it cannot run** (§79.17): on a column
+/// without its steel (refused at full reboiler, §79.15), on a column that
+/// holds no liquid, on a node that is not a column. Off is always taken
+/// where it applies.
+#[test]
+fn total_reflux_is_refused_where_it_cannot_run() {
+    let mut plain = engine_of(HOLDUP_PLANT).unwrap();
+    let error = set_total_reflux(&mut plain, true).unwrap_err();
+    assert!(error.contains("declares no steel"), "{error}");
+    assert!(!holdup(&plain).total_reflux);
+    set_total_reflux(&mut plain, false).unwrap();
+
+    let trays = include_str!("../../../scenarios/crude_unit_trays.toml");
+    let mut quasi = engine_of(trays).unwrap();
+    let error = set_total_reflux(&mut quasi, true).unwrap_err();
+    assert!(error.contains("holds no liquid"), "{error}");
+
+    let mut engine = engine_of(EMPTY_PLANT).unwrap();
+    let furnace = engine.graph.find_node("furnace").unwrap();
+    let error = engine
+        .apply(refinery_core::snapshot::Command::SetTotalReflux {
+            node: furnace,
+            on: true,
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("is not a column"), "{error}");
+    set_total_reflux(&mut engine, true).unwrap();
+    assert!(holdup(&engine).total_reflux);
+}
+
+/// **On total reflux the products shut and the drum holds on its reflux**
+/// (§79.17; Kister §12.8): the holdup plant with its steel, running; switched
+/// on, from the next tick the distillate and the three side draws carry
+/// nothing, the bottoms goes on, the drum's outflow — now all reflux — is
+/// what it was (the level loop's output times `R + 1`), the reading says so;
+/// the books close every tick; switched off, the side draws are back at
+/// their set flows on the next tick.
+#[test]
+fn on_total_reflux_the_products_shut() {
+    let mut engine = engine_of(&holdup_with(", steel = \"derived\"")).unwrap();
+    let books = Books::of(&engine);
+    let before = run(&mut engine, 100);
+    assert!(!reading(&before).total_reflux);
+    let node = before.nodes.iter().find(|n| n.name == "column").unwrap();
+    assert!(!serde_json::to_string(&node.kind)
+        .unwrap()
+        .contains("total_reflux"));
+    assert!(!serde_json::to_string(&reading(&before))
+        .unwrap()
+        .contains("total_reflux"));
+    let kerosene = line_flow(&before, "kerosene_draw");
+    set_total_reflux(&mut engine, true).unwrap();
+    let (mut mass, mut heat): (f64, f64) = (0.0, 0.0);
+    for t in 0..300 {
+        let start = state(&engine);
+        engine.tick().unwrap_or_else(|e| panic!("tick {t}: {e}"));
+        let (m, h) = books.close(&engine, &start);
+        mass = mass.max(m);
+        heat = heat.max(h.abs());
+        let s = engine.snapshot();
+        for (name, _) in &DRAWS[..4] {
+            assert_eq!(line_flow(&s, name), 0.0, "{name} on tick {t}");
+        }
+        assert!(line_flow(&s, "residue_draw") > 0.0);
+        assert!(reading(&s).total_reflux);
+    }
+    let on = engine.snapshot();
+    // The drum's outflow all reflux, the same as before the switch: its level
+    // moved by the column's own answer only (measured 0.500 to 0.511 over the
+    // 30 s; with the reflux alone sent back, a fifth of the outflow short, it
+    // would rise by about a tenth).
+    let level = reading(&on).drum_level;
+    assert!((level - 0.5).abs() < 0.03, "{level}");
+    let node = on.nodes.iter().find(|n| n.name == "column").unwrap();
+    assert!(serde_json::to_string(&node.kind)
+        .unwrap()
+        .contains("\"total_reflux\":true"));
+    assert!(mass < 1.0e-8, "{mass}");
+    assert!(heat < 20.0, "{heat}");
+    set_total_reflux(&mut engine, false).unwrap();
+    let off = run(&mut engine, 1);
+    assert!(!reading(&off).total_reflux);
+    let back = line_flow(&off, "kerosene_draw");
+    // To 1e-4, as the holdup tests' draws (measured 1.9e-5): the draw is set
+    // in moles at the tick's starting composition, carried at its end's.
+    assert!(
+        (back / kerosene - 1.0).abs() < 1.0e-4,
+        "{back} against {kerosene}"
+    );
+    assert!(line_flow(&off, "naphtha_draw") > 0.0);
+}
+
+/// **A start from empty on total reflux** (Kister §12.8's start-up, the
+/// crude coming in): on from before the first tick, six minutes, then off.
+/// Measured: nothing leaves but the bottoms (each product line exactly 0 for
+/// the six minutes); the drum fills to 0.46 and holds on its reflux; nothing
+/// floods; switched off, the kerosene at its set draw on the next tick, the
+/// gas oil within about four minutes. The books close every tick (6.1e-11
+/// kg/s, 5.1 W).
+#[test]
+fn slow_an_empty_start_on_total_reflux() {
+    let mut running = engine_of(HOLDUP_PLANT).unwrap();
+    let design = run(&mut running, 1);
+    let mut engine = engine_of(EMPTY_PLANT).unwrap();
+    set_total_reflux(&mut engine, true).unwrap();
+    let books = Books::of(&engine);
+    engine.tick().unwrap();
+    let (mut mass, mut heat): (f64, f64) = (0.0, 0.0);
+    for t in 1..6000u32 {
+        if t == 3600 {
+            let s = engine.snapshot();
+            let read = reading(&s);
+            assert!(
+                (0.4..0.55).contains(&read.drum_level),
+                "{}",
+                read.drum_level
+            );
+            assert_eq!(read.drum_limit, LevelLimit::Normal);
+            let node = s.nodes.iter().find(|n| n.name == "column").unwrap();
+            assert!(node
+                .column_operation
+                .as_ref()
+                .unwrap()
+                .trays_flooding
+                .is_empty());
+            set_total_reflux(&mut engine, false).unwrap();
+        }
+        let before = state(&engine);
+        engine.tick().unwrap_or_else(|e| panic!("tick {t}: {e}"));
+        let (m, h) = books.close(&engine, &before);
+        mass = mass.max(m);
+        heat = heat.max(h.abs());
+        let s = engine.snapshot();
+        if t < 3600 {
+            for (name, _) in &DRAWS[..4] {
+                assert_eq!(line_flow(&s, name), 0.0, "{name} on tick {t}");
+            }
+        }
+        if t == 3600 {
+            let (now, set) = (
+                line_flow(&s, "kerosene_draw"),
+                line_flow(&design, "kerosene_draw"),
+            );
+            assert!((now / set - 1.0).abs() < 1.0e-3, "{now} against {set}");
+        }
+    }
+    let end = engine.snapshot();
+    let (now, set) = (
+        line_flow(&end, "gas_oil_draw"),
+        line_flow(&design, "gas_oil_draw"),
+    );
+    assert!(
+        (now / set - 1.0).abs() < 1.0e-3,
+        "the gas oil: {now} against {set}"
+    );
+    assert!(mass < 1.0e-8, "{mass}");
+    assert!(heat < 20.0, "{heat}");
+}

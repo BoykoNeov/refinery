@@ -849,6 +849,8 @@ pub struct HoldupReading {
     /// their maximum (M74.3 follow-up, §79.6).
     pub drum_loop_at_max: bool,
     pub base_loop_at_max: bool,
+    /// The column on total reflux this tick (M74.6, docs/DESIGN.md §79.17).
+    pub total_reflux: bool,
 }
 
 /// A drum's or a base's level against its limits (M74, docs/DESIGN.md

@@ -972,6 +972,14 @@ pub struct ColumnHoldup {
     /// full of its settled liquid) is not serialized.
     #[serde(default, skip_serializing_if = "is_false")]
     pub start_empty: bool,
+    /// Total reflux (M74.6, docs/DESIGN.md §79.17; Kister, *Distillation
+    /// Operation*, §12.8): the distillate and the side draws shut, the drum's
+    /// level held by the reflux alone, the bottoms on the base's level as
+    /// before; the feed is the operator's valve. Set by
+    /// `Command::SetTotalReflux`, on a column with its steel only. `false` is
+    /// not serialized.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub total_reflux: bool,
     /// The liquid held: a STATE, `None` until the column's first tick fills it
     /// from its settled loads, then written back by the engine at the end of
     /// every tick that moves it (as a furnace's coil, §37).

@@ -788,6 +788,37 @@ impl Engine {
                     ))),
                 }
             }
+            // Total reflux on or off (M74.6, docs/DESIGN.md §79.17): a column
+            // that holds liquid only, and on only where its steel is declared.
+            Command::SetTotalReflux { node, on } => {
+                let model = self.separation.name();
+                let name = self.graph.node(node).name.clone();
+                let NodeKind::Column { cascade, .. } = &mut self.graph.node_mut(node).kind else {
+                    return Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{name}') is not a column"
+                    )));
+                };
+                let holdup = match cascade.as_mut().and_then(|spec| spec.holdup.as_mut()) {
+                    Some(holdup) if model == "heat_balance" => holdup,
+                    _ => {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{name}') holds no liquid under separation \
+                             \"heat_balance\": total reflux shuts a column's products and \
+                             holds its drum on the reflux, and only a column that holds \
+                             liquid has a drum to hold (docs/DESIGN.md §79.17)"
+                        )))
+                    }
+                };
+                if on && holdup.steel.is_none() {
+                    return Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{name}') declares no steel: total reflux on a column \
+                         without its steel is refused at full reboiler (docs/DESIGN.md \
+                         §79.15) — declare holdup.steel in its file"
+                    )));
+                }
+                holdup.total_reflux = on;
+                Ok(())
+            }
             // One pumparound's duty (M60, docs/DESIGN.md §65.4).
             Command::SetPumparoundDuty {
                 node,
@@ -3876,7 +3907,8 @@ impl Engine {
             | Command::SetPumparoundDuty { node, .. }
             | Command::SetLoopFlow { node, .. }
             | Command::SetLoopReturnTemperature { node, .. }
-            | Command::SetReboilerDuty { node, .. } => {
+            | Command::SetReboilerDuty { node, .. }
+            | Command::SetTotalReflux { node, .. } => {
                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
             }
             Command::PuncturePipe { edge, .. } => {
@@ -4126,6 +4158,7 @@ impl Engine {
                                 base_limit: reading.base_limit,
                                 drum_loop_at_max: reading.drum_loop_at_max,
                                 base_loop_at_max: reading.base_loop_at_max,
+                                total_reflux: reading.total_reflux,
                             }),
                         })
                     }),

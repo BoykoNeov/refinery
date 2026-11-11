@@ -283,6 +283,7 @@ fn wire_text(cmd: &Command) -> &'static str {
             r#"{"cmd":"set_pumparound_duty","node":2,"pumparound":1,"duty":15000000.0}"#
         }
         Command::SetReboilerDuty { .. } => r#"{"cmd":"set_reboiler_duty","node":2,"duty":0.0}"#,
+        Command::SetTotalReflux { .. } => r#"{"cmd":"set_total_reflux","node":2,"on":true}"#,
         Command::SetLoopFlow { .. } => {
             r#"{"cmd":"set_loop_flow","node":2,"pumparound_loop":1,"flow":110.0}"#
         }
@@ -363,6 +364,11 @@ fn every_variant() -> Vec<Command> {
             node: NodeId(2),
             duty: Some(Watt(0.0)),
         },
+        // M74.6: a column that holds liquid on total reflux.
+        Command::SetTotalReflux {
+            node: NodeId(2),
+            on: true,
+        },
         // M72.2: a pumparound loop's two handles.
         Command::SetLoopFlow {
             node: NodeId(2),
@@ -403,7 +409,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 22, "a Command variant was added");
+    assert_eq!(every_variant().len(), 23, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -462,6 +468,8 @@ fn fixture(cmd: &Command) -> Fixture {
         Command::SetPumparoundDuty { .. } => Fixture::shipped("crude_unit.toml", "column"),
         // M66: the stripped crude unit's reboiler, held where it is.
         Command::SetReboilerDuty { .. } => Fixture::shipped("crude_unit_stripped.toml", "column"),
+        // M74.6: the empty-start plant, its steel declared.
+        Command::SetTotalReflux { .. } => Fixture::shipped("crude_unit_empty.toml", "column"),
         // M72.4: the crude unit whose pumparounds are loops on the map.
         Command::SetLoopFlow { .. } | Command::SetLoopReturnTemperature { .. } => {
             Fixture::shipped("crude_unit_loops.toml", "column")

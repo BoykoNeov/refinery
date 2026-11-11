@@ -11243,7 +11243,7 @@ at full reboiler, §79.15; a drum or base past full sent to slop with an
 alarm, not to product — the user's decision, its knock-on effects C30), then
 the third branch, then the draining (C29).
 
-### M74.6 — **IN PROGRESS** 2026-11-11: the start from empty — step 1 of 3 done (the steel, the start)
+### M74.6 — **IN PROGRESS** 2026-11-11: the start from empty — steps 1 and 2 of 3 done (the steel, the start, total reflux)
 
 **Step 1 — DONE** (DESIGN §79.16): the column's steel a heat store
 (`steel = "derived"` from its trays, or `steel_t` its whole mass), the start
@@ -11254,8 +11254,13 @@ The new plant `scenarios/crude_unit_empty.toml`: a stage empty for the first
 top products within 2 % at 24 minutes, the books closing every tick. One
 shipped behaviour changed: under a tenth of its volume the base's bottoms
 pump loses its suction in proportion. Every shipped plant byte-identical (70
-of 70, both fidelities). Only the column starts empty (C31). Next: **step 2**,
-total reflux a command (the distillate and side draws shut, the drum's level
-on the reflux), refused where the steel is off; **step 3**, a drum or base
-past full to a slop line with its alarm (C30); then the third branch, then
-the draining (C29).
+of 70, both fidelities). Only the column starts empty (C31).
+
+**Step 2 — DONE** (DESIGN §79.17): total reflux a command,
+`SetTotalReflux` — the distillate and side draws shut, the drum's level on
+the reflux (`R + 1` times its loop's output), the bottoms on the base's
+level, the feed the operator's; refused where the steel is off. An empty
+start on total reflux six minutes: only the bottoms leaves, the drum fills
+and holds at 0.46, nothing floods; off, the products come in. 71 of 71
+byte-identical. Next: **step 3**, a drum or base past full to a slop line
+with its alarm (C30); then the third branch, then the draining (C29).

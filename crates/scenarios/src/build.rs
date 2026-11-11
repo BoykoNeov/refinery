@@ -4785,6 +4785,7 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                             tick: refinery_core::units::Seconds(scenario.simulation.dt),
                             steel,
                             start_empty,
+                            total_reflux: false,
                             state: None,
                         }))
                     }

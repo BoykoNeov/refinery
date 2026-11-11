@@ -266,6 +266,21 @@ pub enum Command {
         node: NodeId,
         duty: Option<Watt>,
     },
+    /// Put a column that holds liquid on total reflux, or take it off (M74.6,
+    /// docs/DESIGN.md §79.17; Kister, *Distillation Operation*, §12.8): from
+    /// the next tick on, the distillate and the side draws shut and all the
+    /// drum's level loop asks goes back as reflux; the bottoms stays on the
+    /// base's level and the feed is left to the operator — held too long on
+    /// its full feed, the column fills and floods. Off, the products open
+    /// again on their loops. Refused off a heat-balance column that holds
+    /// liquid, and — to put it on — on a column without its steel (a total
+    /// reflux without it is refused at full reboiler, §79.15). Its consequence
+    /// is `holdup.total_reflux` on the column's `kind` and on its
+    /// `column_operation`.
+    SetTotalReflux {
+        node: NodeId,
+        on: bool,
+    },
 }
 
 /// A held reboiler duty a column declined (M66.2, docs/DESIGN.md §71.2).
@@ -793,6 +808,17 @@ pub struct HoldupOperation {
     /// follow-up, docs/DESIGN.md §79.6).
     pub drum_loop_at_max: bool,
     pub base_loop_at_max: bool,
+    /// On total reflux (M74.6, docs/DESIGN.md §79.17): the distillate and
+    /// the side draws shut, the drum's level held by the reflux. Absent, not
+    /// serialized, while off.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub total_reflux: bool,
+}
+
+/// Whether a flag is off — what keeps `HoldupOperation::total_reflux` off
+/// the wire while a column is not on total reflux.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// One tray's hydraulics — see `ColumnOperation::trays`.
