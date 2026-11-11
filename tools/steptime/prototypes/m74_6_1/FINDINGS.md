@@ -77,9 +77,16 @@ M74.6.0's numbers back (21 min, 613 °C, 4 / 6 / 15 min).
      products from 31 minutes, the four top products settled from 34 — four
      minutes after the feed (Kister: on feed introduction "the products
      usually stay on-spec");
-   - **steel off** (the shipped step), the reboiler at 86.2 MW: refused 54 s
-     in, the heat-balance cascade's trays' pressure drops not settling; held
-     at 40 MW it runs as with the steel.
+   - **the prototype with the steel off**, the reboiler at 86.2 MW: refused
+     54 s in, the heat-balance cascade's trays' pressure drops not settling;
+     held at 40 MW it runs as with the steel;
+   - **it is the total reflux's** (`interrupt_nosteel_check.txt`, steel off):
+     the feed and furnace shut at 86.2 MW without total reflux run the 30
+     minutes (the drum 0.49, the base 0.21, trays 11–12 flooding); with total
+     reflux, refused at the same 54 s. So **total reflux on a plant without
+     the steel is refused** at full reboiler — the building slice either
+     offers total reflux only where the steel is on, or finds and fixes that
+     refusal first.
 
 ## The decisions, applied ("closer to reality")
 
@@ -105,5 +112,6 @@ M74.6.0's numbers back (21 min, 613 °C, 4 / 6 / 15 min).
 - **Only the column starts empty**: the crude arrives at its full 270 °C
   preheat and the furnace at its design state from the first tick. A real crude
   unit warms its heater slowly (hours, not 21 minutes) — outside M74.
-- Why the shipped step refuses the feed interruption at full reboiler without
-  steel (finding 4) — the pressure-drop cascade, not the holdup step's Newton.
+- Why total reflux without the steel is refused at full reboiler (finding 4)
+  — the message is the heat-balance cascade's (the pressure drops), not the
+  holdup step's Newton; not traced.

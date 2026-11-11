@@ -11237,5 +11237,6 @@ runs with the steel); **the steel derived from the trays with an optional
 per-plant override**, off unless asked for — its guessed mass checked at half
 and double: the start from empty and the draining's 65 of 70 unchanged;
 **the draining after a stage that boils dry**. No engine code changed. Next:
-the building slice — the start from empty with the steel and total reflux,
-then the third branch, then the draining (C29).
+the building slice — the start from empty with the steel and total reflux
+(total reflux only where the steel is on: without it the prototype refuses it
+at full reboiler, §79.15), then the third branch, then the draining (C29).

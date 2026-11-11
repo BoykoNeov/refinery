@@ -1,0 +1,9 @@
+
+running 1 test
+test m74_6_0_empty::m74_6_0_empty ... == valved WARM 1000 GAP 300 RUN 12000
+RESULT valve=0+furnace=0: RUNS held drum 0.488 normal base 0.210 normal | flood 11,12 weep 1,2,3,4,5 | loops 28.4MW/28.1MW/28.5MW R 4.000 coil 358.5 cond 1.27 reb 86.23 MW | products 0.61/0.00/0.00/0.00/0.00 | empty 0 ticks, 0 at most, stages , last at 0, 0 at the end, least held 1029.0 kg | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.396-0.500 base 0.210-0.500 dry 0/0 full 0/0 atmax 0/0 reb 86.2-86.2 MW least vapour 21 mol/s on 3 declined 0 dry trays 0 ticks, 0 at most, last at 0 worst 11.8 ms
+RESULT valve=0+furnace=0+tr=1: FAIL at t=1540 (539 after the last move; last sent valve=0+furnace=0+tr=1): {"code":"numerical","message":"numerical error: heat-balance cascade: the trays' pressure drops still moved 0.503 Pa after 25 solves, each stage at the pressure the last one's trays fed back (docs/DESIGN.md §78.9). The column could not settle with its reboiler held at 86.231 MW — outside the range it runs in."} | empty 0 ticks, 0 at most, stages , last at 0, 0 at the end, least held 1584.1 kg | cold 0 ticks, 0 at most, stages , last at 0, 0 at the end | drum 0.399-0.500 base 0.482-0.500 dry 0/0 full 0/0 atmax 0/0 reb 86.2-86.2 MW least vapour 43 mol/s on 3 declined 0 dry trays 0 ticks, 0 at most, last at 0 worst 18.0 ms
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 21.44s
+

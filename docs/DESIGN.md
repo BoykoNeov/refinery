@@ -31254,8 +31254,11 @@ interruption, run on the valved holdup plant at design: the feed and furnace
 shut, total reflux, 30 minutes — runs with the steel at the file's 86.2 MW
 (trays 9 and 12 flooding, the base to 608 °C) and at 40 MW (nothing flooding);
 the feed back, the four top products settled four minutes later. Without the
-steel the shipped step refuses it at 86.2 MW 54 s in (the cascade's pressure
-drops not settling) and runs it at 40 MW. This reverses §79.14's suggestion.
+steel the prototype refuses it at 86.2 MW 54 s in (the heat-balance cascade's
+pressure drops not settling) and runs it at 40 MW; the same feed loss without
+total reflux runs — **total reflux without the steel is refused at full
+reboiler**, so the building slice offers it only where the steel is on, or
+fixes that first. This reverses §79.14's suggestion.
 
 **The steel derived from the trays, with an optional per-plant override**,
 off unless a plant asks for it. The shell term is Ludwig Vol. 1 eq. 11-55's;
