@@ -1,0 +1,384 @@
+diff --git a/crates/scenarios/tests/column_empty.rs b/crates/scenarios/tests/column_empty.rs
+index 1a39e2e..aada12e 100644
+--- a/crates/scenarios/tests/column_empty.rs
++++ b/crates/scenarios/tests/column_empty.rs
+@@ -242,6 +242,10 @@ impl Books {
+             for slop in &op.slop {
+                 balance -= slop.flow_kg_s * slop.composition.fractions()[c];
+             }
++            // M75.3.0 PROBE: the relief's vent.
++            if let Some(vent) = refinery_solvers::heat_balance::probe::last() {
++                balance -= vent.masses.get(c).copied().unwrap_or(0.0);
++            }
+             worst = worst.max(balance.abs());
+         }
+ 
+@@ -272,6 +276,9 @@ impl Books {
+                 .sum();
+             heat -= slop.flow_kg_s * cp_mix * (slop.temperature_k - 273.15);
+         }
++        if let Some(vent) = refinery_solvers::heat_balance::probe::last() {
++            heat -= vent.heat_w;
++        }
+         (worst, heat)
+     }
+ }
+diff --git a/crates/scenarios/tests/suite.rs b/crates/scenarios/tests/suite.rs
+index 54a68b9..2e018cb 100644
+--- a/crates/scenarios/tests/suite.rs
++++ b/crates/scenarios/tests/suite.rs
+@@ -41,6 +41,8 @@ mod column_condenser;
+ mod column_drain;
+ #[path = "column_empty.rs"]
+ mod column_empty;
++#[path = "m75_3_probe.rs"]
++mod m75_3_probe;
+ #[path = "column_holdup.rs"]
+ mod column_holdup;
+ #[path = "column_reference.rs"]
+diff --git a/crates/solvers/src/column_step.rs b/crates/solvers/src/column_step.rs
+index ea7b8be..c230b45 100644
+--- a/crates/solvers/src/column_step.rs
++++ b/crates/solvers/src/column_step.rs
+@@ -140,6 +140,8 @@ pub(crate) struct ColumnStep<'a> {
+     pub(crate) energy_scale: f64,
+     /// The convergence tolerance every scaled residual must meet [-].
+     pub(crate) tolerance: f64,
++    /// M75.3.0 PROBE: the vapour vented off the top before the condenser [mol/s].
++    pub(crate) vent: f64,
+ }
+ 
+ /// Where a tick's Newton starts: each stage's temperature [K] and vapour
+@@ -172,6 +174,9 @@ pub(crate) struct Stepped {
+     /// The reboiler's duty [W] and the condenser's [W].
+     pub(crate) reboiler_duty: f64,
+     pub(crate) condenser_duty: f64,
++    /// M75.3.0 PROBE: the vent's component flows [kg/s] and its heat [W].
++    pub(crate) vent_masses: Vec<f64>,
++    pub(crate) vent_heat: f64,
+     /// The side draws a tray short of liquid cut back, as plan indices, and
+     /// the share of their set flow each ran at.
+     pub(crate) cut_back: Vec<(usize, f64)>,
+@@ -249,6 +254,8 @@ struct Evaluation {
+     flows: Flows,
+     drum_temperature: Kelvin,
+     condenser_duty: f64,
++    /// M75.3.0 PROBE: the top vapour's molar enthalpy [J/mol].
++    big_h0: f64,
+ }
+ 
+ impl ColumnStep<'_> {
+@@ -747,7 +754,8 @@ impl ColumnStep<'_> {
+             held_next.push(held[j] + dt * (arriving - down[j] - set.drawn[j] - out[j] - vapour[j]));
+         }
+         let drum_held: f64 = drum.iter().sum();
+-        let mut drum_next = drum_held + dt * (vapour[0] - set.reflux - set.distillate);
++        let into_drum = vapour[0] - self.vent;
++        let mut drum_next = drum_held + dt * (into_drum - set.reflux - set.distillate);
+         // A stage or the drum may end the tick holding exactly nothing
+         // (M74.6); below it, by more than `slack`, it ran out.
+         if let Some(j) = held_next.iter().position(|h| h.is_nan() || *h < -slack) {
+@@ -792,7 +800,7 @@ impl ColumnStep<'_> {
+             let mut upper = vec![0.0; rows];
+             let mut rhs = vec![0.0; rows];
+             diagonal[0] = drum_next / dt + set.reflux + set.distillate;
+-            upper[0] = -vapour[0] * k[0][c];
++            upper[0] = -into_drum * k[0][c];
+             rhs[0] = drum[c] / dt;
+             for j in 0..n {
+                 let r = j + 1;
+@@ -913,7 +921,7 @@ impl ColumnStep<'_> {
+         let drum_amounts: Vec<f64> = x_drum.iter().map(|v| v * drum_next).collect();
+         // The condenser takes what the top vapour brings less what leaves the
+         // drum and what its liquid comes to hold.
+-        let condenser_duty = vapour[0] * big_h[0]
++        let condenser_duty = into_drum * big_h[0]
+             - (set.reflux + set.distillate) * reflux_enthalpy
+             - (drum_next * reflux_enthalpy - drum_held * set.drum_enthalpy) / dt;
+         let flows = Flows {
+@@ -937,6 +945,7 @@ impl ColumnStep<'_> {
+             flows,
+             drum_temperature,
+             condenser_duty,
++            big_h0: big_h[0],
+         })
+     }
+ 
+@@ -1068,6 +1077,11 @@ impl ColumnStep<'_> {
+                 DrawLocation::Stage(j) => flows_of(set.drawn[*j], &evaluation.x[*j]),
+             });
+         }
++        // M75.3.0 PROBE: the vent, as the sweep took it off stage 1's vapour.
++        let vent_masses: Vec<f64> = (0..mw.len())
++            .map(|c| self.vent * evaluation.k[0][c] * evaluation.x[0][c] * mw[c])
++            .collect();
++        let vent_heat = self.vent * evaluation.big_h0;
+         let mut slop = Vec::new();
+         if set.drum_slop > 0.0 {
+             slop.push((
+@@ -1132,6 +1146,8 @@ impl ColumnStep<'_> {
+             slop,
+             reboiler_duty: set.reboiler,
+             condenser_duty: evaluation.condenser_duty,
++            vent_masses,
++            vent_heat,
+             cut_back: set.cut_back.clone(),
+             reading,
+             state: next,
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index 7439fb6..1bafa6e 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -1325,6 +1325,8 @@ struct Balance {
+     /// `V·λ/(R·T·dt)` [W/Pa], the overhead's store: the residual's least
+     /// slope in `P`.
+     store: f64,
++    /// M75.3.0 PROBE: the vent at this trial.
++    vent: probe::Vent,
+ }
+ 
+ /// The balance of a step at `pressure` (see [`Balance`]).
+@@ -1367,6 +1369,7 @@ fn condenser_balance(
+     let x = MoleFractions::from_mass(&next.drum_composition, slate)?;
+     let bubble = bubble_temperature(slate, thermo, &x, pressure, "the column's condensate")?;
+     let mut capacity = ua.value() * (bubble.value() - condenser.coolant.value()).max(0.0);
++    capacity *= probe::CONFIG.with(|c| c.borrow().as_ref().map_or(1.0, |c| c.capacity_scale));
+     if flooded > 0.0 {
+         // The tubes the drum's back-up floods condense nothing (Kister,
+         // *Distillation Operation*, §13.3).
+@@ -1395,6 +1398,7 @@ fn condenser_balance(
+         residual,
+         capacity,
+         store,
++        vent: probe::Vent::default(),
+     })
+ }
+ 
+@@ -1436,16 +1440,47 @@ fn stepped_pass(
+     feed_vapour_fraction: f64,
+ ) -> Result<Separation, SimError> {
+     let (Some(condenser), Some(ua)) = (&holdup.condenser, state.condenser_ua) else {
+-        return stepped_pass_at(setup, holdup, state, feed_vapour_fraction);
++        return stepped_pass_at(setup, holdup, state, feed_vapour_fraction, 0.0);
+     };
+     let set = condenser.set_pressure.value();
+-    let design = condenser.design_pressure.value();
++    let config = probe::CONFIG.with(|c| c.borrow().clone());
++    let relief = config.as_ref().filter(|c| c.kv > 0.0).cloned();
++    let design = match &relief {
++        Some(r) => r.upper,
++        None => condenser.design_pressure.value(),
++    };
+     let previous = setup.pass.pressure.value();
++    // The pop latch from last tick's pressure (as `Blowdown::after`).
++    let lifted = match &relief {
++        Some(r) => probe::LIFTED.with(|l| {
++            let mut now = l.get();
++            if let Some(amount) = r.blowdown {
++                if !now && previous > r.set {
++                    now = true;
++                } else if now && previous < r.set - amount {
++                    now = false;
++                }
++            } else {
++                now = false;
++            }
++            l.set(now);
++            now
++        }),
++        None => false,
++    };
++    let vent_at = |pressure: f64| -> Result<(f64, f64), SimError> {
++        let Some(r) = &relief else {
++            return Ok((0.0, 0.0));
++        };
++        let p = if r.lagged { previous } else { pressure };
++        probe::vent_flow(r, setup.pass.slate, state, p, lifted)
++    };
+     // The step at a trial top pressure, every stage moved with it (the
+     // drops held), and its balance.
+     let at = |pressure: f64| -> Result<(Separation, Balance), SimError> {
++        let (vent, opening) = vent_at(pressure)?;
+         let separation = if pressure == previous {
+-            stepped_pass_at(setup, holdup, state, feed_vapour_fraction)?
++            stepped_pass_at(setup, holdup, state, feed_vapour_fraction, vent)?
+         } else {
+             let shift = pressure - previous;
+             let pass = ColumnPass {
+@@ -1461,8 +1496,9 @@ fn stepped_pass(
+                     .collect(),
+                 ..setup.clone()
+             };
+-            stepped_pass_at(&moved, holdup, state, feed_vapour_fraction)?
++            stepped_pass_at(&moved, holdup, state, feed_vapour_fraction, vent)?
+         };
++        let (vent_masses, vent_heat) = probe::STEP_VENT.with(|v| v.borrow().clone());
+         // The share of the tubes backed up (M75.2, §80.3): the step's
+         // reading of the start-of-tick drum, so every trial's is the same.
+         let flooded = separation
+@@ -1479,8 +1515,27 @@ fn stepped_pass(
+             Pascal(previous),
+             holdup.tick,
+         )?;
++        let balance = Balance {
++            vent: probe::Vent {
++                mol_s: vent,
++                kg_s: vent_masses.iter().sum(),
++                masses: vent_masses,
++                heat_w: vent_heat,
++                opening,
++                lifted,
++                top_vapour_mol_s: separation
++                    .profile
++                    .as_ref()
++                    .map_or(f64::NAN, |p| p.vapour[0]),
++                pressure,
++                trials: 0,
++            },
++            ..balance
++        };
++        probe::TRIALS.with(|t| t.set(t.get() + 1));
+         Ok((separation, balance))
+     };
++    probe::TRIALS.with(|t| t.set(0));
+     let start = previous.clamp(set, design);
+     let first = at(start)?;
+     let residual = first.1.residual;
+@@ -1526,6 +1581,11 @@ fn stepped_pass(
+         }
+     };
+     let (pressure, (mut separation, balance)) = solved;
++    probe::LAST.with(|l| {
++        let mut vent = balance.vent.clone();
++        vent.trials = probe::TRIALS.with(|t| t.get());
++        *l.borrow_mut() = Some(vent);
++    });
+     if let Some(next) = separation.holdup.as_mut() {
+         next.column_pressure = Some(Pascal(pressure));
+     }
+@@ -1627,6 +1687,7 @@ fn stepped_pass_at(
+     holdup: &ColumnHoldup,
+     state: &HoldupState,
+     feed_vapour_fraction: f64,
++    vent: f64,
+ ) -> Result<Separation, SimError> {
+     let pass = setup.pass;
+     let slate = pass.slate;
+@@ -1655,6 +1716,7 @@ fn stepped_pass_at(
+         feed_enthalpy: setup.feed_enthalpy,
+         energy_scale,
+         tolerance: setup.tolerance,
++        vent,
+     };
+     // The last tick's answer is where Newton starts — a hint; failing one,
+     // the state's temperatures and the vapour its trays carried.
+@@ -1810,7 +1872,12 @@ fn stepped_pass_at(
+             // Filled by `fractionate` once the drops settle.
+             tray_drops: Vec::new(),
+         }),
+-        condenser_duty: Some(Watt(stepped.condenser_duty)),
++        condenser_duty: {
++            probe::STEP_VENT.with(|v| {
++                *v.borrow_mut() = (stepped.vent_masses.clone(), stepped.vent_heat);
++            });
++            Some(Watt(stepped.condenser_duty))
++        },
+         reboiler_duty: Some(Watt(stepped.reboiler_duty)),
+         feed_vapour_fraction: Some(feed_vapour_fraction),
+         reflux_ratio: Some(spec.reflux_ratio),
+@@ -6979,3 +7046,95 @@ mod loop_tests {
+         );
+     }
+ }
++
++/// M75.3.0 PROBE ONLY — never committed: a relief valve on the column's top,
++/// before the condenser (Kister §9.5, location A), on the engine's gas valve
++/// law, its settings and readings on the ticking thread.
++pub mod probe {
++    use super::*;
++    use std::cell::{Cell, RefCell};
++
++    #[derive(Clone, Debug)]
++    pub struct Relief {
++        /// Kv [m³/h at 1 bar] (the files' `kv`); 0 = no relief.
++        pub kv: f64,
++        /// Set pressure [Pa abs] and accumulation band [Pa] (full lift at
++        /// set + accumulation), back pressure [Pa abs].
++        pub set: f64,
++        pub accumulation: f64,
++        pub back: f64,
++        /// The vapour's γ and the valve's x_T (choke at F_k·x_T).
++        pub gamma: f64,
++        pub x_t: f64,
++        /// Pop: reseat this far [Pa] below set; None: the memoryless curve.
++        pub blowdown: Option<f64>,
++        /// The vent at last tick's pressure (tick-late) instead of the trial's.
++        pub lagged: bool,
++        /// The solve's upper bound [Pa abs] in place of the design pressure.
++        pub upper: f64,
++        /// The condenser's capacity times this (0 = coolant lost).
++        pub capacity_scale: f64,
++    }
++
++    #[derive(Clone, Debug, Default)]
++    pub struct Vent {
++        pub mol_s: f64,
++        pub kg_s: f64,
++        pub masses: Vec<f64>,
++        pub heat_w: f64,
++        pub opening: f64,
++        pub lifted: bool,
++        pub top_vapour_mol_s: f64,
++        pub pressure: f64,
++        pub trials: u32,
++    }
++
++    thread_local! {
++        pub static CONFIG: RefCell<Option<Relief>> = const { RefCell::new(None) };
++        pub static LIFTED: Cell<bool> = const { Cell::new(false) };
++        pub static LAST: RefCell<Option<Vent>> = const { RefCell::new(None) };
++        pub static TRIALS: Cell<u32> = const { Cell::new(0) };
++        pub(crate) static STEP_VENT: RefCell<(Vec<f64>, f64)> = const { RefCell::new((Vec::new(), 0.0)) };
++    }
++
++    pub fn set(config: Option<Relief>) {
++        CONFIG.with(|c| *c.borrow_mut() = config);
++        LIFTED.with(|l| l.set(false));
++        LAST.with(|l| *l.borrow_mut() = None);
++    }
++
++    pub fn last() -> Option<Vent> {
++        LAST.with(|l| l.borrow().clone())
++    }
++
++    /// The vent [mol/s] and the opening at `pressure` [Pa abs]: the gas
++    /// valve law (ISA-75.01, `elements::gas_valve_flow`) through the relief's
++    /// opening (`elements::relief_opening`), the vapour's density ideal at
++    /// last tick's top temperature, its molar mass the drum's liquid's (a
++    /// total condenser's vapour).
++    pub(crate) fn vent_flow(
++        r: &Relief,
++        slate: &Slate,
++        state: &HoldupState,
++        pressure: f64,
++        lifted: bool,
++    ) -> Result<(f64, f64), SimError> {
++        let opening = if lifted {
++            1.0
++        } else {
++            crate::elements::relief_opening(pressure, r.set, r.accumulation)
++        };
++        if opening <= 0.0 || pressure <= r.back {
++            return Ok((0.0, opening));
++        }
++        let x = MoleFractions::from_mass(&state.drum_composition, slate)?;
++        let molar_mass = crate::cascade::molar_mass(slate, x.fractions());
++        let t = state.stage_temperature[0].value();
++        let density = pressure * molar_mass / (R_GAS * t);
++        let cv = r.kv / (3600.0 * 1e5_f64.sqrt()) * opening;
++        let alpha = (density / crate::network::RHO_WATER_REF) / (cv * cv);
++        let x_choke = crate::elements::specific_heat_ratio_factor(r.gamma) * r.x_t;
++        let q = crate::elements::gas_valve_flow(alpha, pressure - r.back, pressure, x_choke, 0.0);
++        Ok((density * q / molar_mass, opening))
++    }
++}

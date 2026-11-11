@@ -31796,3 +31796,52 @@ the capacity's share, the limit, the refusal, the flag, `U`, the pitch, the
 share in the balance and on the faceplate, the first tick's flag). Every
 plant byte-identical, 71 of 71 on both fidelities. The column screen
 (`demo/column.gd`) reads `"backed_up"` (its key is M75.4's).
+
+### 80.4 M75.3.0 — relief on the column, the probe (2026-11-11)
+
+`tools/steptime/prototypes/m75_3_0/` (`FINDINGS.md`, `relief.patch`); no
+engine code changed. **Read first**: Kister §9.5 p. 242 (Fig. 9.3) — a
+column's relief at its top, upstream of the condenser; §9.3 pp. 233–234 —
+loss of coolant usually sets the relief load, the total incoming vapour;
+§9.4 pp. 236–240 — credits rarely taken. Ludwig Vol. 1B Fig. 9.7A p. 1593
+(API RP-520) — the set at the MAWP (here the derived design pressure),
+a single valve's relieving pressure 110 % of it (gauge), blowdown ~7 %;
+p. 1629 — a vapour safety-relief valve opens only as far as it must and
+follows the pressure down; p. 1836 — API's T orifice, 16 774 mm².
+
+**The patch**: the vent `n_v(P)` on the engine's own laws
+(`relief_opening`, `gas_valve_flow`, the vapour ideal at last tick's top),
+taken off the top vapour before the drum and the condenser at every trial
+pressure of the tick's solve (§80.2) — the drum's balance, its sweep row and
+the condenser's duty on `V₀ − n_v`, the vent carrying `n_v·K₀·x₁` and
+`n_v·H₀`, so the books close exactly; the solve's upper end above full lift.
+Set 3.52 bar, full lift 3.77 bar, to atmosphere.
+
+**Measured** (the holdup plant with its steel, 5 % margin):
+- **The coolant lost** (the governing case): the pressure reaches the set in
+  57 s; the column answers its pressure (its top vapour ~1 200 → 150–250
+  mol/s before the lift), the vent peaks at 75 kg/s two minutes in and eases
+  to 32 kg/s at twelve.
+- **Sized by the book rule** (all the top vapour at normal running, ~137
+  kg/s: Kv ≈ 5 100, API's area ≈ 0.114 m², about seven T orifices): the
+  coolant lost, 3.64 bar at most, the valve at most half open; total reflux,
+  the lift at 349 s and 3.58 bar held at 18–26 kg/s. Every tick converging
+  (≤ 8 trials), no tick-to-tick reversal of the pressure, the books 2.4e-10
+  kg/s and 7.7 W.
+- **The vent a tick late** reads within 98 Pa of the in-tick solve, no
+  ringing: the relief's slope is small beside the column's own ~93 kW/Pa.
+  The in-tick vent kept for the books.
+- **The vent may ask a little more than is sent up** while the pressure
+  falls (the overhead's vapour, a pressure here, not a stock): at most 0.4 %;
+  booked from the drum, an idle drum went negative (refused at 755 s). The
+  build caps the vent at the top's vapour.
+- **Pop fails**: at full lift ~27 % more vented than sent up, the pressure
+  falling 5 kPa a tick to the reseat, then 128 kg/s to nothing in a tick and
+  the step does not converge (refused at 88 s and 494 s). It needs the
+  overhead as a stock.
+- **The network**: the relief line a draw line, its flow the column's,
+  marched to the flare and guarded as the product lines; the relief node
+  supplies the element's numbers; a vapour line's march is the build's to
+  check.
+
+Put to the user: the valve's size; gradual against pop; past full lift.

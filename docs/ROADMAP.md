@@ -11380,3 +11380,19 @@ the drum fills — the back-up matters once relief holds the pressure. The
 model still books all the condensate into the drum when the condenser is
 flooded whole (until relief, M75.3). Seven tests, twelve mutations caught,
 every plant byte-identical (`crates/scenarios/tests/column_drain.rs`).
+
+### M75.3.0 — **PROBED** 2026-11-11: relief on the column — decisions put to the user
+
+Probed (`tools/steptime/prototypes/m75_3_0/`, `FINDINGS.md`, DESIGN §80.4),
+no engine code changed. Kister ch. 9 and Ludwig Vol. 1B ch. 9 read first:
+the relief at the column's top before the condenser, set at the design
+pressure, 10 % over it at full lift; loss of coolant the governing case.
+A patch vented the top inside the tick's pressure solve on the engine's
+relief and gas-valve laws, off the vapour before the drum and the
+condenser: the books close exactly; the coolant lost, the vent peaks at
+75 kg/s; a valve sized by the book (all the top vapour, Kv ≈ 5 100) holds
+3.64 bar, and 3.58 on total reflux, every tick converging with no ringing
+(a tick-late vent within 98 Pa). The vent must be capped at what the column
+sends up (an idle drum went negative); a pop valve fails (it vents more than
+is sent up, and its reseat stops the step). Put to the user: the valve's
+size; gradual against pop; past full lift.
