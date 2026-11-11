@@ -7,8 +7,8 @@ use refinery_core::snapshot::Snapshot;
 use refinery_core::units::{CubicMeter, Kelvin, Pascal};
 
 use crate::column_empty::{
-    engine_of, holdup, holdup_with, reading, refused, run, set_total_reflux, state, Books,
-    HOLDUP_LINE, HOLDUP_PLANT,
+    engine_of, holdup, holdup_with, reading, refused, run, set_total_reflux, state, state_mut,
+    Books, HOLDUP_LINE, HOLDUP_PLANT,
 };
 
 /// The holdup line with its steel, which every plant here declares.
@@ -196,14 +196,53 @@ fn a_larger_overhead_rises_slower() {
     assert!(large > 0.0 && large < 0.8 * small, "{small} {large}");
 }
 
+/// **A pressure above the set falls back to it** (the falling side of the
+/// solve, and the flooded condenser taking the pressure back): a column at
+/// rest whose pressure is put 0.2 bar above its set — its stages still
+/// boiling at the set — falls every tick, lands on the set pressure exactly
+/// and stays, its books closing.
+#[test]
+fn a_pressure_above_the_set_falls_back_to_it() {
+    let mut engine = engine_of(&with_limit(PROBE)).unwrap();
+    let books = Books::of(&engine);
+    run(&mut engine, 100);
+    let set = 1.8e5;
+    state_mut(&mut engine).column_pressure = Some(Pascal(set + 2.0e4));
+    let mut last = set + 2.0e4;
+    let mut back = None;
+    let mut mass = 0.0f64;
+    for tick in 0..300 {
+        let before = state(&engine);
+        engine.tick().unwrap_or_else(|e| panic!("tick {tick}: {e}"));
+        mass = mass.max(books.close(&engine, &before).0.abs());
+        let pressure = state(&engine).column_pressure.unwrap().value();
+        assert!(
+            pressure >= set && pressure <= last,
+            "tick {tick}: {last} → {pressure} Pa"
+        );
+        match back {
+            None if pressure == set => back = Some(tick),
+            Some(at) => assert_eq!(pressure, set, "tick {tick}: off the set again from {at}"),
+            None => {}
+        }
+        if back.is_some_and(|at| tick >= at + 50) {
+            break;
+        }
+        last = pressure;
+    }
+    let back = back.expect("the pressure never came back to the set pressure");
+    assert!(back > 0, "it fell 0.2 bar in one tick");
+    assert!(!reading(&engine.snapshot()).condenser.unwrap().at_capacity);
+    assert!(mass < 1.0e-8, "{mass}");
+}
+
 /// On total reflux the column asks its condenser more than it condenses, so
 /// the pressure rises — read EVERY tick: once off the set pressure it never
 /// returns to it and never steps back down (the pressure solved within the
 /// tick, not carried a tick late: the tick-late update rang between the set
-/// and the design pressure, which every-100th-tick sampling hid). The books
-/// close every tick; the mass to 1e-7 kg/s, not the 1e-8 of a column at its
-/// one pressure: while the pressure climbs the step reads up to ~4.5e-8 kg/s,
-/// rising and falling with the rate of climb.
+/// and the design pressure, which every-100th-tick sampling hid). Then total
+/// reflux off: the pressure turns once, to falling. The books close every
+/// tick throughout — the mass to 1e-8 kg/s, as at one pressure.
 #[test]
 fn slow_total_reflux_raises_the_pressure_without_ringing() {
     let mut engine = engine_of(&with_limit(PROBE)).unwrap();
@@ -242,6 +281,34 @@ fn slow_total_reflux_raises_the_pressure_without_ringing() {
     let faceplate = reading(&engine.snapshot()).condenser.unwrap();
     assert!(faceplate.at_capacity && !faceplate.at_design);
     assert_eq!(faceplate.pressure_pa, last);
-    assert!(mass < 1.0e-7, "{mass}");
+
+    // Total reflux off: the overloaded column takes a while to unload, so
+    // the pressure may climb on to one peak (≈ 2.02 bar, 100 s on) before it
+    // falls — once, not back and forth.
+    set_total_reflux(&mut engine, false).unwrap();
+    let (mut peak, mut turns, mut rising) = (last, 0, true);
+    for tick in 0..1500 {
+        let before = state(&engine);
+        engine
+            .tick()
+            .unwrap_or_else(|e| panic!("off, tick {tick}: {e}"));
+        let (m, h) = books.close(&engine, &before);
+        mass = mass.max(m.abs());
+        heat = heat.max(h.abs());
+        let pressure = state(&engine).column_pressure.unwrap().value();
+        assert!(pressure > set, "off, tick {tick}: {pressure} Pa");
+        if rising && pressure < last - 1.0 || !rising && pressure > last + 1.0 {
+            rising = !rising;
+            turns += 1;
+        }
+        peak = peak.max(pressure);
+        last = pressure;
+    }
+    assert_eq!(
+        turns, 1,
+        "the pressure turned {turns} times after total reflux off"
+    );
+    assert!(!rising && last < peak - 1.0e3, "{peak} {last}");
+    assert!(mass < 1.0e-8, "{mass}");
     assert!(heat < 20.0, "{heat}");
 }

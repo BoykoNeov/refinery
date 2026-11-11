@@ -31668,10 +31668,17 @@ pressure rises smoothly, 1.80 → 1.89 bar in a minute and 3.17 bar in five,
 the duty 47–52 MW (§80.0's scale), just above the capacity at the pressure
 it has reached. **The column's store of heat sets the pace**, not the
 overhead: 100 m³ barely matters, a thousand times that slows the first five
-seconds' rise by more than a fifth. The books close every tick, the mass to
-4.5e-8 kg/s (1e-8 on a column at its one pressure; the excess rises and falls
-with the rate of climb) and the heat to 7 W. The faceplate's "pressure high"
-(`at_capacity`) is the pressure above the set.
+seconds' rise by more than a fifth. Total reflux off after a minute, the
+overloaded column unloads slowly: the pressure climbs on to one peak, 2.02
+bar 100 s later, then falls (1.91 bar 300 s on); a column at rest put 0.2 bar
+above its set falls every tick and lands on it exactly. The books close every
+tick, the mass to 1e-8 kg/s and the heat to 7 W (0.05 W at a hundredth of the
+step's tolerance: the heat's is the tolerance's, the mass is exact). The
+books must read the feed on the pipe INTO the column: the transfer line is
+split at its leak point, and the network closes that junction only to its
+tolerance — on a pressure that moves every tick the upstream half reads ~4e-8
+kg/s off what the column was fed (M75.0's 4e-7 on its ramp the same). The
+faceplate's "pressure high" (`at_capacity`) is the pressure above the set.
 
 **Cost.** Only a column that declares the limit pays: two to a few steps a
 tick while its pressure is off the set. Every shipped plant byte-identical,

@@ -59,7 +59,7 @@ pub(crate) fn state(engine: &Engine) -> HoldupState {
         .expect("the first tick filled the state")
 }
 
-fn state_mut(engine: &mut Engine) -> &mut HoldupState {
+pub(crate) fn state_mut(engine: &mut Engine) -> &mut HoldupState {
     let node = engine.graph.find_node("column").unwrap();
     match &mut engine.graph.node_mut(node).kind {
         NodeKind::Column {
@@ -196,7 +196,12 @@ pub(crate) struct Books {
 impl Books {
     pub(crate) fn of(engine: &Engine) -> Self {
         Books {
-            feed: edge(engine, "transfer_line"),
+            // The pipe INTO the column: the transfer line is split at its
+            // leak point, and the network closes that junction only to its
+            // tolerance — on a column whose pressure moves every tick the
+            // upstream half reads ~4e-8 kg/s off what the column was fed
+            // (M75.1, docs/DESIGN.md §80.2).
+            feed: edge(engine, "transfer_line__downstream"),
             draws: DRAWS
                 .iter()
                 .map(|(name, stage)| (edge(engine, name), *stage))
