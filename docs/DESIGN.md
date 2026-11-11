@@ -31849,3 +31849,12 @@ Set 3.52 bar, full lift 3.77 bar, to atmosphere.
   check.
 
 Put to the user: the valve's size; gradual against pop; past full lift.
+
+**Decided (2026-11-11), the user**: **the book rule** — the relief sized
+to vent all the top vapour of normal running (~137 kg/s, Kv ≈ 5 000), set
+at the design pressure, full lift 10 % of it (gauge) above; **gradual** —
+the engine's memoryless relief curve, no pop (deferred, C32: it needs the
+overhead's vapour as a stock); **past full lift held at a ceiling with an
+alarm** — 121 % of the design pressure (gauge, Ludwig Fig. 9.7A's highest
+level), the run going on. Defaults stated, not asked: the flare at
+atmosphere.

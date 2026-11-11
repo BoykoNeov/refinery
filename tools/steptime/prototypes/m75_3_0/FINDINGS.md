@@ -118,3 +118,7 @@ march (density, friction) is the build's to check.
 The valve's size (the book rule, Kv ≈ 5 100, or the model's own peak,
 ≈ 2 800); gradual against pop; past full lift (held at a ceiling with an
 alarm, or refused).
+
+**Decided (2026-11-11)**: the book rule; gradual (pop deferred, DEFERRED
+C32); past full lift held at 121 % of the design pressure (gauge) with an
+alarm.
