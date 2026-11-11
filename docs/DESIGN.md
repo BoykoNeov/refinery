@@ -31823,7 +31823,9 @@ Set 3.52 bar, full lift 3.77 bar, to atmosphere.
   mol/s before the lift), the vent peaks at 75 kg/s two minutes in and eases
   to 32 kg/s at twelve.
 - **Sized by the book rule** (all the top vapour at normal running, ~137
-  kg/s: Kv ≈ 5 100, API's area ≈ 0.114 m², about seven T orifices): the
+  kg/s: Kv ≈ 5 000, API's area ≈ 0.114 m² by hand from the standard, about
+  seven T orifices; the vent's molar mass the drum liquid's, ~15 % light
+  where it sizes — the build takes the top stage's vapour): the
   coolant lost, 3.64 bar at most, the valve at most half open; total reflux,
   the lift at 349 s and 3.58 bar held at 18–26 kg/s. Every tick converging
   (≤ 8 trials), no tick-to-tick reversal of the pressure, the books 2.4e-10
@@ -31833,8 +31835,10 @@ Set 3.52 bar, full lift 3.77 bar, to atmosphere.
   The in-tick vent kept for the books.
 - **The vent may ask a little more than is sent up** while the pressure
   falls (the overhead's vapour, a pressure here, not a stock): at most 0.4 %;
-  booked from the drum, an idle drum went negative (refused at 755 s). The
-  build caps the vent at the top's vapour.
+  booked from the drum, an idle drum went negative (refused at 755 s).
+  Open for the build: a cap at the top's vapour would freeze the pressure
+  at its peak with the coolant lost (the residual ~`store·(P − P₀)`); the
+  drum's liquid flashing at its own composition; or the overhead a stock.
 - **Pop fails**: at full lift ~27 % more vented than sent up, the pressure
   falling 5 kPa a tick to the reseat, then 128 kg/s to nothing in a tick and
   the step does not converge (refused at 88 s and 494 s). It needs the

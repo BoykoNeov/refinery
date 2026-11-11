@@ -11390,9 +11390,10 @@ pressure, 10 % over it at full lift; loss of coolant the governing case.
 A patch vented the top inside the tick's pressure solve on the engine's
 relief and gas-valve laws, off the vapour before the drum and the
 condenser: the books close exactly; the coolant lost, the vent peaks at
-75 kg/s; a valve sized by the book (all the top vapour, Kv ≈ 5 100) holds
+75 kg/s; a valve sized by the book (all the top vapour, Kv ≈ 5 000) holds
 3.64 bar, and 3.58 on total reflux, every tick converging with no ringing
-(a tick-late vent within 98 Pa). The vent must be capped at what the column
-sends up (an idle drum went negative); a pop valve fails (it vents more than
+(a tick-late vent within 98 Pa). The vent may ask a little more than the
+column sends up — where that vapour comes from is the build's (an idle drum
+went negative; a plain cap would freeze the pressure); a pop valve fails (it vents more than
 is sent up, and its reseat stops the step). Put to the user: the valve's
 size; gradual against pop; past full lift.

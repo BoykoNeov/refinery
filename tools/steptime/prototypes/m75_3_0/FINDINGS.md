@@ -62,8 +62,10 @@ its settings and readings on the ticking thread
    0.113 kg/mol). Refused at 755 s: see 4.
 2. **Sized by the book rule** (all the top vapour at normal running,
    ~1 208 mol/s, ~137 kg/s): Kv ≈ 5 090 at full lift (by hand, the same
-   law); API RP-520's critical-flow area ≈ 0.114 m² (Kd 0.975, γ 1.1) —
-   about seven T orifices. **Kv 5 100, the coolant lost** (`s1_lost`): the
+   law) — **about 5 000**, see the molar mass below; API RP-520's
+   critical-flow area ≈ 0.114 m² (Kd 0.975, γ 1.1; a by-hand cross-check
+   from the standard, not re-read here — 0.975 is one maker's measured Kd
+   in Ludwig's Table 9.5, not API's default) — about seven T orifices. **Kv 5 100, the coolant lost** (`s1_lost`): the
    pressure 3.64 bar at most, inside the band, the valve at most 49 % open;
    **total reflux** (`s3_tr`): the relief lifts at 349 s and holds 3.58
    bar, 18–26 kg/s. Every tick converging (≤ 8 trials), no sign flip in
@@ -73,12 +75,25 @@ its settings and readings on the ticking thread
    kW/Pa of latent heat) is small beside the column's own answer (~93
    kW/Pa, §80.2). The in-tick vent stays for the books' sake (it is no
    dearer).
+   **The vent's molar mass is the drum liquid's, ~15 % light where it
+   sizes**: with the coolant lost the drum receives nothing and its
+   composition goes stale — the sizing tick booked 46.54 kg/s on 356.2
+   mol/s (0.131 kg/mol) where the law took 0.113. Choked flow goes as
+   `√ρ`, so the Kv is ~7 % off (≈ 4 700–5 100); the two sizings' ratio
+   stands. The build takes the vapour's molar mass and density from the
+   top stage's own vapour (last tick's), not the drum.
 4. **The vent can ask a little more than the column sends up** — while the
    pressure falls, the overhead's own vapour (a pressure here, not a stock,
    §80.2) — at most 0.4 % with the gradual valve; the patch books it out of
    the drum, and a drum with nothing else coming or going went negative and
-   the tick was refused (`s0` at 755 s). The build caps the vent at the top's
-   vapour.
+   the tick was refused (`s0` at 755 s). **Open for the build**, three
+   candidate sources for that vapour: a cap at the top's vapour — but
+   binding with the coolant lost and the drum idle, the condenser's duty ~0,
+   the residual is ~`store·(P − P₀)` and the pressure freezes at last
+   tick's, never easing off its peak (uncapped it eased 3.643 → 3.602 bar);
+   the drum's liquid flashing at the drum's own composition (the refusal
+   took it at stage 1's vapour); or the overhead's vapour a stock, which a
+   pop valve needs anyway.
 5. **Pop fails** (`s2`, `s4`, `s6`, refused at 88 s / 494 s / 88 s): at
    full lift the valve vents ~1 190 mol/s against ~940 sent up — 27 % more,
    out of the drum — and the pressure falls ~5 kPa a tick to the reseat
