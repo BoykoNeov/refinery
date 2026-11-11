@@ -4,7 +4,7 @@
 
 use refinery_core::graph::{ColumnCondenser, NodeKind};
 use refinery_core::snapshot::Snapshot;
-use refinery_core::units::{CubicMeter, Kelvin, Pascal};
+use refinery_core::units::{CubicMeter, Kelvin, Kg, Pascal};
 
 use crate::column_empty::{
     engine_of, holdup, holdup_with, reading, refused, run, set_total_reflux, state, state_mut,
@@ -311,4 +311,81 @@ fn slow_total_reflux_raises_the_pressure_without_ringing() {
     assert!(!rising && last < peak - 1.0e3, "{peak} {last}");
     assert!(mass < 1.0e-8, "{mass}");
     assert!(heat < 20.0, "{heat}");
+}
+
+/// **A pressure that peaks and turns is followed from where it stands**
+/// (the solve's bracket grown from last tick's pressure, docs/DESIGN.md
+/// §80.2): the column at rest, its drum put at 1.2 of its volume — the excess
+/// to slop on the next tick, the drum's level loop then at its ceiling, the
+/// reflux and the duty up — so the pressure rises for minutes, peaks, and
+/// falls back to its set. Every tick converges: a bracket's far end tried as
+/// a whole step from 2.39 bar to the set 1.8 bar flashed the column and
+/// refused the tick at the peak (stage 13 short by 12 MW, tick 1 951). The
+/// pressure turns once; the books close every tick.
+#[test]
+fn slow_a_peaking_pressure_turns_without_a_refused_tick() {
+    let mut engine = engine_of(&with_limit(PROBE)).unwrap();
+    let books = Books::of(&engine);
+    let now = reading(&run(&mut engine, 100)).drum_level;
+    let held = state_mut(&mut engine);
+    held.drum_liquid = Kg(held.drum_liquid.value() * 1.2 / now);
+    let set = 1.8e5;
+    let (mut last, mut peak, mut rising, mut turns) = (set, set, true, 0);
+    let (mut mass, mut heat) = (0.0f64, 0.0f64);
+    let mut back = None;
+    for tick in 0..8000 {
+        let before = state(&engine);
+        engine.tick().unwrap_or_else(|e| panic!("tick {tick}: {e}"));
+        let (m, h) = books.close(&engine, &before);
+        mass = mass.max(m.abs());
+        heat = heat.max(h.abs());
+        let pressure = state(&engine).column_pressure.unwrap().value();
+        if rising && pressure < last - 1.0 || !rising && pressure > last + 1.0 {
+            rising = !rising;
+            turns += 1;
+        }
+        peak = peak.max(pressure);
+        last = pressure;
+        if tick % 500 == 499 {
+            println!(
+                "M75_1 peaking: t={:.0} s {:.4} bar",
+                (tick + 1) as f64 * 0.1,
+                pressure / 1.0e5
+            );
+        }
+        if !rising && pressure == set {
+            back = Some(tick);
+            break;
+        }
+    }
+    println!("M75_1 peaking: peak {peak} Pa, back on tick {back:?}, turns {turns}; books {mass} kg/s, {heat} W");
+    assert!(peak > 2.3e5, "{peak}");
+    assert_eq!(turns, 1, "the pressure turned {turns} times");
+    assert!(back.is_some(), "still at {last} Pa");
+    assert!(mass < 1.0e-8, "{mass}");
+    assert!(heat < 20.0, "{heat}");
+}
+
+/// **A small overhead peaks without a refused tick** (the bracket's first
+/// trial capped at about the most a tick moves, docs/DESIGN.md §80.2): on
+/// 0.01 m³ the overhead's store is ~1 W/Pa, so the root's bound `|r|/store`
+/// is the whole span — the far end again. The same peaking story as above
+/// runs past the peak (2.39 bar at ~200 s) every tick converging; uncapped,
+/// tick 1 929 was refused.
+#[test]
+fn slow_a_small_overhead_peaks_without_a_refused_tick() {
+    let mut engine = engine_of(&with_limit(
+        "margin = 0.05, coolant_c = 35.0, overhead_m3 = 0.01",
+    ))
+    .unwrap();
+    let now = reading(&run(&mut engine, 100)).drum_level;
+    let held = state_mut(&mut engine);
+    held.drum_liquid = Kg(held.drum_liquid.value() * 1.2 / now);
+    let mut peak = 0.0f64;
+    for tick in 0..2500 {
+        engine.tick().unwrap_or_else(|e| panic!("tick {tick}: {e}"));
+        peak = peak.max(state(&engine).column_pressure.unwrap().value());
+    }
+    let last = state(&engine).column_pressure.unwrap().value();
+    assert!(peak > 2.3e5 && last < peak - 1.0e3, "{peak} {last}");
 }

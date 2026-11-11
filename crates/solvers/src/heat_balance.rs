@@ -1285,6 +1285,9 @@ struct Balance {
     residual: f64,
     /// `C(P)` [W], what its free area condenses at `P`.
     capacity: f64,
+    /// `V·λ/(R·T·dt)` [W/Pa], the overhead's store: the residual's least
+    /// slope in `P`.
+    store: f64,
 }
 
 /// The balance of a step at `pressure` (see [`Balance`]).
@@ -1340,7 +1343,11 @@ fn condenser_balance(
             pressure.value() / 1.0e5
         )));
     }
-    Ok(Balance { residual, capacity })
+    Ok(Balance {
+        residual,
+        capacity,
+        store,
+    })
 }
 
 /// A column's settled first-tick state emptied (M74.6, docs/DESIGN.md
@@ -1422,25 +1429,46 @@ fn stepped_pass(
     };
     let start = previous.clamp(set, design);
     let first = at(start)?;
-    let solved = if first.1.residual >= 0.0 && start <= set {
+    let residual = first.1.residual;
+    let solved = if (residual >= 0.0 && start <= set) || residual == 0.0 {
         // At the set pressure, the condenser condensing what arrives: its
         // control floods the tubes it does not need.
         (start, first)
-    } else if first.1.residual >= 0.0 {
-        // Falling, from above the set pressure.
-        let low = at(set)?;
-        if low.1.residual >= 0.0 {
-            (set, low)
-        } else {
-            illinois(&at, (set, low), (start, first))?
-        }
     } else {
-        // Rising.
-        let high = at(design)?;
-        if high.1.residual <= 0.0 {
-            (design, high)
-        } else {
-            illinois(&at, (start, first), (design, high))?
+        // The bracket grown from where the pressure stands, never a whole
+        // step at its far end: the root lies within `|r|/store` of the start
+        // (the residual's slope is at least the store's — the duty falls and
+        // the capacity rises with `P`), capped at about the most a tick
+        // moves, doubled until it brackets, clamped to [set, design]. A step
+        // tried at the far end of a pressure at its peak (2.39 bar to the set
+        // 1.8 in one tick) flashed the column and refused the tick
+        // (docs/DESIGN.md §80.2).
+        let rising = residual < 0.0;
+        let (end, toward) = if rising { (design, 1.0) } else { (set, -1.0) };
+        let mut distance = (residual.abs() / first.1.store)
+            .min(BRACKET_RATE_PA_PER_S * holdup.tick.value())
+            .max(PRESSURE_TOLERANCE);
+        let mut near = (start, first);
+        loop {
+            let pressure = if rising {
+                (start + toward * distance).min(end)
+            } else {
+                (start + toward * distance).max(end)
+            };
+            let trial = at(pressure)?;
+            let r = trial.1.residual;
+            let beyond = if rising { r > 0.0 } else { r < 0.0 };
+            if r == 0.0 {
+                break (pressure, trial);
+            } else if beyond {
+                break illinois(&at, near, (pressure, trial))?;
+            } else if pressure == end {
+                // The design pressure, the most it rises to; or the set,
+                // the condenser taking the pressure back.
+                break (pressure, trial);
+            }
+            near = (pressure, trial);
+            distance *= 2.0;
         }
     };
     let (pressure, (mut separation, balance)) = solved;
@@ -1469,18 +1497,29 @@ const MAX_PRESSURE_SOLVES: u32 = 40;
 /// or the last move, narrower than this.
 const PRESSURE_TOLERANCE: f64 = 1.0;
 
+/// The most the bracket's first trial moves the top pressure a second
+/// [Pa/s] (docs/DESIGN.md §80.2): about three times M75.0's hand figure, 0.3
+/// bar/s on a 30 MW shortfall into 100 m³ — 10 kPa a tick of 0.1 s. Past it
+/// the bracket doubles.
+const BRACKET_RATE_PA_PER_S: f64 = 1.0e5;
+
 /// A trial pressure [Pa], its step and its balance.
 type PressureTrial = (f64, (Separation, Balance));
 
-/// Regula falsi with the Illinois modification on a bracketing pair — `low`
-/// with its residual below zero, `high` above — for the top pressure
-/// (M75.1, docs/DESIGN.md §80.1). Deterministic, and never leaves the
-/// bracket.
+/// Regula falsi with the Illinois modification on a bracketing pair — one
+/// end's residual below zero, the other's above, in either order — for the
+/// top pressure (M75.1, docs/DESIGN.md §80.1). Deterministic, and never
+/// leaves the bracket.
 fn illinois(
     at: &dyn Fn(f64) -> Result<(Separation, Balance), SimError>,
-    low: PressureTrial,
-    high: PressureTrial,
+    one: PressureTrial,
+    other: PressureTrial,
 ) -> Result<PressureTrial, SimError> {
+    let (low, high) = if one.1 .1.residual < 0.0 {
+        (one, other)
+    } else {
+        (other, one)
+    };
     let (mut a, mut ra) = (low.0, low.1 .1.residual);
     let (mut b, mut rb) = (high.0, high.1 .1.residual);
     let mut side = 0i8;

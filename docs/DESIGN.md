@@ -31684,3 +31684,30 @@ faceplate's "pressure high" (`at_capacity`) is the pressure above the set.
 tick while its pressure is off the set. Every shipped plant byte-identical,
 71 of 71 on both fidelities; the scenario's `NodeDef::Column::cascade` boxed
 (the key grew the enum past clippy's variant-size limit).
+
+**The bracket grown from where the pressure stands** (fixed 2026-11-11,
+found building M75.2). The solve above tried each tick's far end as a whole
+step — the design pressure on a rise, the set pressure on a fall —
+however far from last tick's pressure. A column at rest whose drum was put
+at 1.2 of its volume (the excess to slop, the drum's level loop then at its
+ceiling, the reflux and the duty up) rose for 200 s to 2.39 bar and, at the
+turn, tried a step at the set 1.8 bar: 0.59 bar in a tick flashes the
+column, stage 13 short by 12 MW, the tick refused (tick 1 951) — with the
+drain open, so the fault was M75.1's. Now the first trial is still at last
+tick's pressure (at the set with the condenser coping, still one step:
+every column at rest unchanged), and the next is within the root's bound:
+`r` rises with `P` at least as fast as the overhead's store `V·λ/(R·T·dt)`,
+so the root lies within `|r(P₀)|/store` of `P₀` — about ten times too far
+on the holdup plant (the column's own answer, ~93 kW/Pa, dominates the
+store's ~10), which is kilopascals. Capped at 1 bar/s (10 kPa a 0.1-s
+tick, about three times §80.0's hand figure): on a 0.01 m³ overhead the
+store is ~1 W/Pa and the bound is the whole span, and uncapped that plant's
+tick 1 929 was refused. Doubled until it brackets, clamped to [set, design],
+where the exact ends still hold (`r(set) ≥ 0` is the set exactly,
+`r(design) ≤ 0` the design). The peaking plant now turns once, back at the
+set at 753 s, every tick converging, the books at 2e-10 kg/s and 4.9 W;
+§80.2's figures above unmoved at their digits; every plant byte-identical
+(71 of 71, both fidelities). Mutations: the far end restored, and the cap
+removed, each caught by its slow test; `illinois` now orders its ends
+itself, and its order flipped survives — on brackets a few pascals wide its
+first secant lands within the 1-Pa tolerance (an equivalent mutation here).
