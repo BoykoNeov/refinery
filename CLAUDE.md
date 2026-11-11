@@ -189,7 +189,7 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none** — M74 closed; the next is the user's choice.
+Work only on the current milestone unless asked. **Current: M75** — an overfull column's knock-on effects (C30): the condenser backed up, the column's pressure rising, the bottom trays flooded; a probe first.
 **Latest closed: M74 (2026-11-11)**: a column that holds liquid (C2) — each tray's liquid following its weir, the drum and base with their level loops, stages that stop boiling, the steel a heat store, the start from empty and total reflux, a full vessel to slop; the holdup plant on key 8 and the empty-start plant; the draining and a stage that boils dry deferred (C29); every plant byte-identical (DESIGN §79). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.

@@ -11295,3 +11295,18 @@ carry the 5 held runs.** A refused tick run again as ten steps of a tenth
 (split again to depth 2): the shut-down to 17.0–17.2 minutes, the 70 held
 hours 65 of 70, the same 5, later (DESIGN §79.19). **Deferred: the dry state
 with the draining (C29). M74 CLOSED** (DESIGN §79.20; `docs/MILESTONES.md`).
+
+## M75 — an overfull column's knock-on effects: the condenser backed up, the column's pressure rising, the bottom trays flooded; ledger row C30; opened on a decision
+
+Asked after M74 as "what is next" (2026-11-11): the user chose C30, an
+overfull reflux drum or base's knock-on effects — where since M74.6 step 3 the
+excess past full goes to a slop line with its alarm (DESIGN §79.18), a real
+drum past full backs up into the condenser, which cools less, so the column's
+pressure climbs towards its relief; a real base past full floods the bottom
+trays and the reboiler's return. Today the column's pressure is pinned (the
+`Column` node's fixed-pressure contract) and its condenser takes any duty.
+First a probe (M75.0), no engine code changed: what an overfilling column asks
+of its condenser, how fast its pressure would rise on a capped condenser, the
+pressure-control scheme (Kister), relief on a column; then decisions for the
+user (the drum or the base first, slop against back-up, the condenser's
+capacity, the control scheme, relief as a line or a reading).
