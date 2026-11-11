@@ -31444,8 +31444,12 @@ expression of the solve stands (`distillate`, the base's draw, the drum's
 sweep row, the condenser's duty): `SetFlows` carries the excess's share,
 `drum_slop` and `base_slop` [mol/s], and `finish` takes it off the product
 (`(rate − slop) · x'`) and puts it in the slop (`slop · x'`). A plant that
-never reaches full is byte-identical; one that does keeps its column's
-state to the bit, only the published split moving. The bottoms is split by
+never reaches full is byte-identical; one that does keeps its column's own
+state to the bit **by construction**, not by measurement (no shipped plant
+reaches full): the state the tick leaves is built from the sweep's amounts,
+and the next tick's solve reads only that state and the profile's
+temperatures, liquid and vapour — never the products' split — so only the
+published split, and what the product lines carry downstream, moves. The bottoms is split by
 its place in the draw list, not its stage. On total reflux the distillate
 is the excess alone, so the naphtha reads exactly 0: `(0 + e)/m − e/m`.
 
