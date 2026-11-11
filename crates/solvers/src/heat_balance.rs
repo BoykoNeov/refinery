@@ -34,7 +34,7 @@ use refinery_core::traits::{
     CascadeProfile, ColumnPass, CutBackDraw, DeclinedHold, DrawSeparation, HoldupReading,
     LevelLimit, LoopRun, Separation, SeparationModel, ThermoModel,
 };
-use refinery_core::units::{Kelvin, Kg, KgPerSec, Pascal, Watt};
+use refinery_core::units::{Kelvin, Kg, KgPerSec, Pascal, Watt, T_AMBIENT};
 
 use crate::bubble::{bubble_temperature, bubble_temperature_unnormalized};
 use crate::cascade::{
@@ -503,6 +503,44 @@ impl HeatBalanceCascade {
     /// or a refusal that says why the column could not settle. `continuation`
     /// is `ColumnSetup::continuation`.
     ///
+    /// **A column declared to start empty** (M74.6, docs/DESIGN.md §79.16),
+    /// on its first tick: settled as any column that holds liquid — for its
+    /// level loops' references and each stage's label — then emptied
+    /// ([`emptied`]) and stepped one tick from nothing held, its reboiler
+    /// held where it is declared to start held, as the engine holds it from
+    /// the first tick's write-back. The first tick publishes that step.
+    fn fractionate(
+        &self,
+        pass: &ColumnPass<'_>,
+        thermo: &dyn ThermoModel,
+        continuation: bool,
+    ) -> Result<Separation, SimError> {
+        let starts_empty = pass
+            .cascade
+            .and_then(|spec| spec.holdup.as_deref())
+            .is_some_and(|holdup| holdup.start_empty && holdup.state.is_none());
+        let settled = self.fractionate_at_drops(pass, thermo, continuation)?;
+        let (true, Some(spec), Some(full)) = (starts_empty, pass.cascade, &settled.holdup) else {
+            return Ok(settled);
+        };
+        let mut empty_spec = spec.clone();
+        if let Some(holdup) = empty_spec.holdup.as_mut() {
+            if holdup.start_held {
+                empty_spec.reboiler_duty = Some(full.settled_reboiler);
+            }
+            holdup.state = Some(emptied(full.clone()));
+        }
+        let at = ColumnPass {
+            cascade: Some(&empty_spec),
+            seed: None,
+            earlier_pass: None,
+            ..*pass
+        };
+        self.fractionate_at_drops(&at, thermo, continuation)
+    }
+
+    /// [`Self::fractionate`] but for the empty start.
+    ///
     /// **A column that declares its trays solves each stage at its own
     /// pressure** (M73.2, docs/DESIGN.md §78.9): solved, the drops its trays
     /// feed back read ([`crate::trays::capped_drop`]), solved again at them —
@@ -511,7 +549,7 @@ impl HeatBalanceCascade {
     /// from was solved at, or none; a hint, so the answer does not hang on it
     /// (§78.8 finding 4). Every other column solves once, at its one pressure,
     /// as it always has.
-    fn fractionate(
+    fn fractionate_at_drops(
         &self,
         pass: &ColumnPass<'_>,
         thermo: &dyn ThermoModel,
@@ -1180,6 +1218,21 @@ fn starting_holdup(
     })
 }
 
+/// A column's settled first-tick state emptied (M74.6, docs/DESIGN.md
+/// §79.16): every stage and the drum holding nothing, each keeping its settled
+/// composition as its label; every stage, its steel and the drum at ambient;
+/// no vapour on the trays and no pressure drop across them. The flows it
+/// settled on stay, the level loops' references.
+fn emptied(mut state: HoldupState) -> HoldupState {
+    state.stage_liquid.fill(Kg(0.0));
+    state.drum_liquid = Kg(0.0);
+    state.stage_temperature.fill(T_AMBIENT);
+    state.drum_temperature = T_AMBIENT;
+    state.tray_vapour.fill(KgPerSec(0.0));
+    state.tray_drops = vec![Pascal(0.0); state.tray_vapour.len()];
+    state
+}
+
 /// One tick of a column that holds liquid (M74, docs/DESIGN.md §79.2): the
 /// step from the state its last tick left (`column_step`), published as a
 /// pass — every draw's flow, its trays' readings and loops, and the state
@@ -1230,11 +1283,17 @@ fn stepped_pass(
         ),
         None => {
             let mut vapour = Vec::with_capacity(n);
-            let top = state.settled_distillate.value() * (spec.reflux_ratio + 1.0)
-                / crate::cascade::molar_mass(
-                    slate,
-                    MoleFractions::from_mass(&state.drum_composition, slate)?.fractions(),
-                );
+            // An empty drum sends no reflux to raise the vapour by: a column
+            // started empty starts from rest (M74.6, docs/DESIGN.md §79.16).
+            let top = if state.drum_liquid.value() > 0.0 {
+                state.settled_distillate.value() * (spec.reflux_ratio + 1.0)
+                    / crate::cascade::molar_mass(
+                        slate,
+                        MoleFractions::from_mass(&state.drum_composition, slate)?.fractions(),
+                    )
+            } else {
+                0.0
+            };
             vapour.push(top);
             for j in 1..n {
                 let below = MoleFractions::from_mass(&state.stage_composition[j], slate)?;

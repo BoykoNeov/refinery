@@ -808,14 +808,24 @@ pub struct CascadeDef {
 /// A column's liquid held: the reflux drum's and the base's working volumes
 /// [m³], each half full at its normal level, and whether the column starts
 /// with its reboiler `"held"` (the bottoms holding the base's level) or
-/// `"free"` (the reboiler holding it). **`deny_unknown_fields`**: a key the
-/// column does not read is refused rather than ignored.
+/// `"free"` (the reboiler holding it). Optionally (M74.6, docs/DESIGN.md
+/// §79.16) the column's steel as a heat store — `steel = "derived"` from its
+/// trays, or `steel_t`, the column's whole steel in tonnes — and `start =
+/// "empty"` (the column starts empty and cold; needs the steel) or
+/// `"running"`, the default. **`deny_unknown_fields`**: a key the column does
+/// not read is refused rather than ignored.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HoldupDef {
     pub drum_m3: f64,
     pub base_m3: f64,
     pub reboiler: String,
+    #[serde(default)]
+    pub steel: Option<String>,
+    #[serde(default)]
+    pub steel_t: Option<f64>,
+    #[serde(default)]
+    pub start: Option<String>,
 }
 
 /// One section of sieve trays: `{ from = 1, to = 4, diameter_m = 6.5,

@@ -4724,11 +4724,67 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                                  the duty its first tick settles on (docs/DESIGN.md §79.2)."
                             )));
                         }
+                        // The steel (M74.6, docs/DESIGN.md §79.16): derived
+                        // from the trays, or the column's whole mass declared.
+                        let steel = match (holdup.steel.as_deref(), holdup.steel_t) {
+                            (None, None) => None,
+                            (Some("derived"), None) => {
+                                Some(refinery_core::graph::ColumnSteel::Derived)
+                            }
+                            (None, Some(tonnes)) if tonnes.is_finite() && tonnes > 0.0 => {
+                                Some(refinery_core::graph::ColumnSteel::Declared {
+                                    mass: refinery_core::units::Kg(tonnes * 1000.0),
+                                })
+                            }
+                            (None, Some(tonnes)) => {
+                                return Err(SimError::Scenario(format!(
+                                    "column '{name}' declares holdup.steel_t = {tonnes}: the \
+                                     column's whole steel in tonnes, finite and above zero \
+                                     (docs/DESIGN.md §79.16)."
+                                )))
+                            }
+                            (Some(_), Some(_)) => {
+                                return Err(SimError::Scenario(format!(
+                                    "column '{name}' declares both holdup.steel and \
+                                     holdup.steel_t: the steel is derived from the trays \
+                                     (steel = \"derived\") or its mass declared (steel_t), not \
+                                     both (docs/DESIGN.md §79.16)."
+                                )))
+                            }
+                            (Some(other), None) => {
+                                return Err(SimError::Scenario(format!(
+                                    "column '{name}' declares holdup.steel = \"{other}\": it is \
+                                     \"derived\" (from the trays), or the mass is declared as \
+                                     steel_t in tonnes (docs/DESIGN.md §79.16)."
+                                )))
+                            }
+                        };
+                        let start_empty = match holdup.start.as_deref() {
+                            None | Some("running") => false,
+                            Some("empty") => true,
+                            Some(other) => {
+                                return Err(SimError::Scenario(format!(
+                                    "column '{name}' declares holdup.start = \"{other}\": it is \
+                                     \"running\" (the column starts full of its settled liquid, \
+                                     the default) or \"empty\" (docs/DESIGN.md §79.16)."
+                                )))
+                            }
+                        };
+                        if start_empty && steel.is_none() {
+                            return Err(SimError::Scenario(format!(
+                                "column '{name}' declares holdup.start = \"empty\" without its \
+                                 steel: a stage holding nothing is solvable only on the heat \
+                                 its metal stores — declare steel = \"derived\" or steel_t \
+                                 (docs/DESIGN.md §79.16)."
+                            )));
+                        }
                         Some(Box::new(refinery_core::graph::ColumnHoldup {
                             drum_volume: CubicMeter(holdup.drum_m3),
                             base_volume: CubicMeter(holdup.base_m3),
                             start_held,
                             tick: refinery_core::units::Seconds(scenario.simulation.dt),
+                            steel,
+                            start_empty,
                             state: None,
                         }))
                     }

@@ -11242,3 +11242,20 @@ the building slice — the start from empty with the steel and total reflux
 at full reboiler, §79.15; a drum or base past full sent to slop with an
 alarm, not to product — the user's decision, its knock-on effects C30), then
 the third branch, then the draining (C29).
+
+### M74.6 — **IN PROGRESS** 2026-11-11: the start from empty — step 1 of 3 done (the steel, the start)
+
+**Step 1 — DONE** (DESIGN §79.16): the column's steel a heat store
+(`steel = "derived"` from its trays, or `steel_t` its whole mass), the start
+from empty and cold (`start = "empty"`, refused without the steel), each
+stage and the drum allowed to hold nothing; the first tick a step from empty.
+The new plant `scenarios/crude_unit_empty.toml`: a stage empty for the first
+3.0 minutes, the drum filling from 4, the side products from 6–7, the four
+top products within 2 % at 24 minutes, the books closing every tick. One
+shipped behaviour changed: under a tenth of its volume the base's bottoms
+pump loses its suction in proportion. Every shipped plant byte-identical (70
+of 70, both fidelities). Only the column starts empty (C31). Next: **step 2**,
+total reflux a command (the distillate and side draws shut, the drum's level
+on the reflux), refused where the steel is off; **step 3**, a drum or base
+past full to a slop line with its alarm (C30); then the third branch, then
+the draining (C29).

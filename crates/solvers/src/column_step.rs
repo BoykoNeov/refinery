@@ -28,9 +28,20 @@
 //! Optim. 13 (2002) 865); a boiling stage's residual is the bubble point's
 //! to the bit.
 //!
-//! The liquid each stage stores is carried at its own enthalpy; the heat its
-//! liquid stores as its temperature moves is left out (§79.0 finding 7). Every
-//! liquid flow is set before the solve, in moles at the start-of-tick
+//! The liquid each stage stores is carried at its own enthalpy: its moles and
+//! its enthalpy at the end of the tick against the start's. On a column that
+//! declares its steel (M74.6, docs/DESIGN.md §79.16) each stage's metal stores
+//! heat too, `C_j·(T'_j − T_j)/dt` beside its liquid's, lumped at the stage's
+//! temperature — what makes a stage holding nothing solvable, since with no
+//! liquid and nothing flowing nothing else in its balance reads its
+//! temperature.
+//!
+//! **A stage or the drum may hold nothing** (M74.6, §79.16): it reads the last
+//! liquid it held as a label for its composition (no moles), its sweep row
+//! holds none, a stage may end the tick holding exactly nothing, and an
+//! empty drum keeps its temperature.
+//!
+//! Every liquid flow is set before the solve, in moles at the start-of-tick
 //! compositions, so the only unknowns are the temperatures and the vapours.
 //! The state the tick leaves and the products' component flows are both read
 //! off the sweep's own amounts, so each component is conserved to round-off
@@ -88,6 +99,10 @@ const MAX_TEMPERATURE_STEP_K: f64 = 25.0;
 /// mol/s at the loosest tolerance); away from it, the scale only weighs the
 /// two branches against each other for Newton.
 const VAPOUR_SCALE_MOL_S: f64 = 500.0;
+
+/// The liquid a tray holding none has its hydraulic slope read over [kg]
+/// (M74.6, docs/DESIGN.md §79.16): an empty tray's relative step is zero.
+const EMPTY_SLOPE_KG: f64 = 1.0;
 
 /// Newton steps before a tick's step is refused.
 const MAX_ITERATIONS: u32 = 40;
@@ -197,6 +212,14 @@ struct SetFlows {
     /// stream from, so a limit still in force is not applied twice.
     bottoms_before_limits: f64,
     reboiler_before_limits: f64,
+    /// Each stage's start-of-tick mole fractions and the drum's — on a stage
+    /// or drum holding nothing, the last liquid it held: a label, no moles.
+    labels: Vec<Vec<f64>>,
+    drum_label: Vec<f64>,
+    /// Each stage's steel's heat capacity [J/K] (zero without the steel)
+    /// and its start-of-tick temperature [K].
+    steel: Vec<f64>,
+    previous_temperature: Vec<f64>,
 }
 
 /// One evaluation of the residuals.
@@ -209,6 +232,7 @@ struct Evaluation {
     x: Vec<Vec<f64>>,
     x_drum: Vec<f64>,
     liquid: Vec<Vec<f64>>,
+    drum_liquid: Vec<f64>,
     k: Vec<Vec<f64>>,
     flows: Flows,
     drum_temperature: Kelvin,
@@ -230,6 +254,23 @@ impl ColumnStep<'_> {
             .zip(self.molar_masses())
             .map(|(w, m)| mass.value() * w / m)
             .collect()
+    }
+
+    /// Each stage's steel's heat capacity [J/K] (M74.6, docs/DESIGN.md
+    /// §79.16): its mass (`trays::stage_steel`) times steel's; zero on a
+    /// column that declares none.
+    fn steel_capacity(&self) -> Result<Vec<f64>, SimError> {
+        match self.holdup.steel {
+            None => Ok(vec![0.0; self.plan.stages]),
+            Some(steel) => {
+                Ok(
+                    crate::trays::stage_steel(self.spec, self.holdup.base_volume, steel)?
+                        .iter()
+                        .map(|mass| mass.value() * crate::trays::STEEL_CP)
+                        .collect(),
+                )
+            }
+        }
     }
 
     /// The tick: the liquid flows set, then Newton on the temperatures and
@@ -358,11 +399,23 @@ impl ColumnStep<'_> {
         let fractions = |a: &[f64]| -> Result<Vec<f64>, SimError> {
             Ok(MoleFractions::from_amounts(a)?.fractions().to_vec())
         };
+        // A stage or the drum holding nothing reads the last liquid it held:
+        // a label, no moles (M74.6, docs/DESIGN.md §79.16).
+        let labelled = |a: &[f64], held: &Composition| -> Result<Vec<f64>, SimError> {
+            if a.iter().sum::<f64>() == 0.0 {
+                Ok(MoleFractions::from_mass(held, self.slate)?
+                    .fractions()
+                    .to_vec())
+            } else {
+                fractions(a)
+            }
+        };
         let stage_x: Vec<Vec<f64>> = amounts
             .iter()
-            .map(|a| fractions(a))
+            .zip(&state.stage_composition)
+            .map(|(a, held)| labelled(a, held))
             .collect::<Result<_, _>>()?;
-        let drum_x = fractions(drum)?;
+        let drum_x = labelled(drum, &state.drum_composition)?;
         let mean = |x: &[f64]| x.iter().zip(&mw).map(|(x, m)| x * m).sum::<f64>();
 
         // The side draws' and the loops' set mass flows on each tray [kg/s].
@@ -415,8 +468,12 @@ impl ColumnStep<'_> {
             drawn[j] = side_mass / molar;
             off_tray[j] = off / molar;
             // The tray's hydraulic slope, by a forward difference on what it
-            // holds.
-            let more = Kg(state.stage_liquid[j].value() * (1.0 + SLOPE_DIFFERENCE));
+            // holds — on a tray holding none, over EMPTY_SLOPE_KG.
+            let more = if state.stage_liquid[j].value() > 0.0 {
+                Kg(state.stage_liquid[j].value() * (1.0 + SLOPE_DIFFERENCE))
+            } else {
+                Kg(EMPTY_SLOPE_KG)
+            };
             let off_more = crate::trays::liquid_off_tray(
                 self.slate,
                 section,
@@ -507,6 +564,10 @@ impl ColumnStep<'_> {
         }
         if base_level < LOW_LEVEL {
             reboiler *= (base_level / LOW_LEVEL).max(0.0);
+            // The bottoms pump loses its suction as the reboiler's tubes
+            // uncover (M74.6, docs/DESIGN.md §79.16): a fixed bottoms would
+            // otherwise draw an empty base.
+            bottoms_mass *= (base_level / LOW_LEVEL).max(0.0);
             base_limit = LevelLimit::Dry;
         }
         if drum_level > 1.0 {
@@ -547,6 +608,10 @@ impl ColumnStep<'_> {
             base_integral,
             bottoms_before_limits,
             reboiler_before_limits,
+            labels: stage_x,
+            drum_label: drum_x,
+            steel: self.steel_capacity()?,
+            previous_temperature: state.stage_temperature.iter().map(|t| t.value()).collect(),
         })
     }
 
@@ -559,6 +624,21 @@ impl ColumnStep<'_> {
         amounts: &[Vec<f64>],
         drum: &[f64],
         set: &SetFlows,
+    ) -> Result<Evaluation, SimError> {
+        self.evaluate_with(u, amounts, drum, set, 0.0)
+    }
+
+    /// [`Self::evaluate`], a stage or the drum allowed to end the tick short
+    /// by up to `slack` [mol], read as empty (M74.6, docs/DESIGN.md §79.16):
+    /// the Jacobian's difference on an empty stage's vapour, at its bound,
+    /// where any vapour empties it past nothing.
+    fn evaluate_with(
+        &self,
+        u: &[f64],
+        amounts: &[Vec<f64>],
+        drum: &[f64],
+        set: &SetFlows,
+        slack: f64,
     ) -> Result<Evaluation, SimError> {
         let plan = self.plan;
         let slate = self.slate;
@@ -614,8 +694,10 @@ impl ColumnStep<'_> {
             held_next.push(held[j] + dt * (arriving - down[j] - set.drawn[j] - out[j] - vapour[j]));
         }
         let drum_held: f64 = drum.iter().sum();
-        let drum_next = drum_held + dt * (vapour[0] - set.reflux - set.distillate);
-        if let Some(j) = held_next.iter().position(|h| h.is_nan() || *h <= 0.0) {
+        let mut drum_next = drum_held + dt * (vapour[0] - set.reflux - set.distillate);
+        // A stage or the drum may end the tick holding exactly nothing
+        // (M74.6); below it, by more than `slack`, it ran out.
+        if let Some(j) = held_next.iter().position(|h| h.is_nan() || *h < -slack) {
             let which = if j == n - 1 {
                 format!("stage {} (the base)", j + 1)
             } else {
@@ -623,9 +705,13 @@ impl ColumnStep<'_> {
             };
             return Err(outside(&format!("{which} ran out of liquid")));
         }
-        if drum_next.is_nan() || drum_next <= 0.0 {
+        if drum_next.is_nan() || drum_next < -slack {
             return Err(outside("the reflux drum ran out of liquid"));
         }
+        for h in &mut held_next {
+            *h = h.max(0.0);
+        }
+        drum_next = drum_next.max(0.0);
 
         let mut k = Vec::with_capacity(n);
         for (j, t) in temperatures.iter().enumerate() {
@@ -665,6 +751,13 @@ impl ColumnStep<'_> {
                 }
                 rhs[r] = amounts[j][c] / dt + feed_on(j) * self.feed.fractions()[c];
             }
+            // A row holding nothing with nothing coming or going (an empty
+            // stage, an empty drum) holds no moles (M74.6).
+            for r in 0..rows {
+                if diagonal[r] == 0.0 && lower[r] == 0.0 && upper[r] == 0.0 && rhs[r] == 0.0 {
+                    diagonal[r] = 1.0;
+                }
+            }
             let solved = thomas(&lower, &diagonal, &upper, &rhs)
                 .ok_or_else(|| outside("a component's sweep is singular"))?;
             x_drum[c] = solved[0];
@@ -691,8 +784,24 @@ impl ColumnStep<'_> {
         let normalise = |row: &[f64]| -> Result<Vec<f64>, SimError> {
             Ok(MoleFractions::from_amounts(row)?.fractions().to_vec())
         };
-        let liquid: Vec<Vec<f64>> = x.iter().map(|r| normalise(r)).collect::<Result<_, _>>()?;
-        let drum_liquid = normalise(&x_drum)?;
+        // A row holding nothing reads its label (M74.6).
+        let empty = |row: &[f64]| row.iter().sum::<f64>() == 0.0;
+        let liquid: Vec<Vec<f64>> = x
+            .iter()
+            .zip(&set.labels)
+            .map(|(r, label)| {
+                if empty(r) {
+                    Ok(label.clone())
+                } else {
+                    normalise(r)
+                }
+            })
+            .collect::<Result<_, _>>()?;
+        let drum_liquid = if empty(&x_drum) {
+            set.drum_label.clone()
+        } else {
+            normalise(&x_drum)?
+        };
         let mut h = Vec::with_capacity(n);
         let mut big_h = Vec::with_capacity(n);
         for j in 0..n {
@@ -701,13 +810,18 @@ impl ColumnStep<'_> {
             h.push(liquid_enthalpy(slate, &liquid[j], t));
             big_h.push(liquid_enthalpy(slate, &y, t) + mixture_dh_vap(slate, self.thermo, &y, t)?);
         }
-        let drum_temperature = bubble_temperature_unnormalized(
-            slate,
-            self.thermo,
-            &drum_liquid,
-            self.pressure,
-            "the reflux drum",
-        )?;
+        // An empty drum keeps its temperature (M74.6).
+        let drum_temperature = if empty(&x_drum) {
+            self.state.drum_temperature
+        } else {
+            bubble_temperature_unnormalized(
+                slate,
+                self.thermo,
+                &drum_liquid,
+                self.pressure,
+                "the reflux drum",
+            )?
+        };
         let reflux_enthalpy = liquid_enthalpy(slate, &drum_liquid, drum_temperature);
         let returns = plan.loop_returns(slate, &liquid, temperatures, &set.loops);
         let removed = plan.removed_heat(&h, &set.loops, &returns);
@@ -721,7 +835,12 @@ impl ColumnStep<'_> {
             let duty = if j == n - 1 { set.reboiler } else { 0.0 };
             // The heat the stage's liquid comes to hold: its moles and its
             // enthalpy at the end of the tick against the start's.
-            let stored = (held_next[j] * h[j] - held[j] * set.enthalpy[j]) / dt;
+            let mut stored = (held_next[j] * h[j] - held[j] * set.enthalpy[j]) / dt;
+            // And its steel's, at the stage's temperature (M74.6,
+            // docs/DESIGN.md §79.16): sensible heat, C·dT.
+            if set.steel[j] > 0.0 {
+                stored += set.steel[j] * (temperatures[j] - set.previous_temperature[j]) / dt;
+            }
             let imbalance =
                 liquid_in[j] * above + from_below + feed_on(j) * self.feed_enthalpy + duty
                     - (down[j] + set.drawn[j]) * h[j]
@@ -760,6 +879,7 @@ impl ColumnStep<'_> {
             x,
             x_drum,
             liquid,
+            drum_liquid,
             k,
             flows,
             drum_temperature,
@@ -786,7 +906,13 @@ impl ColumnStep<'_> {
             };
             let mut moved = u.to_vec();
             moved[i] += step;
-            let evaluation = self.evaluate(&moved, amounts, drum, set)?;
+            // An empty stage's vapour at its bound, where any vapour empties
+            // it past nothing: the difference allowed a shortfall of twice
+            // itself, read as empty (M74.6, docs/DESIGN.md §79.16).
+            let dt = self.holdup.tick.value();
+            let evaluation = self
+                .evaluate(&moved, amounts, drum, set)
+                .or_else(|_| self.evaluate_with(&moved, amounts, drum, set, 2.0 * step * dt))?;
             columns.push(
                 evaluation
                     .residual
@@ -849,18 +975,25 @@ impl ColumnStep<'_> {
         let mw = self.molar_masses();
         let to_mass =
             |moles: &[f64]| -> Vec<f64> { moles.iter().zip(&mw).map(|(m, w)| m * w).collect() };
-        let held_mass = |moles: &[f64]| -> Result<(Kg, Composition), SimError> {
-            let masses = to_mass(moles);
-            Ok((Kg(masses.iter().sum()), Composition::from_weights(&masses)?))
-        };
+        // A stage or drum holding nothing keeps its label (M74.6).
+        let held_mass =
+            |moles: &[f64], label: &Composition| -> Result<(Kg, Composition), SimError> {
+                let masses = to_mass(moles);
+                let total: f64 = masses.iter().sum();
+                if total == 0.0 {
+                    return Ok((Kg(0.0), label.clone()));
+                }
+                Ok((Kg(total), Composition::from_weights(&masses)?))
+            };
         let mut stage_liquid = Vec::with_capacity(n);
         let mut stage_composition = Vec::with_capacity(n);
-        for a in &evaluation.amounts {
-            let (mass, composition) = held_mass(a)?;
+        for (a, label) in evaluation.amounts.iter().zip(&self.state.stage_composition) {
+            let (mass, composition) = held_mass(a, label)?;
             stage_liquid.push(mass);
             stage_composition.push(composition);
         }
-        let (drum_liquid, drum_composition) = held_mass(&evaluation.drum_amounts)?;
+        let (drum_liquid, drum_composition) =
+            held_mass(&evaluation.drum_amounts, &self.state.drum_composition)?;
 
         // Each draw's component flows, off the sweep's own unnormalised
         // fractions (the flow times x' is what the sweep took out).
@@ -915,9 +1048,7 @@ impl ColumnStep<'_> {
             liquid: evaluation.liquid,
             k: evaluation.k,
             flows: evaluation.flows,
-            drum_liquid: MoleFractions::from_amounts(&evaluation.x_drum)?
-                .fractions()
-                .to_vec(),
+            drum_liquid: evaluation.drum_liquid,
             drum_temperature: evaluation.drum_temperature,
             draw_masses,
             reboiler_duty: set.reboiler,

@@ -30,11 +30,11 @@
 
 use crate::cascade::Flows;
 use refinery_core::components::{Phase, Slate};
-use refinery_core::graph::{CascadeSpec, TraySection};
+use refinery_core::graph::{CascadeSpec, ColumnSteel, TraySection};
 use refinery_core::traits::TrayHydraulics;
 use refinery_core::units::{
-    Kelvin, Kg, KgPerM3, KgPerSec, Meter, MeterPerSec, NewtonPerMeter, Pascal, SquareMeter, G,
-    R_GAS,
+    CubicMeter, Kelvin, Kg, KgPerM3, KgPerSec, Meter, MeterPerSec, NewtonPerMeter, Pascal,
+    SquareMeter, G, R_GAS,
 };
 use refinery_core::SimError;
 
@@ -449,6 +449,64 @@ fn surface_tension(slate: &Slate, liquid: &[f64], temperature: f64) -> f64 {
     } else {
         SURFACE_TENSION_FLOOR
     }
+}
+
+/// The shell's thickness [m] the steel is derived on (M74.6, docs/DESIGN.md
+/// §79.16). **A GAME VALUE** (M74.0's estimate): a large atmospheric column's
+/// shell is of this order; the start from empty and the held runs measured the
+/// same at half and double the steel (§79.15).
+pub const SHELL_THICKNESS_M: f64 = 0.015;
+/// Carbon steel's density [kg/m³].
+pub const STEEL_DENSITY: f64 = 7850.0;
+/// A tray's deck, supports, downcomer and weir, per square metre of the
+/// column's cross-section [kg/m²]. **A GAME VALUE** with no source in the
+/// library (a 10-gauge, 3.4 mm deck alone is 27 kg/m²; its beams, rings,
+/// downcomer and weir add to it, §79.15).
+pub const DECK_KG_PER_M2: f64 = 60.0;
+/// Carbon steel's heat capacity [J/(kg·K)]. **A GAME VALUE**: about 0.11–0.12
+/// Btu/(lb·°F) near ambient, rising when hot; one number at every
+/// temperature.
+pub const STEEL_CP: f64 = 500.0;
+
+/// Each stage's steel [kg], top stage first, the base's last (M74.6,
+/// docs/DESIGN.md §79.16): a tray its shell over its spacing — Ludwig's shell
+/// term, steel's density times the shell's area times its thickness (Coker,
+/// *Ludwig's Applied Process Design* Vol. 1, 4th ed., eq. 11-55, p. 328) —
+/// and its deck ([`DECK_KG_PER_M2`] over the column's cross-section); the base
+/// the last tray's diameter, a shell as tall as its `base_volume` asks and one
+/// head. `Declared` shares its mass over the stages in proportion to these.
+pub fn stage_steel(
+    spec: &CascadeSpec,
+    base_volume: CubicMeter,
+    steel: ColumnSteel,
+) -> Result<Vec<Kg>, SimError> {
+    let stages = spec.stages as usize;
+    let pi = std::f64::consts::PI;
+    let shell =
+        |diameter: f64, height: f64| pi * diameter * height * SHELL_THICKNESS_M * STEEL_DENSITY;
+    let mut masses = Vec::with_capacity(stages);
+    let mut diameter = 0.0;
+    for stage in 1..stages as u32 {
+        let section = section_for(spec, stage)?;
+        diameter = section.diameter.value();
+        let area = pi * diameter * diameter / 4.0;
+        masses.push(shell(diameter, section.spacing.value()) + area * DECK_KG_PER_M2);
+    }
+    if diameter <= 0.0 {
+        return Err(SimError::Scenario(
+            "a column's steel is derived from its trays, and it declares none \
+             (docs/DESIGN.md §79.16)."
+                .into(),
+        ));
+    }
+    let area = pi * diameter * diameter / 4.0;
+    let height = base_volume.value() / area;
+    masses.push(shell(diameter, height) + area * SHELL_THICKNESS_M * STEEL_DENSITY);
+    let scale = match steel {
+        ColumnSteel::Derived => 1.0,
+        ColumnSteel::Declared { mass } => mass.value() / masses.iter().sum::<f64>(),
+    };
+    Ok(masses.into_iter().map(|m| Kg(m * scale)).collect())
 }
 
 /// The section a stage's tray is in (one-based from the top), or a refusal

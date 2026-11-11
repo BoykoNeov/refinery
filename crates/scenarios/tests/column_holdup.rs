@@ -922,6 +922,19 @@ fn a_dry_base_boils_in_proportion() {
         read.base_level / 0.1
     );
     assert_eq!(state(&engine).unwrap().base_integral, 1.5);
+    // And the bottoms pump loses its suction in the same proportion (M74.6,
+    // docs/DESIGN.md §79.16): its level loop's output times the level over
+    // the low level, where before M74.6 it drew its loop's whole output.
+    let settled = state(&engine).unwrap().settled_bottoms.value();
+    let expected = settled * loop_output(read.base_level, 1.5) * read.base_level / 0.1;
+    let bottoms = line_flow(&dry, "residue_draw");
+    // To 1e-3 (measured 6.2e-4): the draw is set in moles at the tick's
+    // starting composition and carried at its end's, which a base this low
+    // moves within the tick; without the suction it would be twice this.
+    assert!(
+        (bottoms / expected - 1.0).abs() < 1.0e-3,
+        "{bottoms} kg/s against {expected}"
+    );
 }
 
 /// **A drum below its low level sends out in proportion** (§79.2): its

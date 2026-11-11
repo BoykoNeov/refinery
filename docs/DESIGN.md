@@ -31282,3 +31282,98 @@ the excess goes to a **slop line, off-spec and not counted as product**, with a
 **"drum full" / "base full" alarm**; the real knock-on effects (the condenser
 backed up and the pressure rising, the bottom trays flooded) deferred (C30).
 It moves only a plant whose drum or base reaches full.
+
+### 79.16 M74.6 step 1 built — the steel, the start from empty (2026-11-11)
+
+The decisions of §79.15 built (the advisor's order: the steel and the start
+first, total reflux second, the slop line on its own last, since it is the
+only one that moves a shipped plant's behaviour). M74.6.0's probe switches do
+not ship; the held-back draining (C29) is not in it — the prototype's
+`trays.rs` hunks are the draining's alone (an empty tray already passes
+nothing over its weir).
+
+**The declaration** (`holdup = { …, steel = "derived", start = "empty" }`):
+`steel = "derived"` the steel from the trays, or `steel_t` the column's whole
+mass in tonnes, shared over the stages as the derived masses are (the
+per-plant override); `start = "empty"` or `"running"` (the default). The
+loader refuses an empty start without the steel (it is refused on its first
+step, §79.14), both steel keys, an unknown value, and a mass not above zero.
+In the plant, `ColumnHoldup::steel` (`ColumnSteel::Derived` / `Declared`) and
+`start_empty`, neither serialized when off — so every shipped plant's
+fingerprint stands.
+
+**The steel** (`trays::stage_steel`): a tray its shell over its spacing —
+Ludwig Vol. 1 eq. 11-55's shell term, steel's density times the shell's area
+times its thickness, 15 mm — and its deck at 60 kg/m² of the column's
+cross-section (a game value, no source in the library, §79.15); the base the
+last tray's diameter, a shell as tall as its volume asks and one head; carbon
+steel at 500 J/(kg·K), a game value. On the holdup plant 59.0 t on the trays,
+13.1 t at the base, checked by hand (`column_empty::the_steel_is_derived_from_
+the_trays`). Each stage's energy balance stores `C_j·(T'_j − T_j)/dt` beside
+its liquid's.
+
+**A stage or the drum holding nothing** (`column_step`): its composition the
+last liquid it held, a label with no moles; its sweep row, nothing held,
+coming or going, holds none; an empty drum keeps its temperature; a stage may
+end the tick holding exactly nothing (before, exactly nothing was refused); a
+tray's hydraulic slope read over 1 kg when it holds none (without it the slope
+is 0/0, which the step's `max(0)` happens to absorb — kept so no NaN is ever
+made); the Jacobian's difference on an empty stage's vapour, at its bound,
+allowed a shortfall of twice the difference, read as empty (found in the
+probe: without it every step from empty is refused). **Two of the probe's
+changes are left out**, the mutation pass finding neither reached: the liquid
+going down capped so a tray ends the tick at exactly nothing (only a draining
+tray empties within a tick — it comes back with the draining, C29), and
+Newton restarted from rest where the hint cannot be reached (the first tick
+below starts from rest itself — the probe needed it because its first tick
+published the settled column).
+
+**One change to a shipped behaviour**: below a tenth of its volume the base's
+**bottoms pump loses its suction** in proportion, as the reboiler's tubes
+uncover (§79.5). Before, scheme B's bottoms drew its level loop's whole output
+from a base at 5 %; now that times the level over a tenth
+(`column_holdup::a_dry_base_boils_in_proportion`, to 1e-3: the draw is set in
+moles at the tick's start and carried at its end's composition, which a base
+that low moves within the tick). No shipped plant's base reaches it in 6 000
+ticks: 70 of 70 byte-identical.
+
+**The start from empty** (`heat_balance`): on the first tick the column
+settles as any that holds liquid — its level loops' references, each stage's
+label — then is emptied (every stage and the drum holding nothing, every
+stage, its steel and the drum at `T_AMBIENT`, 20 °C; no vapour on the trays
+and **no pressure drop across them**, where the probe kept the settled drops),
+its reboiler held at the settled duty where it starts held (as the engine's
+write-back holds it), and stepped once **from rest** — the first tick publishes
+that step, where the probe published the settled column (its "not checked"):
+on it every stage but the feed's holds nothing, the feed's tray the 10.4 kg
+one tick of crude left (warmed 3.2 K on its steel), the levels 0, every draw
+0.
+
+**The plant**: `scenarios/crude_unit_empty.toml`, the holdup plant with the
+two keys (a test holds the two files equal but for them). Measured on the
+built engine (`column_empty::slow_the_empty_column_fills_and_lines_out`, 24
+minutes): a stage holds exactly nothing for the first 1 778 ticks (3.0
+minutes); the drum 15 % at 4 minutes; the kerosene and diesel at their set
+draws from 6–7; the base 10 % at 15; at 24 minutes the naphtha within 0.6 % of
+the running plant's, the four top products within 2 %; the base's peak
+612.8 °C (the running column's 592 °C) — M74.6.0's numbers. The bottoms stays
+shut through the 24 minutes (the base under its normal level, its loop asking
+for none). The books close every tick through the empty stages: each component
+to 1.5e-10 kg/s, the heat to 4.7 W with the steel counted; the running holdup
+plant with its steel to 2.0e-10 kg/s and 3.1 W. On both fidelities the plant
+runs its 6 000 corpus ticks (the empty start had not been run on the simple
+solver before).
+
+**Only the column starts empty** (C31): the crude at its full preheat from the
+first tick, so the 21 minutes is how fast this column fills on a hot feed, not
+a crude unit's start-up (hours, the heater warming slowly).
+
+Checked: the FAST and FULL tiers, clippy, fmt; the corpus 70 of 70
+byte-identical on both fidelities, the new plant `new`; the targeted mutation
+pass, 9 mutations: the steel's stored heat, the bottoms' suction, the first
+tick's step, the deck's mass, the empty drum's temperature, the Jacobian's
+shortfall and the empty sweep row each caught; the empty tray's slope and the
+two left-out changes as above.
+
+Next (M74.6 steps 2 and 3): total reflux a command, refused where the steel is
+off (§79.15); then the drum or base past full to a slop line with its alarm.

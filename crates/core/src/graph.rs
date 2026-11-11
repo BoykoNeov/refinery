@@ -959,11 +959,40 @@ pub struct ColumnHoldup {
     /// copied from `[simulation] dt` by the loader (the timestep never changes
     /// after load).
     pub tick: Seconds,
+    /// The column's steel as a heat store (M74.6, docs/DESIGN.md §79.16), or
+    /// `None`: the column's metal stores no heat, as before M74.6. Off unless
+    /// a plant asks for it (it moves any column that holds liquid); absent,
+    /// and then not serialized, on every column that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steel: Option<ColumnSteel>,
+    /// Whether the column starts empty and cold (M74.6, docs/DESIGN.md
+    /// §79.16): its first tick settles the column only for its level loops'
+    /// references, then steps it from nothing held, every stage, its steel
+    /// and the drum at ambient. Needs the steel. `false` (the column starts
+    /// full of its settled liquid) is not serialized.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub start_empty: bool,
     /// The liquid held: a STATE, `None` until the column's first tick fills it
     /// from its settled loads, then written back by the engine at the end of
     /// every tick that moves it (as a furnace's coil, §37).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<HoldupState>,
+}
+
+/// A column's steel, the heat its metal stores (M74.6, docs/DESIGN.md
+/// §79.16): each stage's lumped at the stage's temperature. Its mass is
+/// derived from the trays' geometry (`refinery_solvers::trays::stage_steel`);
+/// a plant may declare the column's whole mass instead, shared over the
+/// stages as the derived masses are.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "steel", rename_all = "snake_case")]
+pub enum ColumnSteel {
+    /// Each stage's steel from its tray's geometry (the file's
+    /// `steel = "derived"`).
+    Derived,
+    /// The column's whole steel [kg], trays and base (the file's
+    /// `steel_t`), shared over the stages in proportion to the derived.
+    Declared { mass: Kg },
 }
 
 /// What a column holds at the end of a tick (M74, docs/DESIGN.md §79.2).
