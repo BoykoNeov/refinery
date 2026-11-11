@@ -603,7 +603,7 @@ pub enum NodeDef {
         /// Equilibrium-stage equipment. Required iff `[fidelity] separation =
         /// "cascade"`, refused otherwise. See `CascadeDef`.
         #[serde(default)]
-        cascade: Option<CascadeDef>,
+        cascade: Option<Box<CascadeDef>>,
     },
     /// Isothermal conversion reactor (simple fidelity). One feed in, one product
     /// out, held at `t_set_c`; the chemistry comes from the engine's selected
@@ -803,6 +803,25 @@ pub struct CascadeDef {
     /// "heat_balance"` models it, on a column with trays.
     #[serde(default)]
     pub holdup: Option<HoldupDef>,
+    /// The condenser as a limit and the pressure control on it (M75.1,
+    /// docs/DESIGN.md §80.1): `condenser_limit = { margin = 0.2, coolant_c = 35.0,
+    /// overhead_m3 = 100.0 }`. Absent, the condenser condenses all it is
+    /// sent and the column runs at its declared pressure. Only on a column
+    /// that holds liquid.
+    #[serde(default)]
+    pub condenser_limit: Option<CondenserDef>,
+}
+
+/// A column's condenser (M75.1, docs/DESIGN.md §80.1): its spare capacity
+/// at the declared pressure over the duty the column settles on (`margin`,
+/// ≥ 0), its coolant's temperature [°C] and the vapour space its pressure
+/// acts on [m³]. **`deny_unknown_fields`**.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CondenserDef {
+    pub margin: f64,
+    pub coolant_c: f64,
+    pub overhead_m3: f64,
 }
 
 /// A column's liquid held: the reflux drum's and the base's working volumes

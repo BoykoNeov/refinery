@@ -12,15 +12,16 @@ use refinery_core::units::{CubicMeter, Kg};
 use refinery_scenarios::{build_engine, load_str};
 
 const EMPTY_PLANT: &str = include_str!("../../../scenarios/crude_unit_empty.toml");
-const HOLDUP_PLANT: &str = include_str!("../../../scenarios/crude_unit_holdup.toml");
+pub(crate) const HOLDUP_PLANT: &str = include_str!("../../../scenarios/crude_unit_holdup.toml");
 
 /// The holdup plant's holdup line, and the empty plant's.
-const HOLDUP_LINE: &str = "holdup = { drum_m3 = 18.7, base_m3 = 115.4, reboiler = \"held\" }";
+pub(crate) const HOLDUP_LINE: &str =
+    "holdup = { drum_m3 = 18.7, base_m3 = 115.4, reboiler = \"held\" }";
 const EMPTY_LINE: &str = "holdup = { drum_m3 = 18.7, base_m3 = 115.4, reboiler = \"held\", \
                           steel = \"derived\", start = \"empty\" }";
 
 /// The holdup plant with its holdup line's keys replaced by `keys`.
-fn holdup_with(keys: &str) -> String {
+pub(crate) fn holdup_with(keys: &str) -> String {
     let src = HOLDUP_PLANT.replace("\r\n", "\n");
     assert!(src.contains(HOLDUP_LINE), "the holdup plant's holdup line");
     src.replace(
@@ -29,19 +30,19 @@ fn holdup_with(keys: &str) -> String {
     )
 }
 
-fn engine_of(src: &str) -> Result<Engine, String> {
+pub(crate) fn engine_of(src: &str) -> Result<Engine, String> {
     let file = load_str(src).map_err(|e| e.to_string())?;
     build_engine(&file).map_err(|e| e.to_string())
 }
 
-fn refused(src: &str) -> String {
+pub(crate) fn refused(src: &str) -> String {
     match engine_of(src) {
         Ok(_) => panic!("built a plant that should have been refused"),
         Err(e) => e,
     }
 }
 
-fn holdup(engine: &Engine) -> ColumnHoldup {
+pub(crate) fn holdup(engine: &Engine) -> ColumnHoldup {
     let node = engine.graph.find_node("column").unwrap();
     match &engine.graph.node(node).kind {
         NodeKind::Column {
@@ -52,7 +53,7 @@ fn holdup(engine: &Engine) -> ColumnHoldup {
     }
 }
 
-fn state(engine: &Engine) -> HoldupState {
+pub(crate) fn state(engine: &Engine) -> HoldupState {
     holdup(engine)
         .state
         .expect("the first tick filled the state")
@@ -73,14 +74,14 @@ fn state_mut(engine: &mut Engine) -> &mut HoldupState {
     }
 }
 
-fn run(engine: &mut Engine, ticks: u32) -> Snapshot {
+pub(crate) fn run(engine: &mut Engine, ticks: u32) -> Snapshot {
     for tick in 0..ticks {
         engine.tick().unwrap_or_else(|e| panic!("tick {tick}: {e}"));
     }
     engine.snapshot()
 }
 
-fn line_flow(snapshot: &Snapshot, name: &str) -> f64 {
+pub(crate) fn line_flow(snapshot: &Snapshot, name: &str) -> f64 {
     snapshot
         .edges
         .iter()
@@ -91,7 +92,7 @@ fn line_flow(snapshot: &Snapshot, name: &str) -> f64 {
         .value()
 }
 
-fn reading(snapshot: &Snapshot) -> refinery_core::snapshot::HoldupOperation {
+pub(crate) fn reading(snapshot: &Snapshot) -> refinery_core::snapshot::HoldupOperation {
     let node = snapshot.nodes.iter().find(|n| n.name == "column").unwrap();
     node.column_operation
         .as_ref()
@@ -185,7 +186,7 @@ fn steel_of(engine: &Engine) -> Vec<Kg> {
 /// hold [kg/s], the worst; and the heat's [W] — the reboiler and the feed
 /// less the products, the condenser and the loops' coolers, less what its
 /// liquid and steel came to hold.
-struct Books {
+pub(crate) struct Books {
     feed: EdgeId,
     draws: Vec<(EdgeId, usize)>,
     cp: Vec<f64>,
@@ -193,7 +194,7 @@ struct Books {
 }
 
 impl Books {
-    fn of(engine: &Engine) -> Self {
+    pub(crate) fn of(engine: &Engine) -> Self {
         Books {
             feed: edge(engine, "transfer_line"),
             draws: DRAWS
@@ -208,7 +209,7 @@ impl Books {
     }
 
     /// The worst component's imbalance [kg/s] and the heat's [W].
-    fn close(&self, engine: &Engine, before: &HoldupState) -> (f64, f64) {
+    pub(crate) fn close(&self, engine: &Engine, before: &HoldupState) -> (f64, f64) {
         let dt = 0.1;
         let after = state(engine);
         let snapshot = engine.snapshot();
@@ -529,7 +530,7 @@ fn slow_the_empty_column_fills_and_lines_out() {
     assert!(heat < 20.0, "{heat}");
 }
 
-fn set_total_reflux(engine: &mut Engine, on: bool) -> Result<(), String> {
+pub(crate) fn set_total_reflux(engine: &mut Engine, on: bool) -> Result<(), String> {
     let node = engine.graph.find_node("column").unwrap();
     engine
         .apply(refinery_core::snapshot::Command::SetTotalReflux { node, on })

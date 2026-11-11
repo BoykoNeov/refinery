@@ -11341,3 +11341,16 @@ mass books closing with the slop (a fast drop overfills the drum). **Specified**
 (inline fixtures); **M75.2** the slop an operator's drain, the drum backing up
 into the condenser; **M75.3** relief to a flare (a probe first); **M75.4** the
 plant file, the screen's key, its table.
+
+### M75.1 — **DONE** 2026-11-11: the condenser a limit, the column's pressure rising past it
+
+`condenser_limit = { margin, coolant_c, overhead_m3 }` on a column that holds
+liquid (refused elsewhere and on bad values); its `UA` sized on the first
+tick from the settled duty with its margin; the column's top pressure
+solved within each tick (DESIGN §80.2) — the first build's tick-late update
+rang between the set and the design pressure, which a probe sampling every
+100th tick had read as a pressure that never moves. On total reflux the
+holdup plant rises smoothly, 1.8 → 3.2 bar in five minutes, the column's
+store of heat setting the pace; at rest bit-identical to the plant without
+the limit; the books closing; every plant byte-identical (71 of 71, both
+fidelities). Inline fixtures (`crates/scenarios/tests/column_condenser.rs`).

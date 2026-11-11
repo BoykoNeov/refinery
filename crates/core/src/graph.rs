@@ -980,11 +980,48 @@ pub struct ColumnHoldup {
     /// not serialized.
     #[serde(default, skip_serializing_if = "is_false")]
     pub total_reflux: bool,
+    /// The column's condenser as a limit, and the pressure control on it
+    /// (M75.1, docs/DESIGN.md §80.1), or `None`: the condenser condenses all
+    /// it is sent and the column runs at its declared pressure, as before
+    /// M75. Absent, and then not serialized, on every column that predates
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condenser: Option<ColumnCondenser>,
     /// The liquid held: a STATE, `None` until the column's first tick fills it
     /// from its settled loads, then written back by the engine at the end of
     /// every tick that moves it (as a furnace's coil, §37).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<HoldupState>,
+}
+
+/// A column's condenser as a limit (M75.1, docs/DESIGN.md §80.1): a flooded
+/// condenser (Kister, *Distillation Operation*, §17.2.2) holding the
+/// column's declared pressure — the set pressure — by flooding the share of
+/// its tubes it does not need, until its free area cannot condense what
+/// arrives; then the pressure rises, the condensate's bubble point with it,
+/// until it can. Its `UA` is derived on the column's first tick from the
+/// duty it settled on, with `margin` to spare
+/// (`HoldupState::condenser_ua`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ColumnCondenser {
+    /// The condenser's spare capacity at the set pressure over the duty the
+    /// column settled on [-], ≥ 0 — a GAME VALUE per plant.
+    pub margin: f64,
+    /// The cooling water's (or air's) temperature [K], the condensate's
+    /// sink; taken as constant along the tubes.
+    pub coolant: Kelvin,
+    /// The vapour space the column's pressure acts on [m³]: the column's
+    /// top, the vapour line and the condenser's shell — what the vapour the
+    /// condenser cannot condense fills.
+    pub overhead_volume: CubicMeter,
+    /// The pressure its control holds [Pa]: the column's declared pressure,
+    /// copied by the loader (the column's own field is not moved).
+    pub set_pressure: Pascal,
+    /// The most the pressure rises to [Pa]: the column's design pressure, a
+    /// GAME VALUE derived by the loader (the larger of 110 % of the set
+    /// pressure and the set pressure plus 1.72 bar, the common rule) until
+    /// M75.3's relief takes the column off it.
+    pub design_pressure: Pascal,
 }
 
 /// A column's steel, the heat its metal stores (M74.6, docs/DESIGN.md
@@ -1048,6 +1085,31 @@ pub struct HoldupState {
     pub held: bool,
     pub last_bottoms: KgPerSec,
     pub last_reboiler: Watt,
+    /// The pressure the column runs at next tick [Pa] — its top stage's, the
+    /// trays' below it by their drops (M75.1, docs/DESIGN.md §80.1): the
+    /// declared (set) pressure while the condenser condenses what arrives,
+    /// above it while it cannot. `None`, and not serialized, without a
+    /// declared condenser: the column at its declared pressure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_pressure: Option<Pascal>,
+    /// The condenser's `UA` [W/K], derived on the first tick: the settled
+    /// duty with the margin over the condensate's bubble point less the
+    /// coolant's. `None`, not serialized, without a declared condenser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condenser_ua: Option<WattPerKelvin>,
+}
+
+/// The pressure a column runs at [Pa] (M75.1, docs/DESIGN.md §80.1): its
+/// condenser's running pressure where it declares one and has run a tick,
+/// else `declared` — the column's own. What the network pins the column at,
+/// what its draw lines start at and what its stages are solved from.
+pub fn running_column_pressure(declared: Pascal, cascade: Option<&CascadeSpec>) -> Pascal {
+    cascade
+        .and_then(|spec| spec.holdup.as_deref())
+        .filter(|holdup| holdup.condenser.is_some())
+        .and_then(|holdup| holdup.state.as_ref())
+        .and_then(|state| state.column_pressure)
+        .unwrap_or(declared)
 }
 
 /// A pumparound loop on a heat-balance cascade (M72, docs/DESIGN.md §77.1):

@@ -465,7 +465,7 @@ pub(crate) fn require_declared_iff_used(
     name: &str,
     cascade_selected: bool,
     draws: &[DrawDef],
-    cascade: &Option<CascadeDef>,
+    cascade: &Option<Box<CascadeDef>>,
     smearing_k: &Option<f64>,
 ) -> Result<(), SimError> {
     if cascade_selected {

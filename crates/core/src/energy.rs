@@ -2205,7 +2205,13 @@ pub fn resolve_node_states(
                                     slate,
                                     draws,
                                     smearing: *smearing,
-                                    pressure: *pressure,
+                                    // The condenser's running pressure,
+                                    // where it declares one (M75.1,
+                                    // docs/DESIGN.md §80.1).
+                                    pressure: crate::graph::running_column_pressure(
+                                        *pressure,
+                                        cascade.as_deref(),
+                                    ),
                                     feed,
                                     feed_flow: column_feed_flow(graph, edge_mass_flow, id),
                                     temperature: mixed,

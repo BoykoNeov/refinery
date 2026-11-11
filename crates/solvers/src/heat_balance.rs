@@ -29,12 +29,15 @@
 use refinery_core::components::{Composition, Slate};
 use refinery_core::energy::T_REF;
 use refinery_core::error::SimError;
-use refinery_core::graph::{CascadeSpec, ColumnHoldup, HoldupState, Pumparound};
+use refinery_core::graph::{CascadeSpec, ColumnCondenser, ColumnHoldup, HoldupState, Pumparound};
 use refinery_core::traits::{
-    CascadeProfile, ColumnPass, CutBackDraw, DeclinedHold, DrawSeparation, HoldupReading,
-    LevelLimit, LoopRun, Separation, SeparationModel, SlopFlow, SlopVessel, ThermoModel,
+    CascadeProfile, ColumnPass, CondenserReading, CutBackDraw, DeclinedHold, DrawSeparation,
+    HoldupReading, LevelLimit, LoopRun, Separation, SeparationModel, SlopFlow, SlopVessel,
+    ThermoModel,
 };
-use refinery_core::units::{Kelvin, Kg, KgPerSec, Pascal, Watt, T_AMBIENT};
+use refinery_core::units::{
+    Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, R_GAS, T_AMBIENT,
+};
 
 use crate::bubble::{bubble_temperature, bubble_temperature_unnormalized};
 use crate::cascade::{
@@ -1074,7 +1077,7 @@ impl HeatBalanceCascade {
             .collect();
         // A column that holds liquid starts full on its first tick, from these
         // settled loads (M74, docs/DESIGN.md §79.2).
-        let holdup = match &spec.holdup {
+        let mut holdup = match &spec.holdup {
             Some(declared) if declared.state.is_none() => Some(starting_holdup(
                 slate,
                 spec,
@@ -1090,6 +1093,26 @@ impl HeatBalanceCascade {
                     reboiler: reboiler_duty,
                 },
             )?),
+            _ => None,
+        };
+        // Its condenser sized on these loads (M75.1, docs/DESIGN.md §80.1):
+        // the duty settled on, with its margin, at the set pressure.
+        let condenser = match (spec.holdup.as_deref(), holdup.as_mut()) {
+            (Some(declared), Some(state)) => match &declared.condenser {
+                Some(condenser) => {
+                    let ua = condenser_ua(condenser, condenser_duty, condenser_t)?;
+                    state.condenser_ua = Some(ua);
+                    state.column_pressure = Some(pass.pressure);
+                    Some(CondenserReading {
+                        pressure: pass.pressure,
+                        set_pressure: condenser.set_pressure,
+                        capacity: Watt(condenser_duty.value() * (1.0 + condenser.margin)),
+                        at_capacity: false,
+                        at_design: false,
+                    })
+                }
+                None => None,
+            },
             _ => None,
         };
 
@@ -1124,6 +1147,7 @@ impl HeatBalanceCascade {
                 drum_loop_at_max: false,
                 base_loop_at_max: false,
                 total_reflux: false,
+                condenser,
             }),
             holdup,
             draw_flows: Vec::new(),
@@ -1218,7 +1242,105 @@ fn starting_holdup(
         held: declared.start_held,
         last_bottoms: settled.bottoms,
         last_reboiler: settled.reboiler,
+        // Set by the settled pass where the column declares its condenser.
+        column_pressure: None,
+        condenser_ua: None,
     })
+}
+
+/// A condenser's `UA` [W/K] from the duty its column settled on (M75.1,
+/// docs/DESIGN.md §80.1): `UA = Q₀·(1 + margin) / (T_b − T_coolant)` — so at
+/// the set pressure, with the condensate leaving at its bubble point `T_b`
+/// (a total condenser), it condenses the settled duty with its margin to
+/// spare. The coolant taken at one temperature along the tubes (a GAME VALUE
+/// of the plant's), the driving difference the condensate's.
+fn condenser_ua(
+    condenser: &ColumnCondenser,
+    settled_duty: Watt,
+    condensate: Kelvin,
+) -> Result<WattPerKelvin, SimError> {
+    let difference = condensate.value() - condenser.coolant.value();
+    if difference <= 0.0 || settled_duty.value() <= 0.0 {
+        return Err(SimError::Numerical(format!(
+            "the column's condenser cannot be sized: it settled on {:.3} MW with its \
+             condensate at {:.1} °C and its coolant at {:.1} °C — a condenser condenses \
+             something, onto a coolant colder than its condensate (docs/DESIGN.md §80.1).",
+            settled_duty.value() / 1.0e6,
+            condensate.value() - 273.15,
+            condenser.coolant.value() - 273.15,
+        )));
+    }
+    Ok(WattPerKelvin(
+        settled_duty.value() * (1.0 + condenser.margin) / difference,
+    ))
+}
+
+/// A column's condenser's balance at a trial top pressure (M75.1,
+/// docs/DESIGN.md §80.1).
+struct Balance {
+    /// `V·λ/(R·T·dt)·(P − P₀) − (Q − C)` [W]: the heat the overhead's vapour
+    /// takes to rise from last tick's pressure `P₀` to `P`, less what the
+    /// condenser left uncondensed. Zero at the tick's pressure; rising with
+    /// `P` (the duty falls, the capacity and the store rise).
+    residual: f64,
+    /// `C(P)` [W], what its free area condenses at `P`.
+    capacity: f64,
+}
+
+/// The balance of a step at `pressure` (see [`Balance`]).
+///
+/// The capacity `C(P) = UA·(T_b(x, P) − T_coolant)`, `x` the drum's liquid
+/// (the condensate) the step left, `T_b` its bubble point. The vapour it
+/// cannot condense fills the overhead volume `V` at the top stage's
+/// temperature `T` (ideal gas), `λ` the condensate's molar latent heat:
+/// `V·dP/(R·T)` moles, `λ` joules each. The step itself condenses all it is
+/// sent at `pressure`, so the books are the step's: the uncondensed vapour
+/// is a pressure, not a stock.
+#[allow(clippy::too_many_arguments)]
+fn condenser_balance(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    condenser: &ColumnCondenser,
+    ua: WattPerKelvin,
+    separation: &Separation,
+    pressure: Pascal,
+    previous: Pascal,
+    tick: Seconds,
+) -> Result<Balance, SimError> {
+    let (Some(next), Some(profile), Some(duty)) = (
+        separation.holdup.as_ref(),
+        separation.profile.as_ref(),
+        separation.condenser_duty,
+    ) else {
+        return Err(SimError::Numerical(
+            "internal: a column's step published no state, profile or condenser duty for its \
+             condenser's balance (docs/DESIGN.md §80.1)"
+                .into(),
+        ));
+    };
+    let x = MoleFractions::from_mass(&next.drum_composition, slate)?;
+    let bubble = bubble_temperature(slate, thermo, &x, pressure, "the column's condensate")?;
+    let capacity = ua.value() * (bubble.value() - condenser.coolant.value()).max(0.0);
+    let top = profile.temperatures[0];
+    let latent = mixture_dh_vap(slate, thermo, x.fractions(), top)?;
+    if latent.is_nan() || latent <= 0.0 {
+        return Err(SimError::Numerical(format!(
+            "the column's condensate reads a latent heat of {latent:.4e} J/mol at {:.1} K: its \
+             overhead pressure cannot be followed (docs/DESIGN.md §80.1).",
+            top.value()
+        )));
+    }
+    // Ideal gas in the overhead: joules left uncondensed per pascal.
+    let store = condenser.overhead_volume.value() * latent / (R_GAS * top.value() * tick.value());
+    let residual = store * (pressure.value() - previous.value()) - (duty.value() - capacity);
+    if !residual.is_finite() {
+        return Err(SimError::Numerical(format!(
+            "the column's condenser balance read {residual} W at {:.4} bar (docs/DESIGN.md \
+             §80.1).",
+            pressure.value() / 1.0e5
+        )));
+    }
+    Ok(Balance { residual, capacity })
 }
 
 /// A column's settled first-tick state emptied (M74.6, docs/DESIGN.md
@@ -1240,7 +1362,171 @@ fn emptied(mut state: HoldupState) -> HoldupState {
 /// step from the state its last tick left (`column_step`), published as a
 /// pass — every draw's flow, its trays' readings and loops, and the state
 /// the engine writes back.
+///
+/// **A column that declares its condenser as a limit** (M75.1,
+/// docs/DESIGN.md §80.1) solves its top pressure within the tick: the
+/// pressure `P` at which the vapour its condenser cannot condense is what
+/// fills its overhead — backward Euler on `dP/dt = (R·T/V)·(Q(P) − C(P))/λ`,
+/// `Q(P)` the duty the step at `P` condenses (the column's own answer to its
+/// pressure: a stage whose boiling point rises stops boiling and the duty
+/// falls), `C(P)` the condenser's capacity ([`condenser_balance`]). Solved by
+/// regula falsi (Illinois) between the set and the design pressure, each
+/// trial a whole step from the same start. A column at its set pressure
+/// whose condenser condenses what arrives takes one step, as every column
+/// without one.
 fn stepped_pass(
+    setup: &ColumnSetup<'_>,
+    holdup: &ColumnHoldup,
+    state: &HoldupState,
+    feed_vapour_fraction: f64,
+) -> Result<Separation, SimError> {
+    let (Some(condenser), Some(ua)) = (&holdup.condenser, state.condenser_ua) else {
+        return stepped_pass_at(setup, holdup, state, feed_vapour_fraction);
+    };
+    let set = condenser.set_pressure.value();
+    let design = condenser.design_pressure.value();
+    let previous = setup.pass.pressure.value();
+    // The step at a trial top pressure, every stage moved with it (the
+    // drops held), and its balance.
+    let at = |pressure: f64| -> Result<(Separation, Balance), SimError> {
+        let separation = if pressure == previous {
+            stepped_pass_at(setup, holdup, state, feed_vapour_fraction)?
+        } else {
+            let shift = pressure - previous;
+            let pass = ColumnPass {
+                pressure: Pascal(pressure),
+                ..*setup.pass
+            };
+            let moved = ColumnSetup {
+                pass: &pass,
+                pressures: setup
+                    .pressures
+                    .iter()
+                    .map(|stage| Pascal(stage.value() + shift))
+                    .collect(),
+                ..setup.clone()
+            };
+            stepped_pass_at(&moved, holdup, state, feed_vapour_fraction)?
+        };
+        let balance = condenser_balance(
+            setup.pass.slate,
+            setup.thermo,
+            condenser,
+            ua,
+            &separation,
+            Pascal(pressure),
+            Pascal(previous),
+            holdup.tick,
+        )?;
+        Ok((separation, balance))
+    };
+    let start = previous.clamp(set, design);
+    let first = at(start)?;
+    let solved = if first.1.residual >= 0.0 && start <= set {
+        // At the set pressure, the condenser condensing what arrives: its
+        // control floods the tubes it does not need.
+        (start, first)
+    } else if first.1.residual >= 0.0 {
+        // Falling, from above the set pressure.
+        let low = at(set)?;
+        if low.1.residual >= 0.0 {
+            (set, low)
+        } else {
+            illinois(&at, (set, low), (start, first))?
+        }
+    } else {
+        // Rising.
+        let high = at(design)?;
+        if high.1.residual <= 0.0 {
+            (design, high)
+        } else {
+            illinois(&at, (start, first), (design, high))?
+        }
+    };
+    let (pressure, (mut separation, balance)) = solved;
+    if let Some(next) = separation.holdup.as_mut() {
+        next.column_pressure = Some(Pascal(pressure));
+    }
+    let reading = CondenserReading {
+        pressure: Pascal(pressure),
+        set_pressure: condenser.set_pressure,
+        capacity: Watt(balance.capacity),
+        at_capacity: pressure > set,
+        at_design: pressure >= design,
+    };
+    separation.holdup_reading = separation.holdup_reading.map(|before| HoldupReading {
+        condenser: Some(reading),
+        ..before
+    });
+    Ok(separation)
+}
+
+/// The most trial steps a column's top pressure takes within a tick
+/// (M75.1, docs/DESIGN.md §80.1) before the tick is refused.
+const MAX_PRESSURE_SOLVES: u32 = 40;
+
+/// The top pressure's tolerance within a tick [Pa] (M75.1): the bracket,
+/// or the last move, narrower than this.
+const PRESSURE_TOLERANCE: f64 = 1.0;
+
+/// A trial pressure [Pa], its step and its balance.
+type PressureTrial = (f64, (Separation, Balance));
+
+/// Regula falsi with the Illinois modification on a bracketing pair — `low`
+/// with its residual below zero, `high` above — for the top pressure
+/// (M75.1, docs/DESIGN.md §80.1). Deterministic, and never leaves the
+/// bracket.
+fn illinois(
+    at: &dyn Fn(f64) -> Result<(Separation, Balance), SimError>,
+    low: PressureTrial,
+    high: PressureTrial,
+) -> Result<PressureTrial, SimError> {
+    let (mut a, mut ra) = (low.0, low.1 .1.residual);
+    let (mut b, mut rb) = (high.0, high.1 .1.residual);
+    let mut side = 0i8;
+    let mut last = f64::NAN;
+    for _ in 0..MAX_PRESSURE_SOLVES {
+        let pressure = (a * rb - b * ra) / (rb - ra);
+        if !pressure.is_finite() {
+            break;
+        }
+        let trial = at(pressure)?;
+        let residual = trial.1.residual;
+        if residual == 0.0
+            || (pressure - last).abs() < PRESSURE_TOLERANCE
+            || b - a < PRESSURE_TOLERANCE
+        {
+            return Ok((pressure, trial));
+        }
+        last = pressure;
+        if residual < 0.0 {
+            a = pressure;
+            ra = residual;
+            if side == -1 {
+                rb *= 0.5;
+            }
+            side = -1;
+        } else {
+            b = pressure;
+            rb = residual;
+            if side == 1 {
+                ra *= 0.5;
+            }
+            side = 1;
+        }
+    }
+    Err(SimError::Numerical(format!(
+        "the column's top pressure did not settle within {MAX_PRESSURE_SOLVES} trials \
+         between {:.4} and {:.4} bar: its condenser's balance read {ra:.4e} and {rb:.4e} W \
+         at the two (docs/DESIGN.md §80.1).",
+        a / 1.0e5,
+        b / 1.0e5,
+    )))
+}
+
+/// One tick of a column that holds liquid at the pressures `setup` carries
+/// — [`stepped_pass`] without its condenser's pressure.
+fn stepped_pass_at(
     setup: &ColumnSetup<'_>,
     holdup: &ColumnHoldup,
     state: &HoldupState,

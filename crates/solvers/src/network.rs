@@ -700,7 +700,13 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
         // exactly like a Source/Sink/Tank, so the feed edge is an ordinary
         // pressure-driven edge into a fixed node and the draws (fixed→fixed) never
         // enter the Jacobian (DESIGN §5).
-        NodeKind::Column { pressure, .. } => Some(pressure.value()),
+        // Its condenser's running pressure, where it declares one (M75.1,
+        // docs/DESIGN.md §80.1): the last tick's, as every pin here.
+        NodeKind::Column {
+            pressure, cascade, ..
+        } => {
+            Some(refinery_core::graph::running_column_pressure(*pressure, cascade.as_ref()).value())
+        }
         // Furnaces, coolers and reactors pin no pressure: all are hydraulically
         // pass-throughs, so they are free nodes whose pressure the network
         // determines. A reactor is hydraulically a furnace (DESIGN §5).
@@ -4770,7 +4776,10 @@ fn line_stage_pressure(
     column: NodeId,
     stage: Option<u32>,
 ) -> Result<f64, SimError> {
-    let NodeKind::Column { pressure, .. } = &graph.node(column).kind else {
+    let NodeKind::Column {
+        pressure, cascade, ..
+    } = &graph.node(column).kind
+    else {
         return Err(SimError::Numerical(format!(
             "internal: a draw line starts at '{}', which is no column",
             graph.node(column).name
@@ -4783,7 +4792,10 @@ fn line_stage_pressure(
                 .get(&column)?
                 .stage_pressure(stage)
         })
-        .map_or(pressure.value(), |stage_pressure| stage_pressure.value()))
+        .map_or(
+            refinery_core::graph::running_column_pressure(*pressure, cascade.as_ref()).value(),
+            |stage_pressure| stage_pressure.value(),
+        ))
 }
 
 /// One draw or loop line marched from its column at `mass_flow` [kg/s]

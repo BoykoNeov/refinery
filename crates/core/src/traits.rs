@@ -856,6 +856,26 @@ pub struct HoldupReading {
     pub base_loop_at_max: bool,
     /// The column on total reflux this tick (M74.6, docs/DESIGN.md §79.17).
     pub total_reflux: bool,
+    /// Its condenser and the pressure it holds (M75.1, docs/DESIGN.md
+    /// §80.1), where the column declares one.
+    pub condenser: Option<CondenserReading>,
+}
+
+/// A column's condenser as it ran a pass (M75.1, docs/DESIGN.md §80.1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CondenserReading {
+    /// The pressure the column ran at this pass [Pa], its top stage's.
+    pub pressure: Pascal,
+    /// The pressure its control holds while the condenser can [Pa]: the
+    /// column's declared pressure.
+    pub set_pressure: Pascal,
+    /// What its free area could condense at the pressure it ran at [W].
+    pub capacity: Watt,
+    /// The pressure out of its control: the duty the column asked more than
+    /// the condenser could condense at the set pressure.
+    pub at_capacity: bool,
+    /// The pressure at the column's design pressure, the most it rises to.
+    pub at_design: bool,
 }
 
 /// A drum's or a base's excess past full, sent to the slop line this pass

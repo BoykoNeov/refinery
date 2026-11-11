@@ -31584,8 +31584,8 @@ Specified on the user's decisions (§80.0) and the moving-pressure probe (the
 column follows 1.8 → 4.5 → 1.8 bar over 30 s or 300 s, every tick converging,
 the mass books closing with the slop counted).
 
-**The condenser** (`condenser = { margin, coolant_c, overhead_m3 }` on the
-cascade block; refused off a column that holds liquid, on a negative margin,
+**The condenser** (`condenser_limit = { margin, coolant_c, overhead_m3 }` on
+the cascade block — `condenser` is taken by "total"/"partial"; refused off a column that holds liquid, on a negative margin,
 an overhead volume not above zero; absent, nothing changes and nothing is
 serialized). Its capacity `C(P) = UA · φ · (T_b(x_drum, P) − T_coolant)` [W],
 `T_b` the distillate's bubble point at `P` (a total condenser's condensate
@@ -31597,7 +31597,8 @@ flooded condenser** (Kister §17.2.2): while `C(P_set)` covers the duty the step
 asked, the controller floods the rest and the pressure is the set pressure
 exactly; past it the pressure rises.
 
-**The pressure a lagged balance, no vapour stock** (the books stay the step's,
+**The pressure a lagged balance, no vapour stock** — *superseded by §80.2,
+the pressure solved within the tick; the lag below rang* (the books stay the step's,
 which condenses all it is sent): after each step, `P*` = the set pressure if
 `C(P_set) ≥ Q`, else the root of `C(P) = Q` (bisection, a fixed number of
 steps, on `[P_set, P_cap]`); the next tick's `P = P + (P* − P) · dt/(τ + dt)`,
@@ -31626,3 +31627,53 @@ condenser.
 the condenser, the drain and relief; slices 1–3 on inline fixtures (the
 existing files are never edited). Then the screen's key and its measured
 table. On both fidelities; units newtypes; no panics.
+
+### 80.2 M75.1 landed — the condenser a limit, the pressure solved within the tick (2026-11-11)
+
+**What rang, and why.** The first build followed §80.1 in spirit: after each
+step, the next tick's pressure from the step's duty `Q` and the condenser's
+capacity `C(P)`, implicit in `C` only. On total reflux it rang tick to tick
+between the set pressure and the design pressure (91 Pa, 986, 8 046, 29 338,
+90 119, then the clamp — a gain of ~10 each pair of ticks), which a probe
+sampling every 100th tick, always an even tick, read as "the pressure never
+moves" and a 3 945 MW duty — the flash of a tick dropped from 3.52 bar to
+1.8. The term left explicit was the column's own answer to its pressure:
+raise `P` and every stage's boiling point rises, its liquid and steel stop
+boiling, and the duty falls — `dQ/dP ≈ −93 kW/Pa` on the holdup plant,
+against an overhead store of `V·λ/(R·T·dt)` ≈ 10 kW/Pa on 100 m³. Counted a
+tick late, any such term rings.
+
+**The pressure an unknown of the tick** (backward Euler). The tick's top
+pressure `P` solves
+
+`r(P) = V·λ/(R·T·dt)·(P − P₀) − (Q(P) − C(P)) = 0`
+
+`P₀` last tick's, `Q(P)` the duty of the whole step run at `P` from the same
+start (every stage's pressure moved with the top, the tray drops held), `C(P)
+= UA·(T_b(x_drum, P) − T_coolant)`, `λ` the condensate's molar latent heat at
+the top stage's temperature `T`. `r` rises with `P`. Solved by regula falsi
+with the Illinois modification on `[P_set, P_design]` (deterministic, never
+leaves the bracket; at most 40 trials, 1 Pa; refused with both ends' balances
+past that): the first trial at `P₀`; `r(P_set) ≥ 0` at the set pressure is
+the answer — the flooded condenser holding it — and that is one step, as on
+every column without the limit, so a column at rest is bit-identical to the
+same plant without it; else the bracket's other end is tried, and the design
+pressure is the answer where `r(P_design) ≤ 0`. The state's
+`column_pressure` is that `P`, which the network pins and the draw lines
+start at next tick (the hydraulics a tick behind, as every pin).
+
+**What it reads.** The holdup plant with its steel, `margin = 0.05`,
+`coolant_c = 35`, `overhead_m3 = 100`: `UA` = 0.58 MW/K; on total reflux the
+pressure rises smoothly, 1.80 → 1.89 bar in a minute and 3.17 bar in five,
+the duty 47–52 MW (§80.0's scale), just above the capacity at the pressure
+it has reached. **The column's store of heat sets the pace**, not the
+overhead: 100 m³ barely matters, a thousand times that slows the first five
+seconds' rise by more than a fifth. The books close every tick, the mass to
+4.5e-8 kg/s (1e-8 on a column at its one pressure; the excess rises and falls
+with the rate of climb) and the heat to 7 W. The faceplate's "pressure high"
+(`at_capacity`) is the pressure above the set.
+
+**Cost.** Only a column that declares the limit pays: two to a few steps a
+tick while its pressure is off the set. Every shipped plant byte-identical,
+71 of 71 on both fidelities; the scenario's `NodeDef::Column::cascade` boxed
+(the key grew the enum past clippy's variant-size limit).

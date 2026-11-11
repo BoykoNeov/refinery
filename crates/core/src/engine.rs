@@ -4159,6 +4159,15 @@ impl Engine {
                                 drum_loop_at_max: reading.drum_loop_at_max,
                                 base_loop_at_max: reading.base_loop_at_max,
                                 total_reflux: reading.total_reflux,
+                                condenser: reading.condenser.map(|condenser| {
+                                    crate::snapshot::CondenserOperation {
+                                        pressure_pa: condenser.pressure.value(),
+                                        set_pressure_pa: condenser.set_pressure.value(),
+                                        capacity_w: condenser.capacity.value(),
+                                        at_capacity: condenser.at_capacity,
+                                        at_design: condenser.at_design,
+                                    }
+                                }),
                             }),
                             // A vessel past full's excess, to slop (M74.6,
                             // §79.18).

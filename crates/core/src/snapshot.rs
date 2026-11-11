@@ -834,6 +834,27 @@ pub struct HoldupOperation {
     /// serialized, while off.
     #[serde(default, skip_serializing_if = "is_false")]
     pub total_reflux: bool,
+    /// Its condenser and the pressure it holds (M75.1, docs/DESIGN.md
+    /// §80.1). Absent, not serialized, on a column that declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condenser: Option<CondenserOperation>,
+}
+
+/// A column's condenser's faceplate (M75.1, docs/DESIGN.md §80.1) — see
+/// `HoldupOperation::condenser`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CondenserOperation {
+    /// The pressure the column ran at [Pa], its top stage's.
+    pub pressure_pa: f64,
+    /// The pressure its control holds while it can [Pa]: the declared one.
+    pub set_pressure_pa: f64,
+    /// What the condenser could condense at that pressure [W].
+    pub capacity_w: f64,
+    /// The pressure out of control: the column asks more than the condenser
+    /// condenses at the set pressure — "column pressure high".
+    pub at_capacity: bool,
+    /// The pressure at the column's design pressure, the most it rises to.
+    pub at_design: bool,
 }
 
 /// Whether a flag is off — what keeps `HoldupOperation::total_reflux` off

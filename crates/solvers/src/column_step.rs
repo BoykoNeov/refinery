@@ -635,6 +635,8 @@ impl ColumnStep<'_> {
                 drum_loop_at_max,
                 base_loop_at_max,
                 total_reflux,
+                // Read after the step (M75.1, `heat_balance`).
+                condenser: None,
             },
             base_integral,
             bottoms_before_limits,
@@ -1094,6 +1096,10 @@ impl ColumnStep<'_> {
             held: reading.held,
             last_bottoms: KgPerSec(set.bottoms_before_limits),
             last_reboiler: Watt(set.reboiler_before_limits),
+            // Moved after the step, by the condenser (M75.1,
+            // `heat_balance::next_column_pressure`).
+            column_pressure: state.column_pressure,
+            condenser_ua: state.condenser_ua,
         };
         Ok(Stepped {
             temperatures: u[..n].to_vec(),

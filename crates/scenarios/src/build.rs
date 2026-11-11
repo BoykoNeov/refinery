@@ -27,9 +27,9 @@ use refinery_core::units::{
 use std::collections::BTreeMap;
 
 use crate::schema::{
-    bar_to_pa, c_to_k, default_friction_factor, kv_to_cv_si, ActuatorDef, CascadeDef, ComponentDef,
-    ControlDef, ExchangerDef, MeasurementDef, NodeDef, OnPumpStopDef, PipeDef, ScenarioFile,
-    TripActionDef, TripDef,
+    bar_to_pa, c_to_k, default_friction_factor, kv_to_cv_si, ActuatorDef, ComponentDef, ControlDef,
+    ExchangerDef, MeasurementDef, NodeDef, OnPumpStopDef, PipeDef, ScenarioFile, TripActionDef,
+    TripDef,
 };
 use crate::validate::{
     plant_phases, require_bed_reactor_plant, require_blowdown_cushion, require_compatible_fidelity,
@@ -4552,6 +4552,7 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
             draws: draw_defs,
             cascade,
             smearing_k,
+            pressure_bar,
             ..
         } = def
         else {
@@ -4695,6 +4696,56 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                         scenario.fidelity.separation
                     )));
                 }
+                if def.condenser_limit.is_some() && def.holdup.is_none() {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' declares condenser_limit without holdup: its pressure \
+                         rises on what its condenser cannot condense into the drum, so only a \
+                         column that holds liquid declares one (docs/DESIGN.md §80.1)."
+                    )));
+                }
+                // The condenser (M75.1, docs/DESIGN.md §80.1).
+                let condenser = match &def.condenser_limit {
+                    None => None,
+                    Some(condenser) => {
+                        if !condenser.margin.is_finite() || condenser.margin < 0.0 {
+                            return Err(SimError::Scenario(format!(
+                                "column '{name}' declares condenser_limit.margin = {}: its spare \
+                                 capacity over the duty it settles on, finite and not below \
+                                 zero (docs/DESIGN.md §80.1).",
+                                condenser.margin
+                            )));
+                        }
+                        if !condenser.coolant_c.is_finite() || condenser.coolant_c <= -273.15 {
+                            return Err(SimError::Scenario(format!(
+                                "column '{name}' declares condenser_limit.coolant_c = {}: its \
+                                 coolant's temperature in °C, finite and above absolute zero \
+                                 (docs/DESIGN.md §80.1).",
+                                condenser.coolant_c
+                            )));
+                        }
+                        if !condenser.overhead_m3.is_finite() || condenser.overhead_m3 <= 0.0 {
+                            return Err(SimError::Scenario(format!(
+                                "column '{name}' declares condenser_limit.overhead_m3 = {}: the \
+                                 vapour space its pressure acts on, finite and above zero \
+                                 (docs/DESIGN.md §80.1).",
+                                condenser.overhead_m3
+                            )));
+                        }
+                        let set_pressure = bar_to_pa(*pressure_bar);
+                        Some(refinery_core::graph::ColumnCondenser {
+                            margin: condenser.margin,
+                            coolant: c_to_k(condenser.coolant_c),
+                            overhead_volume: CubicMeter(condenser.overhead_m3),
+                            set_pressure,
+                            // GAME VALUE until M75.3: the larger of 110 % of
+                            // the operating pressure and it plus 25 psi
+                            // (1.72 bar), the common design-pressure rule.
+                            design_pressure: refinery_core::units::Pascal(
+                                (1.1 * set_pressure.value()).max(set_pressure.value() + 1.72e5),
+                            ),
+                        })
+                    }
+                };
                 let holdup = match &def.holdup {
                     None => None,
                     Some(holdup) => {
@@ -4786,6 +4837,7 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                             steel,
                             start_empty,
                             total_reflux: false,
+                            condenser,
                             state: None,
                         }))
                     }
@@ -4883,12 +4935,13 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
 fn resolve_steam_inlets(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Result<(), SimError> {
     for (name, def) in &scenario.nodes {
         let NodeDef::Column {
-            cascade: Some(CascadeDef {
-                steam: Some(steam), ..
-            }),
+            cascade: Some(cascade),
             ..
         } = def
         else {
+            continue;
+        };
+        let Some(steam) = &cascade.steam else {
             continue;
         };
         let column = graph.find_node(name).ok_or_else(|| {
