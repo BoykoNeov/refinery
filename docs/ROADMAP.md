@@ -11333,3 +11333,11 @@ into the condenser, open it drains as since §79.18; **the flooded condenser**
 condense what arrives, the condenser sized from its running duty with a
 margin (a game value); **relief a real line to a flare** in the new plant
 file, on the engine's relief valves — the column given a vapour outlet.
+
+**Moving pressure checked** (2026-11-11, `ramp.patch`): a running column
+followed 1.8 → 4.5 → 1.8 bar over 30 s or 300 s, every tick converging, the
+mass books closing with the slop (a fast drop overfills the drum). **Specified**
+(DESIGN §80.1). Slices: **M75.1** the condenser and the pressure that rises
+(inline fixtures); **M75.2** the slop an operator's drain, the drum backing up
+into the condenser; **M75.3** relief to a flare (a probe first); **M75.4** the
+plant file, the screen's key, its table.

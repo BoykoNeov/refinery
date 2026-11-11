@@ -290,7 +290,8 @@ fn trace(s: &Value, column: usize, feed: i64, draws: &[i64]) -> String {
         })
         .collect();
     format!(
-        "feed {:.1} held[t] [{}] drum {:.1} t V [{}] T [{}] drum {:.3} base {:.3} reb {:.1} R {:.2} cond {:.1} MW products {}",
+        "P {:.4} bar feed {:.1} held[t] [{}] drum {:.1} t V [{}] T [{}] drum {:.3} base {:.3} reb {:.1} R {:.2} cond {:.1} MW products {}",
+        col["kind"]["pressure"].as_f64().unwrap_or(f64::NAN) / 1e5,
         fed,
         held,
         drum_t,
@@ -331,6 +332,17 @@ fn one_run(src: &str, spec: &str, warm: i64, gap: i64, run: i64) -> String {
     let last_move = moves.last().unwrap().0;
     let total = last_move + run;
     let mut over = OverTheRun::new();
+    let books = |s: &Value| -> (f64, f64) {
+        let col = &s["nodes"][column as usize];
+        let st = &col["kind"]["cascade"]["holdup"]["state"];
+        let held: f64 = st["stage_liquid"].as_array().map_or(0.0, |l| l.iter().map(|x| x.as_f64().unwrap()).sum::<f64>())
+            + st["drum_liquid"].as_f64().unwrap_or(0.0);
+        let flow = |id: i64| s["edges"].as_array().unwrap().iter().find(|e| e["id"].as_i64() == Some(id)).map_or(0.0, |e| e["stream"]["mass_flow"].as_f64().unwrap_or(0.0));
+        let out: f64 = draws.iter().map(|d| flow(*d)).sum();
+        (held, flow(feed_edge) - out)
+    };
+    let mut last_held: Option<f64> = None;
+    let mut worst_books: f64 = 0.0;
     for t in 1..=total {
         if let Some(&(_, body)) = moves.iter().find(|(m, _)| *m == t - 1) {
             for kv in body.split('+') {
@@ -383,6 +395,20 @@ fn one_run(src: &str, spec: &str, warm: i64, gap: i64, run: i64) -> String {
                 over.text()
             );
         }
+        {
+            let s: Value = serde_json::from_str(&session.snapshot_json()).unwrap();
+            let (held, net) = books(&s);
+            if let Some(h0) = last_held {
+                let imbalance = (held - h0) / 0.1 - net;
+                if t > 2 && imbalance.abs() > 1e-3 && std::env::var("BOOKS").is_ok() {
+                    eprintln!("BOOKS t={t} imbalance {imbalance:.4e} held {held:.3} dheld/dt {:.4e} net {net:.4e} P {:.5} slop {} levels {} {}", (held - h0) / 0.1, s["nodes"][column as usize]["kind"]["pressure"].as_f64().unwrap_or(0.0) / 1e5, s["nodes"][column as usize]["column_operation"]["slop"], s["nodes"][column as usize]["column_operation"]["holdup"]["drum_level"], s["nodes"][column as usize]["column_operation"]["holdup"]["base_level"]);
+                }
+                if t > 2 {
+                    worst_books = worst_books.max(imbalance.abs());
+                }
+            }
+            last_held = Some(held);
+        }
         if t > warm {
             over.tick = t - warm;
             over.worst_ms = over.worst_ms.max(ms);
@@ -395,8 +421,9 @@ fn one_run(src: &str, spec: &str, warm: i64, gap: i64, run: i64) -> String {
     }
     let s: Value = serde_json::from_str(&session.snapshot_json()).unwrap();
     format!(
-        "RESULT {spec}: RUNS {} | {}",
+        "RESULT {spec}: RUNS {} | books worst {:.3e} kg/s | {}",
         reading(&s, column as usize, furnace as usize, &draws),
+        worst_books,
         over.text()
     )
 }

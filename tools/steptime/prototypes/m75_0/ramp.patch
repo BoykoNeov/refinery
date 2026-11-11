@@ -1,0 +1,47 @@
+diff --git a/crates/core/src/engine.rs b/crates/core/src/engine.rs
+index 498e32c..b53bdf9 100644
+--- a/crates/core/src/engine.rs
++++ b/crates/core/src/engine.rs
+@@ -82,6 +82,10 @@ impl Default for EngineConfig {
+     }
+ }
+ 
++thread_local! {
++    static PROBE_BASE: std::cell::RefCell<std::collections::BTreeMap<NodeId, f64>> = std::cell::RefCell::new(std::collections::BTreeMap::new());
++}
++
+ pub struct Engine {
+     pub graph: PlantGraph,
+     pub slate: Slate,
+@@ -1427,6 +1431,31 @@ impl Engine {
+ 
+     pub fn tick(&mut self) -> Result<(), SimError> {
+         let dt = self.config.dt;
++        // probe M75.0: M75_RAMP="t0_s,ramp_s,hold_s,peak_bar": every column's
++        // pressure held at its declared value until t0, ramped to peak over
++        // ramp_s, held hold_s, ramped back over ramp_s.
++        if let Ok(spec) = std::env::var("M75_RAMP") {
++            let v: Vec<f64> = spec.split(',').map(|x| x.parse().unwrap()).collect();
++            let (t0, ramp, hold, peak) = (v[0], v[1], v[2], v[3] * 1e5);
++            let t = self.tick as f64 * dt.value();
++            for id in self.graph.node_ids().collect::<Vec<_>>() {
++                if let NodeKind::Column { pressure, .. } = &mut self.graph.node_mut(id).kind {
++                    let base = PROBE_BASE.with(|m| *m.borrow_mut().entry(id).or_insert(pressure.value()));
++                    let share = if t < t0 {
++                        0.0
++                    } else if t < t0 + ramp {
++                        (t - t0) / ramp
++                    } else if t < t0 + ramp + hold {
++                        1.0
++                    } else if t < t0 + 2.0 * ramp + hold {
++                        1.0 - (t - t0 - ramp - hold) / ramp
++                    } else {
++                        0.0
++                    };
++                    *pressure = Pascal(base + share * (peak - base));
++                }
++            }
++        }
+         // The line flash may forget the last tick's answers (M69.1,
+         // docs/DESIGN.md §74.1): it remembers them for one tick only.
+         self.line_flash.begin_tick();

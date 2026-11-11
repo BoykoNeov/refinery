@@ -95,3 +95,23 @@ into the condenser, open it drains as since §79.18; **the flooded condenser**
 condense what arrives, the condenser sized from its running duty with a
 margin (a game value); **relief a real line to a flare** in the new plant
 file, on the engine's relief valves — the column given a vapour outlet.
+
+## After the decisions: a running column whose pressure moves
+
+`ramp.patch` (probe only, `M75_RAMP`): every column's declared pressure moved
+on a schedule at the top of each tick — the three readers of it (the network's
+pin, `network.rs`; the draw lines' start, `line_stage_pressure`; the column's
+pass, `energy.rs`) follow by construction. The holdup plant with its steel,
+1.8 → 4.5 → 1.8 bar (`ramp_*.txt`, `books.txt`):
+
+- **Every tick converges**: over 300 s each way, over 30 s each way, and on
+  total reflux with the feed on. The feed answers the column's pressure (on
+  total reflux 103 → 98 kg/s at 4.5 bar, back at 1.8).
+- **The mass books close**: the column's held liquid against the feed less
+  the products and the slop, every tick, to 5e-10 kg/s at rest, 4e-7 on the
+  slow ramp; on the fast ramp's way down the imbalance is exactly the slop
+  (137.26 kg/s against 137.26): **a fast drop overfills the drum** — the hot
+  liquid flashes, the vapour surges to the condenser, the drum past full for
+  about 6 s at up to 475 kg/s. The heat books not checked here.
+- So no limit on how fast the pressure may move is needed for the column to
+  follow it.

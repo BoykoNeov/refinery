@@ -31577,3 +31577,52 @@ into the condenser, open it drains as since §79.18; **the flooded condenser**
 condense what arrives, the condenser sized from its running duty with a
 margin (a game value); **relief a real line to a flare** in the new plant
 file, on the engine's relief valves — the column given a vapour outlet.
+
+### 80.1 M75 specified — the condenser, a pressure that rises, the drain, relief
+
+Specified on the user's decisions (§80.0) and the moving-pressure probe (the
+column follows 1.8 → 4.5 → 1.8 bar over 30 s or 300 s, every tick converging,
+the mass books closing with the slop counted).
+
+**The condenser** (`condenser = { margin, coolant_c, overhead_m3 }` on the
+cascade block; refused off a column that holds liquid, on a negative margin,
+an overhead volume not above zero; absent, nothing changes and nothing is
+serialized). Its capacity `C(P) = UA · φ · (T_b(x_drum, P) − T_coolant)` [W],
+`T_b` the distillate's bubble point at `P` (a total condenser's condensate
+leaves at it), `φ` the share of its tubes free of the drum's back-up (1 until
+M75.2), `UA` derived on the first tick from the settled duty: `UA = Q₀ ·
+(1 + margin) / (T_b(x_drum, P_set) − T_coolant)` — so at the set pressure it
+holds its design duty with the margin to spare, by construction. **The
+flooded condenser** (Kister §17.2.2): while `C(P_set)` covers the duty the step
+asked, the controller floods the rest and the pressure is the set pressure
+exactly; past it the pressure rises.
+
+**The pressure a lagged balance, no vapour stock** (the books stay the step's,
+which condenses all it is sent): after each step, `P*` = the set pressure if
+`C(P_set) ≥ Q`, else the root of `C(P) = Q` (bisection, a fixed number of
+steps, on `[P_set, P_cap]`); the next tick's `P = P + (P* − P) · dt/(τ + dt)`,
+`τ = (V/(R·T)) · λ / (dC/dP)` — the time the overhead volume takes to fill on
+the uncondensed vapour, from the declared volume, the top vapour's latent
+heat and temperature (≈ 15 s on the holdup plant). The pressure never falls
+below the set. Until relief (M75.3) `P_cap` a game cap, reported. The state
+`HoldupState::column_pressure` (absent without the condenser) is what the
+three readers use: the network's pin, the draw lines' start, the column's
+pass.
+
+**The drain** (M75.2): `Command::SetSlopDrain { node, open }`, open by
+default and not serialized while open — every plant byte-identical. Shut, a
+drum past full holds its excess; the excess volume over the condenser's
+liquid volume (derived, a game value) is the flooded share `1 − φ`; a fully
+flooded condenser condenses nothing and the pressure rises to relief (Kister
+§13.3: it stops the level rising). Past the condenser flooded whole the excess
+goes to slop with the drain shut, reported.
+
+**Relief** (M75.3, its own probe first): a vapour outlet on the column, a
+relief valve to a flare, in the new plant file; its set pressure from Kister
+ch. 9 / Ludwig 1B; the vented vapour taken off the top stage's before the
+condenser.
+
+**The plant** (M75.4): `scenarios/crude_unit_overfill.toml` shipped once, with
+the condenser, the drain and relief; slices 1–3 on inline fixtures (the
+existing files are never edited). Then the screen's key and its measured
+table. On both fidelities; units newtypes; no panics.
