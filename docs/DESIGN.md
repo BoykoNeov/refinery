@@ -31512,3 +31512,25 @@ Each fix buys about 30 s of a column whose trays hold grams and whose vapour
 is a few mol/s, then a new cycle: the approach does not converge. The dry
 state can only be tested with the draining (nothing else empties a tray). Put
 to the user (§79.19's choices, the roadmap's M74.6.2.0).
+
+**Sub-stepping, then deferred (2026-11-11).** The user chose smaller steps
+first, deferring if they did not carry the 5 held runs: a refused tick run
+again as ten steps of a tenth (each refused one split again, to depth 2;
+`heat_balance::sub_steps` in the probe) — the shut-down to 17.0 minutes
+(stage 11 out of liquid in the short steps), with the third branch to 17.2
+(the trays' pressure drops not settling, §78.9's loop); the 70 held hours
+65 of 70, the same 5, later (two the base's stall in the short steps, three
+the pressure drops' loop). **Deferred with the draining (C29); M74 closed**
+(§79.20).
+
+### 79.20 M74 closed (2026-11-11)
+
+The column holds liquid: each tray's liquid following the flow over its weir,
+the drum and base declared per plant with their level loops (scheme B with a
+live toggle to A, the physical limits, the loops' ceiling), stages that stop
+boiling, the steel a heat store, the start from empty and total reflux, a
+drum or base past full to slop. Left open: the trays that drain without
+vapour and a stage that boils dry (C29, §79.12, §79.14, §79.19); the burst
+tube's drain-back (C28); the overfull column's knock-on effects (C30); only
+the column starts empty (C31); the feed cut with the loops and reflux stopped
+(C26's pressure-drop wall).

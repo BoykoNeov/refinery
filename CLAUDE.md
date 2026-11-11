@@ -148,8 +148,8 @@ godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on scre
 godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock]
 godot --path . res://demo/reactor.tscn       # the M57.5 reactor screen (keys on screen; 4 = M58 wall; 5/6 = M59 hydrogen)
 godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
-godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops, 7 M73 trays)
-godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped|cold|loops|trays]
+godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops, 7 M73 trays, 8 M74 holdup)
+godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped|cold|loops|trays|holdup]
 ```
 
 ## Testing
@@ -189,8 +189,8 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M74** — a column that holds liquid (C2): the trays' liquid following the flow, the reflux drum and base declared, then the start from empty (DESIGN §79).
-**Latest closed: M73 (2026-10-22)**: trays that flood or weep (C1) — sieve trays sized per section, each stage at its own pressure, the drop capped past flood, the multipass layout on Nutter's (C21); the tray plant on key 7 with its measured table; every plant byte-identical (DESIGN §78). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none** — M74 closed; the next is the user's choice.
+**Latest closed: M74 (2026-11-11)**: a column that holds liquid (C2) — each tray's liquid following its weir, the drum and base with their level loops, stages that stop boiling, the steel a heat store, the start from empty and total reflux, a full vessel to slop; the holdup plant on key 8 and the empty-start plant; the draining and a stage that boils dry deferred (C29); every plant byte-identical (DESIGN §79). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

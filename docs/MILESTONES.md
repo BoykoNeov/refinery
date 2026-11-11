@@ -12,6 +12,44 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M74 is CLOSED (2026-11-11): a column that holds liquid — the trays, the
+base and the reflux drum, then the start from empty — `docs/DEFERRED.md` C2
+taken.** Asked as "what is next" after M73; the user chose holdup (C2), "start
+from empty too", and after the probe each tray's liquid following its weir,
+the drum and base sized per plant, a new plant file.
+- **M74.0–M74.1.0, the probes** (§79.0–§79.1): the side products answer a key
+  in 1–4 minutes, the top in 8–15 (the drum sets the pace); scheme B decided
+  (the distillate holds the drum, the bottoms the base, the player the
+  reboiler) with a live toggle to A, the base 20 minutes of the bottoms,
+  physical limits rather than errors at an empty or full vessel.
+- **M74.1–M74.3, the holdup and the step** (§79.3–§79.6): the holdup declared
+  and filled on the first tick; implicit Euler on each stage's moles and heat,
+  the liquid off each tray from what it holds; the toggle, the limits, the
+  loops' ceiling, a column with no feed. Each component conserved every tick
+  to ~1e-10 kg/s.
+- **M74.4, the holdup plant** (§79.7–§79.8): `scenarios/crude_unit_holdup.toml`
+  on key 8; a tray short within its tick gives what it has; the keys' range a
+  box.
+- **M74.5, stages that stop boiling** (§79.9–§79.13): a complementarity on each
+  stage's bubble point; the one-tick feed cut runs; key 8's held reboiler down
+  to 0 MW. The trays draining without vapour built and held back (C29).
+- **M74.6, the start from empty** (§79.14–§79.18): each stage's steel a heat
+  store, `start = "empty"` (`scenarios/crude_unit_empty.toml`, the four top
+  products settled from 21–24 minutes), total reflux a command
+  (`SetTotalReflux`, refused without the steel), a drum or base past full to a
+  slop line with its `"full"` alarm.
+- **M74.6.2.0, a stage that boils dry, probed and deferred** (§79.19,
+  `tools/steptime/prototypes/m74_6_2/`): the dry state, a choose-each-branch
+  rescue, a cap on a near-empty tray's slope and sub-stepping each move the
+  draining's shut-down from 7.8 to 17 minutes, but the 70 held hours stay 65
+  of 70 — deferred with the draining (the user's decision).
+- **Every shipped plant byte-identical** through M74 on both fidelities; two
+  plants added (71).
+- **Left open**: the draining and the dry state (C29); the feed cut with the
+  loops and reflux stopped (C26); the burst tube's drain-back (C28); an
+  overfull column's knock-on effects (C30); only the column starts empty
+  (C31).
+
 **M73 is CLOSED (2026-10-22): trays that flood or weep — tray sizes per
 section, each stage at its own pressure — `docs/DEFERRED.md` C1 taken, C21
 settled.** Asked as "what is next" after M72; the user chose flooding and

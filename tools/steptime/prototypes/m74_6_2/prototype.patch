@@ -907,6 +907,152 @@ index 3399387..bbea519 100644
          })
      }
  
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index 7d11861..07abefa 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -1240,6 +1240,118 @@ fn emptied(mut state: HoldupState) -> HoldupState {
+ /// step from the state its last tick left (`column_step`), published as a
+ /// pass — every draw's flow, its trays' readings and loops, and the state
+ /// the engine writes back.
++/// probe M74.6.2: a refused tick as `m` shorter steps, each refused one
++/// split again (to depth 2); the published products and duties the steps'
++/// mean, the rest the last step's.
++#[allow(clippy::too_many_arguments)]
++fn sub_steps(
++    setup: &ColumnSetup<'_>,
++    holdup: &ColumnHoldup,
++    state: &HoldupState,
++    energy_scale: f64,
++    temperatures: &[f64],
++    vapour: &[f64],
++    m: usize,
++    depth: u32,
++) -> Result<crate::column_step::Stepped, SimError> {
++    let pass = setup.pass;
++    let mut short = holdup.clone();
++    short.tick = refinery_core::units::Seconds(holdup.tick.value() / m as f64);
++    let mut current = state.clone();
++    let mut t = temperatures.to_vec();
++    let mut v = vapour.to_vec();
++    let mut results: Vec<crate::column_step::Stepped> = Vec::with_capacity(m);
++    for _ in 0..m {
++        let step = ColumnStep {
++            plan: &setup.plan,
++            spec: setup.spec,
++            holdup: &short,
++            state: &current,
++            slate: pass.slate,
++            thermo: setup.thermo,
++            pressure: pass.pressure,
++            stage_pressures: &setup.pressures,
++            feed: &setup.feed,
++            feed_mass: setup.feed_mass,
++            feed_molar: setup.feed_molar,
++            feed_enthalpy: setup.feed_enthalpy,
++            energy_scale,
++            tolerance: setup.tolerance,
++        };
++        let one = match step.step(&StepStart { temperatures: &t, vapour: &v }) {
++            Ok(one) => one,
++            Err(e) if depth < 2 => {
++                if std::env::var("M74_DIAG").is_ok() {
++                    eprintln!("SUB depth {depth} split again: {e}");
++                }
++                sub_steps(setup, &short, &current, energy_scale, &t, &v, m, depth + 1)?
++            }
++            Err(e) => return Err(e),
++        };
++        let mut next = one.state.clone();
++        let (tray_vapour, tray_vapour_density) = crate::trays::tray_vapour_loads(
++            pass.slate,
++            setup.spec,
++            &setup.pressures,
++            &one.temperatures,
++            &one.liquid,
++            &one.k,
++            &one.flows,
++            &[],
++            &[],
++        )?
++        .into_iter()
++        .unzip();
++        next.tray_vapour = tray_vapour;
++        next.tray_vapour_density = tray_vapour_density;
++        next.tray_drops = current.tray_drops.clone();
++        current = next;
++        t = one.temperatures.clone();
++        v = one.flows.vapour.clone();
++        results.push(one);
++    }
++    if std::env::var("M74_DIAG").is_ok() {
++        eprintln!("SUB depth {depth}: {m} steps ran");
++    }
++    let k = results.len() as f64;
++    let first_reading = results[0].reading;
++    let mut last = results.pop().unwrap();
++    for r in &results {
++        for (a, b) in last.draw_masses.iter_mut().zip(&r.draw_masses) {
++            for (x, y) in a.iter_mut().zip(b) {
++                *x += y;
++            }
++        }
++        last.reboiler_duty += r.reboiler_duty;
++        last.condenser_duty += r.condenser_duty;
++        for (vessel, masses) in &r.slop {
++            match last.slop.iter_mut().find(|(w, _)| w == vessel) {
++                Some((_, acc)) => {
++                    for (x, y) in acc.iter_mut().zip(masses) {
++                        *x += y;
++                    }
++                }
++                None => last.slop.push((*vessel, masses.clone())),
++            }
++        }
++    }
++    for a in &mut last.draw_masses {
++        for x in a.iter_mut() {
++            *x /= k;
++        }
++    }
++    for (_, acc) in &mut last.slop {
++        for x in acc.iter_mut() {
++            *x /= k;
++        }
++    }
++    last.reboiler_duty /= k;
++    last.condenser_duty /= k;
++    last.reading = first_reading;
++    last.state.tray_drops = state.tray_drops.clone();
++    Ok(last)
++}
++
+ fn stepped_pass(
+     setup: &ColumnSetup<'_>,
+     holdup: &ColumnHoldup,
+@@ -1311,10 +1423,20 @@ fn stepped_pass(
+             )
+         }
+     };
+-    let stepped = step.step(&StepStart {
++    let stepped = match step.step(&StepStart {
+         temperatures: &temperatures,
+         vapour: &vapour,
+-    })?;
++    }) {
++        Ok(s) => s,
++        Err(refused) => match std::env::var("M74_SUB") {
++            Ok(m) => {
++                let m: usize = m.parse().unwrap();
++                sub_steps(setup, holdup, state, energy_scale, &temperatures, &vapour, m, 0)
++                    .map_err(|e| SimError::Numerical(format!("{refused}; sub-stepped: {e}")))?
++            }
++            Err(_) => return Err(refused),
++        },
++    };
+ 
+     let mut next = stepped.state;
+     let (tray_vapour, tray_vapour_density) = crate::trays::tray_vapour_loads(
 diff --git a/crates/solvers/src/trays.rs b/crates/solvers/src/trays.rs
 index 55145cf..c5a7d8d 100644
 --- a/crates/solvers/src/trays.rs

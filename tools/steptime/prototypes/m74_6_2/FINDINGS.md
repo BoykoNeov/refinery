@@ -75,10 +75,28 @@ fail (one from 15 to 38 minutes in), not whether.
 
 ## What it costs
 
-About 35 minutes of machine time: the shut-downs (~1 min each), the 70 held
-hours three times (~5–9 min each on 7–12 cores), the builds.
+About 40 minutes of machine time: the shut-downs (~1 min each), the 70 held
+hours four times (~5–9 min each on 7–12 cores), the builds.
 
-## For the user
+## After the user's first answer: sub-stepping a refused tick
+
+The user chose (2026-11-11) to try smaller steps first, and to defer if they
+did not carry the 5 held runs. `M74_SUB=m` (`heat_balance::sub_steps`): a tick
+the step refuses run again as `m` steps of `dt/m`, each refused one split
+again (to depth 2), the products and duties their mean, the state the last's.
+With `m` = 10:
+
+| switches | runs to | refused on |
+|---|---|---|
+| `SUB` (`sub_shut.txt`) | 17.0 min | stage 11 runs out of liquid in the short steps |
+| `SUB` + `DRY` (`subdry_shut.txt`) | 17.2 min | the trays' pressure drops not settling (0.6 Pa after 25 solves, §78.9's loop) |
+
+The 70 held hours (`holds_sub.txt`): **65 of 70**, the same 5, later (two
+the step's base stall even in the short steps; three now the pressure drops'
+loop, 0.57–0.62 Pa). Smaller steps do not carry them. **Decided, the user's
+standing answer: the dry state and the draining deferred (C29), M74 closed.**
+
+## For the user (before the first answer)
 
 The third branch as specified does not carry the draining's shut-down or its 5
 held runs; the regime left is a column with grams on its trays. Choices:

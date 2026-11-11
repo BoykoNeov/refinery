@@ -10991,7 +10991,7 @@ and holds a warmer return past the edge. DESIGN §78.11.
   fails. GDScript run headless (1.1–1.6 ms a tick, six a frame); the
   godot-feature clippy. No engine change (no corpus run).
 
-## M74 — a column that holds liquid: the trays, the base and the reflux drum, the products that take minutes to answer, and later the start from empty; ledger row C2; opened on a decision
+## M74 — a column that holds liquid: the trays, the base and the reflux drum, the products that take minutes to answer, and later the start from empty; ledger row C2; opened on a decision; CLOSED 2026-11-11
 
 Asked after M73 as "what is next" (2026-10-22): the user chose 1, holdup
 (C2), and for its scope "start from empty too" — the running column that
@@ -11243,7 +11243,7 @@ at full reboiler, §79.15; a drum or base past full sent to slop with an
 alarm, not to product — the user's decision, its knock-on effects C30), then
 the third branch, then the draining (C29).
 
-### M74.6 — **IN PROGRESS** 2026-11-11: the start from empty — part 1 done (the steel, the start, total reflux, the slop line); the third branch and the draining to come
+### M74.6 — **DONE** 2026-11-11: the start from empty — the steel, the start, total reflux, the slop line; the third branch and the draining deferred (C29)
 
 **Step 1 — DONE** (DESIGN §79.16): the column's steel a heat store
 (`steel = "derived"` from its trays, or `steel_t` its whole mass), the start
@@ -11289,3 +11289,9 @@ guard is inert where a dry tray passes no liquid: not shippable as written.
 Put to the user: rework the trays' liquid into the tick's unknowns, sub-step a
 refused tick, a minimum liquid film, or defer the dry state with the draining
 (C29) and close M74.
+
+**Then (2026-11-11), the user: try smaller steps, deferring if they do not
+carry the 5 held runs.** A refused tick run again as ten steps of a tenth
+(split again to depth 2): the shut-down to 17.0–17.2 minutes, the 70 held
+hours 65 of 70, the same 5, later (DESIGN §79.19). **Deferred: the dry state
+with the draining (C29). M74 CLOSED** (DESIGN §79.20; `docs/MILESTONES.md`).
