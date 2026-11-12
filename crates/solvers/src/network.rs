@@ -657,15 +657,17 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
             // One feed, one outlet per draw. The feed is stored INTO the column
             // and each draw OUT of it (the loader enforces the direction), so the
             // graph-direction in/out counts are exactly (1, N).
-            // A pumparound loop adds a pipe out and one back (M72.2).
+            // A pumparound loop adds a pipe out and one back (M72.2), a
+            // relief its line's pipe out (M75.3.2).
             NodeKind::Column { draws, cascade, .. } => {
                 let loops = cascade
                     .as_ref()
                     .map_or(0, |spec| spec.loops.iter().filter(|l| !l.line.is_empty()).count());
+                let relief = usize::from(graph.column_relief(nid).is_some());
                 Some((
                     1 + usize::from(cascade.as_ref().is_some_and(|spec| spec.steam.is_some()))
                         + loops,
-                    draws.len() + loops,
+                    draws.len() + loops + relief,
                 ))
             }
             _ => None,
@@ -3414,6 +3416,11 @@ fn relief_states(graph: &PlantGraph, pressures: &BTreeMap<NodeId, f64>) -> BTree
         .filter_map(|nid| {
             let kind = &graph.node(nid).kind;
             relief_opening_at(kind, 0.0)?;
+            // A column's relief opens on the column's pressure solve, never
+            // on the network's (M75.3.2, docs/DESIGN.md §80.6).
+            if graph.relief_valve_column(nid).is_some() {
+                return None;
+            }
             let open = pressures
                 .get(&nid)
                 .and_then(|&p| relief_opening_at(kind, p))
@@ -4763,6 +4770,19 @@ pub fn march_draw_lines(
         };
         pins.loop_delivered.insert(line[0], KgPerSec(delivered));
         pin(&mut pins, marched);
+    }
+    // A column's relief valve (M75.3.2, docs/DESIGN.md §80.6): both its
+    // pipes prescribed, the vent the column's, so it has no equation of its
+    // own — pinned at its inlet, the column's top, where its spring reads
+    // (the inlet pipe's loss neglected, as the column's solve neglects it,
+    // §80.5). Not marched: its line carries a vapour, and the back pressure
+    // it builds is neglected (DEFERRED C34) — the valve is choked across
+    // nearly all its band, where back pressure moves nothing.
+    for (column, relief) in graph.column_reliefs() {
+        pins.pressure.insert(
+            relief.valve,
+            line_stage_pressure(graph, previous_states, column, None)?,
+        );
     }
     Ok(pins)
 }

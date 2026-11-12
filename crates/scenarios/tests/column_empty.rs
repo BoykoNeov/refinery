@@ -191,7 +191,14 @@ pub(crate) struct Books {
     draws: Vec<(EdgeId, usize)>,
     cp: Vec<f64>,
     steel: Vec<Kg>,
+    /// The column's relief line's pipe into the flare, where it has one
+    /// (M75.3.2, docs/DESIGN.md §80.6): the vent counted off it.
+    flare: Option<EdgeId>,
 }
+
+/// The name of a column relief line's pipe into its flare in the fixtures
+/// (`column_relief::with_relief`).
+pub(crate) const FLARE_PIPE: &str = "flare_header";
 
 impl Books {
     pub(crate) fn of(engine: &Engine) -> Self {
@@ -210,6 +217,12 @@ impl Books {
                 .map(|c| engine.slate.get(c).cp.value())
                 .collect(),
             steel: steel_of(engine),
+            flare: engine
+                .snapshot()
+                .edges
+                .iter()
+                .find(|e| e.name == FLARE_PIPE)
+                .map(|e| e.id),
         }
     }
 
@@ -242,9 +255,17 @@ impl Books {
             for slop in &op.slop {
                 balance -= slop.flow_kg_s * slop.composition.fractions()[c];
             }
-            // And what its relief vented, on no pipe (M75.3, §80.5).
-            if let Some(relief) = &op.relief {
-                balance -= relief.flow_kg_s * relief.composition.fractions()[c];
+            // And what its relief vented: off its line's pipe into the flare
+            // (M75.3.2, §80.6), else on no pipe (M75.3, §80.5) — once.
+            match (self.flare, &op.relief) {
+                (Some(flare), _) => {
+                    let (vented, w) = flow(flare);
+                    balance -= vented * w[c];
+                }
+                (None, Some(relief)) => {
+                    balance -= relief.flow_kg_s * relief.composition.fractions()[c];
+                }
+                (None, None) => {}
             }
             worst = worst.max(balance.abs());
         }
@@ -276,9 +297,18 @@ impl Books {
                 .sum();
             heat -= slop.flow_kg_s * cp_mix * (slop.temperature_k - 273.15);
         }
-        // The vent's heat, on the column's own datum (the top's vapour).
-        if let Some(relief) = &op.relief {
-            heat -= relief.heat_w;
+        // The vent's heat: its pipe's whole enthalpy, the latent heat it
+        // carries included (M75.3.2), else the column's own figure for it
+        // (the top's vapour, M75.3).
+        match (self.flare, &op.relief) {
+            (Some(flare), _) => {
+                let e = snapshot.edges.iter().find(|e| e.id == flare).unwrap();
+                let latent = e.stream.latent.map_or(0.0, |l| l.value());
+                heat -= carried(flare, e.stream.temperature.value())
+                    + e.stream.mass_flow.value() * latent;
+            }
+            (None, Some(relief)) => heat -= relief.heat_w,
+            (None, None) => {}
         }
         (worst, heat)
     }

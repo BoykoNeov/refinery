@@ -11432,3 +11432,33 @@ exactly; a twentieth of it is held at the ceiling, 4.05 bar, its alarm on.
 At rest bit-identical to the plant without one; eight tests, thirteen
 mutations caught; every plant byte-identical (71 of 71, both fidelities).
 `crates/scenarios/tests/column_relief.rs`.
+
+### M75.3.2 — **DONE** 2026-11-12: the relief valve on the map, its line to a flare
+
+Asked: a pipe straight to the flare, or the valve drawn on the line? The
+user: "closer to reality" — so the valve on the map, as a column's safety
+valve stands on its top, piped to the flare header (Kister §9.5). `relief =
+{ valve = "column_psv" }` names a `relief_valve` node: one pipe into it from
+the column, one out to a `sink` or the atmosphere, the flare. The node is
+the valve's datasheet, its one owner (`kv`, set, accumulation, `x_t`) —
+M75.3.1's `relief = { kv, x_t }` gone; the set and full lift now bounded by
+API RP-520, not derived (set at most the design pressure, full lift at most
+110 % of it gauge; the ceiling 121 % the column's), the book's valve exactly
+M75.3.1's. Refused by name: no such node or no relief valve, a pop valve, no
+or a bad `x_t`, a set above the design pressure or at the running one, full
+lift past 110 %, any other line shape, a flare at or above the set, a valve
+two columns name. The node's own law never runs: both pipes prescribed, the
+vent written on them to the bit, the valve pinned at the column's pressure,
+out of the network's relief memory and the cavitation reading; the pipes
+carry the vent's state and its latent heat, so each pipe's enthalpy is the
+heat the column booked. The line's back pressure neglected, the valve choked
+across nearly its band (DEFERRED C34). DESIGN §80.6.
+
+- Gates (`crates/scenarios/tests/column_relief_line.rs`, and `column_relief.rs`
+  moved to the valve on the map): the refusals; the flare the atmosphere;
+  the coolant lost and back, 1 200 ticks — the line the vent's flow to the
+  bit, its enthalpy the column's to 1e-9, the books closing off the flare's
+  pipe; the slow stories repeating M75.3.1's figures; at rest the line zero
+  and the plant the plain one's to 1e-6 (two more nodes move the cold start's
+  last bits). Mutations: sixteen, fourteen caught, two argued equivalent (the vent's pipe counted as feed reads the solve's zero; the valve in the relief memory re-solves to the same answer). Every plant byte-identical, 71 of 71 on both
+  fidelities.

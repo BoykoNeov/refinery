@@ -1710,6 +1710,11 @@ impl Engine {
                 if self.graph.loop_draw(eid).is_some() || self.graph.loop_return(eid).is_some() {
                     continue;
                 }
+                // Nor is its relief line's pipe out (M75.3.2, docs/DESIGN.md
+                // §80.6): written below.
+                if self.graph.relief_line_column(eid) == Some(nid) {
+                    continue;
+                }
                 if let Some(idx) = draws.iter().position(|d| d.outlet == other) {
                     // +1 when the column is the edge's source (graph-direction
                     // flow leaves the column), −1 when it is the target.
@@ -1772,6 +1777,15 @@ impl Engine {
                     .get(index)
                     .map_or(0.0, |run| run.flow.value());
                 draw_writes.extend(line.iter().map(|&edge| (edge, flow)));
+            }
+            // Its relief line carries the vent on both its pipes — the flow
+            // the sweep carried on them, to the bit (M75.3.2, §80.6).
+            if let Some(relief) = self.graph.column_relief(nid) {
+                let flow = separation
+                    .relief
+                    .as_ref()
+                    .map_or(0.0, |vent| vent.flow.value());
+                draw_writes.extend(relief.line.iter().map(|&edge| (edge, flow)));
             }
         }
         for (eid, flow) in draw_writes {
@@ -2698,6 +2712,36 @@ impl Engine {
             stream.vapour_fraction = share.map(|v| v.mass_fraction);
             stream.latent = share.map(|v| v.latent);
         }
+        // 3b′. A column's relief line carries a vapour (M75.3.2, docs/DESIGN.md
+        //      §80.6): its latent heat per kilogram, `heat/ṁ − cp·(T − T_REF)`,
+        //      so the stream's enthalpy flux on the engine's datum
+        //      (`stream_enthalpy_flux`) is the heat the column booked leaving
+        //      by it, `ReliefVent::heat`. `None` while it vents nothing, as an
+        //      idle boil-off vent's. No line flash runs on such a plant (the
+        //      loader's refusal), so nothing else writes these two fields.
+        for (column, relief) in self.graph.column_reliefs() {
+            let latent = match node_states
+                .column_separation
+                .get(&column)
+                .and_then(|separation| separation.relief.as_ref())
+                .filter(|vent| vent.flow.value() > 0.0)
+            {
+                None => None,
+                Some(vent) => {
+                    let sensible = self.enthalpy.specific_enthalpy(
+                        &self.slate,
+                        &vent.composition,
+                        vent.temperature,
+                    )?;
+                    Some(JPerKg(
+                        vent.heat.value() / vent.flow.value() - sensible.value(),
+                    ))
+                }
+            };
+            for edge in relief.line {
+                self.graph.pipe_mut(edge).stream.latent = latent;
+            }
+        }
 
         // 4. Validation: nothing non-finite escapes a tick.
         for eid in self.graph.edge_ids() {
@@ -2752,6 +2796,12 @@ impl Engine {
         let mut cavitation = std::collections::BTreeMap::new();
         for nid in self.graph.node_ids() {
             if !cavitation_subject(&self.graph.node(nid).kind) {
+                continue;
+            }
+            // A column's relief carries the column's vapour, which this
+            // criterion — reading the slate's declared phases — would call a
+            // boiling liquid (M75.3.2, docs/DESIGN.md §80.6).
+            if self.graph.relief_valve_column(nid).is_some() {
                 continue;
             }
             let (Some(pressure), Some(temperature), Some(composition)) = (

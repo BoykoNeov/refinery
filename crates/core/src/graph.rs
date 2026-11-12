@@ -1047,28 +1047,40 @@ pub struct ColumnCondenser {
 /// the vapour the column sends up vented to a flare once the pressure passes
 /// the set, on the engine's own laws — the spring's memoryless opening
 /// (`relief_opening`, a smoothstep from the set to full lift) and the ISA gas
-/// valve (`gas_valve_flow`, choked at `F_k·x_T`). Every pressure the loader
-/// derives from the column's design pressure, API RP-520 as Ludwig Vol. 1B
-/// Fig. 9.7A states it: set at the design pressure (the MAWP), full lift
-/// 10 % of it (gauge) above, and the most the pressure is let rise to 121 %
-/// of it (gauge) — held there with an alarm past full lift.
+/// valve (`gas_valve_flow`, choked at `F_k·x_T`).
+///
+/// **The valve is a `ReliefValve` node on the map** (M75.3.2, docs/DESIGN.md
+/// §80.6), between two pipes: the column's top to the valve, the valve to
+/// the flare. Its datasheet — `cv_max`, `x_t`, its set and its accumulation —
+/// is that node's, copied here by the loader, and API RP-520 as Ludwig Vol.
+/// 1B Fig. 9.7A states it bounds them: set no higher than the column's
+/// design pressure (the MAWP), full lift no higher than 110 % of it (gauge);
+/// the most the pressure is let rise is 121 % of it (gauge) — held there
+/// with an alarm past full lift. The node's own law never runs: the column's
+/// pressure solve owns the vent, and both pipes carry it, prescribed.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ColumnRelief {
     /// The valve's flow coefficient at full lift, in the element's SI form
-    /// [m²] (the file's `kv`, as every valve's `cv_max`).
+    /// [m²] (its node's `cv_max`).
     pub cv_max: f64,
     /// The valve's critical pressure-drop ratio `x_T` [-], in (0, 1].
     pub x_t: f64,
-    /// Where it starts to open [Pa]: the column's design pressure.
+    /// Where it starts to open [Pa]: its node's set pressure.
     pub set_pressure: Pascal,
     /// Its accumulation band [Pa]: full lift at `set_pressure +
-    /// accumulation`, 10 % of the gauge set pressure.
+    /// accumulation`, its node's.
     pub accumulation: Pascal,
-    /// The most the pressure rises to [Pa], 121 % of the gauge set
-    /// pressure: past full lift the column is held here, its alarm on.
+    /// The most the pressure rises to [Pa], 121 % of the column's gauge
+    /// design pressure: past full lift the column is held here, its alarm on.
     pub ceiling: Pascal,
-    /// The flare's pressure the valve vents against [Pa]: atmospheric.
+    /// The flare's pressure the valve vents against [Pa]: the pressure of
+    /// the node its line ends at.
     pub flare_pressure: Pascal,
+    /// The valve's node on the map (M75.3.2).
+    pub valve: NodeId,
+    /// Its line: the pipe from the column to the valve, then the pipe from
+    /// the valve to the flare, each declared from upstream.
+    pub line: [EdgeId; 2],
 }
 
 /// A column's steel, the heat its metal stores (M74.6, docs/DESIGN.md
@@ -3170,10 +3182,11 @@ impl PlantGraph {
     }
 
     /// Whether `edge` is a pipe of a draw LINE (M62.4b, docs/DESIGN.md §67.13)
-    /// or of a pumparound loop's (M72.2, §77.2): prescribed, either way.
-    /// Asked of every edge on every pass of a flow solve, so it answers from
-    /// the edge's own ends first: a line pipe leaves a column, a pump or a
-    /// cooler, and every other pipe is refused before any walk.
+    /// or of a pumparound loop's (M72.2, §77.2), or of a column's relief line
+    /// (M75.3.2, §80.6): prescribed, every one. Asked of every edge on every
+    /// pass of a flow solve, so it answers from the edge's own ends first: a
+    /// line pipe leaves a column, a pump, a cooler or a relief valve, and
+    /// every other pipe is refused before any walk.
     pub fn is_draw_line_edge(&self, edge: EdgeId) -> bool {
         let (from, _) = self.endpoints(edge);
         if !matches!(
@@ -3182,8 +3195,13 @@ impl PlantGraph {
                 | NodeKind::Pump { .. }
                 | NodeKind::Cooler { .. }
                 | NodeKind::WaterCooler { .. }
+                | NodeKind::ReliefValve { .. }
         ) {
             return false;
+        }
+        // A column's relief line (M75.3.2, docs/DESIGN.md §80.6).
+        if self.relief_line_column(edge).is_some() {
+            return true;
         }
         self.node_ids().any(|id| match &self.node(id).kind {
             NodeKind::Column { draws, cascade, .. } => {
@@ -3216,6 +3234,50 @@ impl PlantGraph {
             }
         }
         lines
+    }
+
+    /// Every column's relief (M75.3.2, docs/DESIGN.md §80.6): the column and
+    /// its relief, ascending by column; empty on every plant without one.
+    pub fn column_reliefs(&self) -> Vec<(NodeId, ColumnRelief)> {
+        self.node_ids()
+            .filter_map(|id| Some((id, self.column_relief(id)?)))
+            .collect()
+    }
+
+    /// `column`'s relief, or `None` on any other node.
+    pub fn column_relief(&self, column: NodeId) -> Option<ColumnRelief> {
+        match &self.node(column).kind {
+            NodeKind::Column {
+                cascade: Some(spec),
+                ..
+            } => spec.holdup.as_ref()?.condenser?.relief,
+            _ => None,
+        }
+    }
+
+    /// The column whose relief line `edge` is a pipe of (M75.3.2): prescribed,
+    /// carrying the vent. Answers from the edge's own source first — a relief
+    /// line's pipe leaves a column or a relief valve.
+    pub fn relief_line_column(&self, edge: EdgeId) -> Option<NodeId> {
+        let (from, _) = self.endpoints(edge);
+        let column = match self.node(from).kind {
+            NodeKind::Column { .. } => from,
+            NodeKind::ReliefValve { .. } => self.relief_valve_column(from)?,
+            _ => return None,
+        };
+        self.column_relief(column)
+            .filter(|relief| relief.line.contains(&edge))
+            .map(|_| column)
+    }
+
+    /// The column whose relief `node` is the valve of (M75.3.2): its opening
+    /// is the column's, never its own law's.
+    pub fn relief_valve_column(&self, node: NodeId) -> Option<NodeId> {
+        if !matches!(self.node(node).kind, NodeKind::ReliefValve { .. }) {
+            return None;
+        }
+        self.node_ids()
+            .find(|&id| self.column_relief(id).is_some_and(|r| r.valve == node))
     }
 
     /// The column and loop whose line `edge` brings back INTO its column — a

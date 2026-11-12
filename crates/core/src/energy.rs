@@ -426,6 +426,28 @@ fn column_draw_at<'a>(
             })?;
         return Ok(Some((&run.drawn, run.drawn_temperature)));
     }
+    // A relief line's first pipe carries the vent (M75.3.2, docs/DESIGN.md
+    // §80.6): the column's vapour, at its top's temperature. On a tick that
+    // reported none — the settling first — the distillate's cut stands in,
+    // at no flow.
+    if graph.relief_line_column(edge) == Some(upwind) {
+        let separation = separations.get(&upwind).ok_or_else(|| {
+            SimError::Numerical(format!(
+                "internal: column '{}' has no separation for its relief this tick",
+                graph.node(upwind).name
+            ))
+        })?;
+        if let Some(vent) = &separation.relief {
+            return Ok(Some((&vent.composition, vent.temperature)));
+        }
+        let cut = separation.draws.first().ok_or_else(|| {
+            SimError::Numerical(format!(
+                "separation model returned no draws for column '{}'",
+                graph.node(upwind).name
+            ))
+        })?;
+        return Ok(Some((&cut.composition, cut.temperature)));
+    }
     // The upwind node is a column, so this edge leaves it: it must be a draw.
     let draw = draw_index_for_edge(graph, edge, upwind, draws)?;
     let separation = separations.get(&upwind).ok_or_else(|| {
@@ -1539,9 +1561,15 @@ pub fn resolve_node_states(
     // And every pumparound loop's (M72.2, docs/DESIGN.md §77.2), whose last
     // pipe comes back into its column: the column never waits on it.
     let loop_lines = graph.loop_lines();
+    // And every column's relief line, the vent on both its pipes (M75.3.2,
+    // docs/DESIGN.md §80.6).
+    let reliefs = graph.column_reliefs();
     let line_edge = |edge: EdgeId| {
         lines.iter().any(|(_, _, line)| line.contains(&edge))
             || loop_lines.iter().any(|(_, _, line)| line.contains(&edge))
+            || reliefs
+                .iter()
+                .any(|(_, relief)| relief.line.contains(&edge))
     };
     let mut flows: Cow<BTreeMap<EdgeId, f64>> = Cow::Borrowed(edge_mass_flow);
 
@@ -2295,6 +2323,17 @@ pub fn resolve_node_states(
                                 let flow =
                                     pass.loops.get(*index).map_or(0.0, |run| run.flow.value());
                                 line_writes.extend(line.iter().map(|&edge| (edge, flow)));
+                            }
+                            // Its relief line carries the vent on both its
+                            // pipes, the engine's relief write to the bit
+                            // (M75.3.2, docs/DESIGN.md §80.6).
+                            for (column, relief) in &reliefs {
+                                if *column != id {
+                                    continue;
+                                }
+                                let flow =
+                                    pass.relief.as_ref().map_or(0.0, |vent| vent.flow.value());
+                                line_writes.extend(relief.line.iter().map(|&edge| (edge, flow)));
                             }
                             separations.insert(id, pass);
                         }

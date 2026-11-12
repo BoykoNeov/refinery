@@ -31961,3 +31961,103 @@ vapour's own test was added —, the upper end the design, the alarm strict,
 the flash off the stage, its heat, the vent's heat, the drum's loss, the
 band, the ceiling, the `x_t` refusal, the faceplate's alarm). Every plant
 byte-identical, 71 of 71 on both fidelities.
+
+### 80.6 M75.3.2 landed — the relief valve on the map, its line to a flare (2026-11-12)
+
+**Asked first, the user**: a pipe straight from the column to a flare, the
+valve inside the column (A), or the valve drawn on the line (B)? "Do what is
+closer to reality": a real column's safety valve sits on its top with its
+discharge piped to the flare header (Kister §9.5, Fig. 9.3), its datasheet
+the valve's own. So **B**: column → pipe → `relief_valve` node → pipe →
+flare, on the map.
+
+**The declaration**: `condenser_limit = { …, relief = { valve =
+"column_psv" } }` (`deny_unknown_fields`) names a `relief_valve` node — one
+pipe into it from the column, one out of it to a `sink` or the atmosphere,
+the flare. M75.3.1's `relief = { kv, x_t }` is gone: **the valve's numbers
+have one owner, its node** — `kv`, `set_pressure_bar`, `accumulation_bar`,
+`x_t` — copied onto `ColumnRelief` with the node and its two pipes
+(`valve`, `line`) by `build::resolve_column_reliefs`, before the topology
+is validated.
+
+**Set and full lift bounded, not derived** — a change from §80.5's
+derivation, the datasheet being the valve's (B's reason): API RP-520 as
+Ludwig Vol. 1B Fig. 9.7A states it, the set no higher than the column's
+design pressure (the MAWP), full lift no higher than 110 % of it (gauge, a
+single valve, not the fire case); the ceiling stays the column's, 121 % of
+the design pressure (gauge). A valve set at the design pressure with 10 % of
+it as its accumulation — the book's valve, the user's decision of §80.4 —
+is exactly M75.3.1's: the slow stories repeat its figures to the printed
+digit (the book's size, Kv 4 017: 3.6710 bar at most, 71.57 kg/s, 266 ticks
+flashed off the drum, back to 1.8000 bar; a twentieth held at 4.0464 bar
+from tick 790). M75.4's plant file declares the book's valve.
+
+**Refused, each by name**: no such node, or not a `relief_valve`; a pop
+valve (`blowdown_bar`, C32); no `x_t`, or one outside (0, 1]; a set above
+the design pressure, or at or below the pressure the column runs at; full
+lift above 110 %; a line of any other shape — a leak path on a pipe puts a
+junction there, a tank is no flare; a flare at or above the set; a valve
+two columns name. A plant with the line flash already refuses any relief
+valve (§58), so no new refusal there.
+
+**The node's own law never runs.** The column's pressure solve owns the
+vent (§80.5); the valve's two pipes are prescribed as a draw line's are
+(`PlantGraph::is_draw_line_edge`, guarded to zero in the solve, written by
+the engine after it: `relief_line_column`), the column's outlets count one
+more (`validate_degrees`), and its wiring check passes the line's pipe. The
+valve node, with both its pipes prescribed, has no equation: it is
+**pinned at the column's running pressure**, its inlet, where its spring
+reads (`march_draw_lines`) — the inlet pipe's loss neglected, as the
+column's solve neglects it. It is kept out of the network's memory of
+reliefs (`relief_states`, M48.1), out of the gas-service `x_t` rule (its
+vent is a vapour whatever the plant around it carries), and out of the
+cavitation reading (which reads the slate's declared phases and would call
+the top's vapour a boiling liquid).
+
+**What the pipes carry.** The energy sweep writes the vent on both pipes,
+as a loop's line (`line_writes`), and the engine the same flow after it
+(`draw_writes`) — the same number as the faceplate's `relief.flow_kg_s`, to
+the bit. The first pipe carries the vent's composition and temperature
+(`energy::column_draw_at`, the top stage's vapour and what flashed off the
+drum; on the settling first tick, which reports no vent, the distillate's
+cut stands in at no flow); the valve mixes its one inflow, so the second
+pipe carries it to its last bit or so (1e-12 in a fraction, 1e-9 K). **The
+latent heat**: `latent = heat/ṁ − h(T)` on both pipes (`h` the engine's
+specific enthalpy, the saturated-liquid datum), so each pipe's whole
+enthalpy is the heat the column booked leaving by it — to 1e-9 in the test;
+`None` while it vents nothing, as an idle boil-off vent's. Idle, the line
+past the valve stands as an idle line does: its valve has nothing in to take
+a state from, so it reads the ambient its pipes were seeded at — an idle
+flare header is cold.
+
+**Not modelled, stated**: the line's built-up back pressure (DEFERRED C34).
+The valve vents against the flare's own pressure; the pipes' friction is
+not marched — the line carries a vapour, and `march_line` reads a liquid's
+density. Moot across nearly the whole band: the valve is choked once `(P −
+P_flare)/P` passes `x_c = F_k·x_T` ≈ 0.52 (at the set, 0.71), and choked
+flow does not see its back pressure.
+
+**At rest it changes nothing — to rounding, no longer to the bit.** The
+valve and the flare are two more nodes the network's cold start averages
+over (`classify`'s seed), which moves the solve's last bits from the first
+tick, and the column's own Newton carries that to its tolerance: at most
+~2e-8 of the trays' vapour, 1e-12 absolute on a level loop's integral. So
+the at-rest test compares every node and pipe by name, and the column's
+state, to 1e-6 of each (and 1e-9 besides), the line exactly zero; M75.3.1's
+"bit-identical" was against a plant with the same nodes. Every shipped plant
+byte-identical — none declares a relief (71 of 71, both fidelities).
+
+**Gates.** `crates/scenarios/tests/column_relief_line.rs` (three tests):
+refusals, each by name; the flare may be the atmosphere; `slow_the_line_
+carries_the_vent` — the coolant lost 90 s and back, 1 200 ticks: both pipes
+the vent's flow to the bit on every tick, its state as above, the latent
+heat closing the pipe's enthalpy on the column's figure, the valve at the
+column's pressure and never cavitating, the flare at its own, the books
+closing every tick counted off the flare's pipe (2.1e-10 kg/s, 5.8 W; 341
+ticks vented, 46.6 kg/s at most). `column_relief.rs` moved to the valve on
+the map: read off its valve; at rest as above; the slow stories, the books
+now counting the vent off its pipe — its whole enthalpy, latent included —
+where M75.3.1 counted the faceplate's (`column_empty::Books`, once either
+way).
+
+Sixteen mutations, fourteen caught: the pipes left pressure-driven; no vent written by the sweep, or by the engine; the latent heat without its sensible part, or never written; the valve read for cavitation; pinned at the flare; the first pipe's state not the vent's; the sweep not waiting on the line; the set at the running pressure, above the design pressure, full lift to 121 %, the flare always atmospheric, a flare at the set — each refused or caught. Two survived, argued equivalent: the vent's pipe counted as the column's feed — the solve wrote it zero, so it adds nothing; and the valve left in the network's relief memory — its pipes prescribed, the held re-solve lands on the same answer, only slower. Both guards kept, the first as the loops' is, the second for the work it saves.

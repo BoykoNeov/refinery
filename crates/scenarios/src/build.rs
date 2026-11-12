@@ -201,6 +201,10 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // docs/DESIGN.md §77.2) — before the topology is validated, which counts
     // a loop's two pipes at its column.
     resolve_loop_lines(&mut graph, scenario)?;
+    // Step 2a''''': each column's relief valve on the map and its line to the
+    // flare (M75.3.2, docs/DESIGN.md §80.6) — before the topology is
+    // validated, which counts the line's pipe at its column.
+    resolve_column_reliefs(&mut graph, scenario)?;
 
     // Step 2b: thermally pair the exchanger sides, after every node exists so
     // both ends of a coupling can be resolved regardless of file order.
@@ -4738,17 +4742,16 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                         let design_pressure = refinery_core::units::Pascal(
                             (1.1 * set_pressure.value()).max(set_pressure.value() + 1.72e5),
                         );
-                        let relief = match &condenser.relief {
-                            None => None,
-                            Some(relief) => Some(column_relief(name, relief, design_pressure)?),
-                        };
                         Some(refinery_core::graph::ColumnCondenser {
                             margin: condenser.margin,
                             coolant: c_to_k(condenser.coolant_c),
                             overhead_volume: CubicMeter(condenser.overhead_m3),
                             set_pressure,
                             design_pressure,
-                            relief,
+                            // Its valve is a node on the map, resolved once
+                            // every node and pipe exists
+                            // (`resolve_column_reliefs`, M75.3.2).
+                            relief: None,
                         })
                     }
                 };
@@ -4981,6 +4984,206 @@ fn resolve_steam_inlets(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
     Ok(())
 }
 
+/// Each column's relief on the map (M75.3.2, docs/DESIGN.md §80.6): the
+/// `relief_valve` node `condenser_limit.relief.valve` names, one pipe into it
+/// from the column and one out of it to the flare — a `sink` or the
+/// atmosphere, whose pressure the valve vents against. The node is the
+/// valve's datasheet (`cv_max`, `x_t`, its set and accumulation), copied onto
+/// the column, which owns the vent: the node's own law never runs, and both
+/// pipes carry the vent, prescribed.
+///
+/// Refused, each by name: a valve that is no node or no `relief_valve`; a pop
+/// valve (`blowdown_bar`, DEFERRED C32); no `x_t`, or one outside (0, 1] — the
+/// vent is a vapour; a set above the column's design pressure, the MAWP, or
+/// at or below the pressure it runs at; full lift above 110 % of the design
+/// pressure, gauge (API RP-520 as Ludwig Vol. 1B Fig. 9.7A states both); a
+/// line of any other shape (a leak path on it puts a junction there); a flare
+/// at or above the set; a valve two columns name. (A plant with the line
+/// flash holds no relief valve at all, refused before this, §58.)
+fn resolve_column_reliefs(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Result<(), SimError> {
+    let mut claimed: BTreeMap<NodeId, String> = BTreeMap::new();
+    for (name, def) in &scenario.nodes {
+        let NodeDef::Column {
+            cascade: Some(cascade),
+            ..
+        } = def
+        else {
+            continue;
+        };
+        let Some(declared) = cascade
+            .condenser_limit
+            .as_ref()
+            .and_then(|condenser| condenser.relief.as_ref())
+        else {
+            continue;
+        };
+        let valve_name = &declared.valve;
+        let says = |why: String| {
+            SimError::Scenario(format!(
+                "column '{name}' declares condenser_limit.relief.valve = '{valve_name}': {why} \
+                 (docs/DESIGN.md §80.6)."
+            ))
+        };
+        let column = graph.find_node(name).ok_or_else(|| {
+            SimError::Scenario(format!("internal: column '{name}' was not built"))
+        })?;
+        let condenser = match &graph.node(column).kind {
+            NodeKind::Column {
+                cascade: Some(spec),
+                ..
+            } => spec.holdup.as_ref().and_then(|holdup| holdup.condenser),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            SimError::Scenario(format!(
+                "internal: column '{name}' declares a relief and was built without its condenser"
+            ))
+        })?;
+        let valve = graph
+            .find_node(valve_name)
+            .ok_or_else(|| says("no node has that name".into()))?;
+        let NodeKind::ReliefValve {
+            cv_max,
+            set_pressure,
+            accumulation,
+            x_t,
+            blowdown,
+        } = &graph.node(valve).kind
+        else {
+            return Err(says(format!(
+                "'{valve_name}' is not a `relief_valve`, and a column's relief is one ({:?})",
+                graph.node(valve).kind
+            )));
+        };
+        if blowdown.is_some() {
+            return Err(says(
+                "it declares blowdown_bar, a pop valve, and a column's relief is the \
+                 gradual one: a pop needs the overhead's vapour as a stock (DEFERRED C32)"
+                    .into(),
+            ));
+        }
+        let x_t = match x_t {
+            Some(x_t) if x_t.is_finite() && *x_t > 0.0 && *x_t <= 1.0 => *x_t,
+            Some(x_t) => {
+                return Err(says(format!(
+                    "its x_t = {x_t} is outside (0, 1], the critical pressure-drop ratio"
+                )))
+            }
+            None => {
+                return Err(says(
+                    "it declares no x_t: what it vents is a vapour, on the ISA gas law, which \
+                     reads the critical pressure-drop ratio"
+                        .into(),
+                ))
+            }
+        };
+        // API RP-520 (Ludwig Vol. 1B Fig. 9.7A): set no higher than the MAWP,
+        // full lift — a single valve, not the fire case — no higher than
+        // 110 % of it, gauge; the pressure held at 121 % of it past full
+        // lift, gauge, the figure's highest level (§80.4). A part in 10⁹ of
+        // room, so a set written in bar at the design pressure is at it.
+        let atmosphere = refinery_core::units::P_ATM.value();
+        let design = condenser.design_pressure.value();
+        let gauge = design - atmosphere;
+        let set = set_pressure.value();
+        let full_lift = set + accumulation.value();
+        let room = 1.0e-9 * design;
+        if set > design + room {
+            return Err(says(format!(
+                "its set, {:.5} bar, is above the column's design pressure, {:.5} bar — a \
+                 relief is set no higher than the vessel's maximum allowable working \
+                 pressure (API RP-520)",
+                set / 1e5,
+                design / 1e5
+            )));
+        }
+        if set <= condenser.set_pressure.value() {
+            return Err(says(format!(
+                "its set, {:.5} bar, is not above the {:.5} bar the column runs at: it \
+                 would vent at rest",
+                set / 1e5,
+                condenser.set_pressure.value() / 1e5
+            )));
+        }
+        if full_lift - atmosphere > 1.10 * gauge + room {
+            return Err(says(format!(
+                "its full lift, {:.5} bar, is above 110 % of the column's design pressure \
+                 (gauge), {:.5} bar — the most a single relief's accumulation reaches (API \
+                 RP-520)",
+                full_lift / 1e5,
+                (atmosphere + 1.10 * gauge) / 1e5
+            )));
+        }
+        let (cv_max, set_pressure, accumulation) = (*cv_max, *set_pressure, *accumulation);
+        // The line: one pipe in, from the column; one out, to the flare.
+        let incident = graph.incident(valve);
+        let into: Vec<_> = incident
+            .iter()
+            .filter(|(_, _, incoming)| *incoming)
+            .collect();
+        let out: Vec<_> = incident
+            .iter()
+            .filter(|(_, _, incoming)| !*incoming)
+            .collect();
+        let (inlet, outlet, flare) = match (into.as_slice(), out.as_slice()) {
+            ([&(inlet, from, _)], [&(outlet, flare, _)]) if from == column => {
+                (inlet, outlet, flare)
+            }
+            _ => {
+                return Err(says(
+                    "its line is one pipe into it, declared from the column, and one out of \
+                     it, declared to the flare — nothing between (a leak path on a pipe puts \
+                     a junction there)"
+                        .into(),
+                ))
+            }
+        };
+        let flare_pressure = match &graph.node(flare).kind {
+            NodeKind::Sink { pressure, .. } => pressure.value(),
+            NodeKind::Atmosphere => atmosphere,
+            other => {
+                return Err(says(format!(
+                    "its line ends at '{}' ({other:?}); a flare is a `sink` or the atmosphere",
+                    graph.node(flare).name
+                )))
+            }
+        };
+        if flare_pressure >= set {
+            return Err(says(format!(
+                "its flare '{}' stands at {:.5} bar, not below its set, {:.5} bar",
+                graph.node(flare).name,
+                flare_pressure / 1e5,
+                set / 1e5
+            )));
+        }
+        if let Some(other) = claimed.insert(valve, name.clone()) {
+            return Err(says(format!(
+                "column '{other}' names it too; each column has its own relief"
+            )));
+        }
+        let relief = refinery_core::graph::ColumnRelief {
+            cv_max,
+            x_t,
+            set_pressure,
+            accumulation,
+            ceiling: refinery_core::units::Pascal(atmosphere + 1.21 * gauge),
+            flare_pressure: refinery_core::units::Pascal(flare_pressure),
+            valve,
+            line: [inlet, outlet],
+        };
+        if let NodeKind::Column {
+            cascade: Some(spec),
+            ..
+        } = &mut graph.node_mut(column).kind
+        {
+            if let Some(condenser) = spec.holdup.as_mut().and_then(|h| h.condenser.as_mut()) {
+                condenser.relief = Some(relief);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Resolve each pumparound loop into its LINE — the pipes from its column
 /// through pumps and one cooler back into the column (M72.2, docs/DESIGN.md
 /// §77.2) — and refuse, by name, a line that is not one. Run before the
@@ -4990,41 +5193,6 @@ fn resolve_steam_inlets(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
 /// result the column cannot hold to a return temperature); a second cooler or
 /// none; a line pump declaring `npsh_required_m`, as on a draw line; a line
 /// that ends anywhere but its own column.
-/// A column's relief from its declaration (M75.3, docs/DESIGN.md §80.5):
-/// its pressures from the column's design pressure as API RP-520 states them
-/// (Ludwig Vol. 1B, Fig. 9.7A) — set at the design pressure (the MAWP), full
-/// lift 10 % of it gauge above, the most the pressure rises to 121 % of it
-/// gauge (the highest level the figure shows) — against a flare at
-/// atmosphere. Refused on a `kv` not above zero or an `x_t` outside (0, 1].
-fn column_relief(
-    name: &str,
-    relief: &crate::schema::ReliefDef,
-    design: refinery_core::units::Pascal,
-) -> Result<refinery_core::graph::ColumnRelief, SimError> {
-    if !relief.kv.is_finite() || relief.kv <= 0.0 {
-        return Err(SimError::Scenario(format!(
-            "column '{name}' declares condenser_limit.relief.kv = {}: the relief's flow              coefficient at full lift, finite and above zero (docs/DESIGN.md §80.5).",
-            relief.kv
-        )));
-    }
-    if !relief.x_t.is_finite() || relief.x_t <= 0.0 || relief.x_t > 1.0 {
-        return Err(SimError::Scenario(format!(
-            "column '{name}' declares condenser_limit.relief.x_t = {}: the relief's critical              pressure-drop ratio, above zero and at most one (docs/DESIGN.md §80.5).",
-            relief.x_t
-        )));
-    }
-    let flare = refinery_core::units::P_ATM.value();
-    let gauge = design.value() - flare;
-    Ok(refinery_core::graph::ColumnRelief {
-        cv_max: kv_to_cv_si(relief.kv),
-        x_t: relief.x_t,
-        set_pressure: design,
-        accumulation: refinery_core::units::Pascal(0.10 * gauge),
-        ceiling: refinery_core::units::Pascal(flare + 1.21 * gauge),
-        flare_pressure: refinery_core::units::Pascal(flare),
-    })
-}
-
 fn resolve_loop_lines(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Result<(), SimError> {
     for (name, def) in &scenario.nodes {
         let NodeDef::Column {

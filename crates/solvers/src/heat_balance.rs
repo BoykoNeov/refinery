@@ -7165,6 +7165,13 @@ mod relief_tests {
                 accumulation: Pascal(0.1 * (design - flare)),
                 ceiling: Pascal(flare + 1.21 * (design - flare)),
                 flare_pressure: Pascal(flare),
+                // Its node and line on the map are the loader's (M75.3.2);
+                // the law reads neither.
+                valve: refinery_core::graph::NodeId(0),
+                line: [
+                    refinery_core::graph::EdgeId(0),
+                    refinery_core::graph::EdgeId(1),
+                ],
             },
             TopVapour {
                 molar_mass: 0.113,

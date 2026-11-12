@@ -1210,6 +1210,11 @@ pub(crate) fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(),
             if graph.loop_draw(eid).is_some() {
                 continue;
             }
+            // Its relief line's pipe out (M75.3.2, docs/DESIGN.md §80.6): its
+            // line was resolved and checked whole (`resolve_column_reliefs`).
+            if graph.relief_line_column(eid).is_some() {
+                continue;
+            }
             match outlet_hits.get_mut(&other) {
                 Some(count) => *count += 1,
                 None => {
@@ -1465,6 +1470,12 @@ pub(crate) fn require_gas_valve_x_t(
 ) -> Result<(), SimError> {
     for nid in graph.node_ids() {
         let node = graph.node(nid);
+        // A column's relief vents a vapour whatever the plant around it
+        // carries, and its `x_t` was checked with its line (M75.3.2,
+        // `resolve_column_reliefs`): never compiled by `compile_edge`.
+        if graph.relief_valve_column(nid).is_some() {
+            continue;
+        }
         // All three valve kinds, for one reason: they reach the same compressible
         // law through `compile_edge` (`fold_gas_service`), so they must share the
         // same requirement or one of them could reach the gas branch with no
