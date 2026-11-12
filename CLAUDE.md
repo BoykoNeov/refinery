@@ -20,7 +20,11 @@ crates/
   godot-ext/  # GDExtension adapter. The ONLY crate that knows Godot exists.
 tools/        # steptime: per-tick wall time through the boiling stories, and
               # profile/story-diff scripts (own workspace; M56, DESIGN §61).
-docs/         # DESIGN.md (architecture + physics), ROADMAP.md (milestones),
+demo/         # Godot scenes: menu, five hand-drawn screens, the plant map;
+              # screen.gd is what they share (the way in and out, the window)
+docs/         # GAME.md (what a game still needs; visual direction) and
+              # plans/ (one plan per item, written for a smaller model),
+              # DESIGN.md (architecture + physics), ROADMAP.md (milestones),
               # DEFERRED.md (open hurdles, un-defer triggers — read before
               # scoping a slice), MILESTONES.md (close-out reports, newest first)
 scenarios/    # *.toml plant definitions
@@ -141,7 +145,10 @@ cargo clippy -p refinery-godot-ext --features godot --all-targets -- -D warnings
 
 ```
 godot --headless --path . --editor --quit    # once, after cloning
-godot --headless --path . -- --auto          # the M6.2 demo; ends at t=350
+godot --path .                               # the menu: every screen and plant (Esc in a screen returns to it, F11 full screen)
+godot --headless --path . res://demo/plant.tscn -- --auto   # the M6.2 demo; ends at t=350
+godot --path . res://demo/map.tscn           # the plant map: any shipped plant drawn from its snapshot (watches only)
+godot --headless --path . res://demo/map.tscn -- --auto     # every plant loaded, laid out, run 200 ticks; nonzero if one stops
 godot --path . res://demo/furnace.tscn       # the M39 furnace screen (keys on screen)
 godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [--plant=burnout]
 godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on screen)

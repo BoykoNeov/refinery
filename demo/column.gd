@@ -58,13 +58,16 @@
 # to MW (CLAUDE.md rule 4).
 #
 # Interactive:  godot --path . res://demo/column.tscn
-#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 switch plants)
+#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 switch plants,
+#               Esc goes to the menu, F11 full screen)
 # Recorded:     godot --headless --path . res://demo/column.tscn --quit-after 20000 -- --auto [--plant=hot]
 #               ...runs that plant's scripted timeline (TIMELINES) and prints a
 #               `t=` line at a fixed interval plus one line per command.
 # Screenshots:  add --shots=<dir> to a WINDOWED --auto run to save a PNG at each
 #               scripted event.
 extends Node2D
+
+const Screen := preload("res://demo/screen.gd")
 
 ## The plants, the names on each the scene draws, and the range its keys stay
 ## inside. A name missing from a plant is a load-time halt, not a guess.
@@ -508,6 +511,8 @@ func _ready() -> void:
 			plant_key = arg.trim_prefix("--plant=")
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
+	plant_key = Screen.chosen_plant(get_tree(), plant_key)
+	Screen.fit(get_window())
 	if not PLANTS.has(plant_key):
 		_halt("no plant '%s' (crude | hot | overheated | stripped | cold | loops | trays | holdup)" % plant_key)
 		return
@@ -653,6 +658,11 @@ func _input(event: InputEvent) -> void:
 			_load("trays")
 		KEY_8:
 			_load("holdup")
+		KEY_ESCAPE:
+			Screen.to_menu(get_tree())
+			return
+		KEY_F11:
+			Screen.toggle_fullscreen(get_window())
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -1667,8 +1677,14 @@ func _draw() -> void:
 		keys = "Up/Down furnace   R/F steam   E/D pumparounds   Space pause   [ ] speed"
 	elif _has_loops():
 		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   Space pause   [ ] speed"
-	_text(Vector2(30, 600), keys, DIM)
-	_text(Vector2(30, 624), "1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup", DIM)
+	# Both legends stop short of the panel, whose last lines reach this low.
+	var legend_width := PANEL_X - 30.0 - 24.0
+	_text(Vector2(30, 600), keys, DIM, 16, legend_width)
+	_text(
+		Vector2(30, 624),
+		"1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup   Esc menu",
+		DIM, 16, legend_width
+	)
 	if halted != "":
 		draw_multiline_string(
 			ThemeDB.fallback_font, Vector2(30, 90), "HALTED — %s" % halted, HORIZONTAL_ALIGNMENT_LEFT,
@@ -2114,17 +2130,26 @@ func _draw_holdup_panel(y: float) -> float:
 	y += 22
 	for vessel in [["drum", "drum_level", "drum_limit", "drum_loop_at_max", "the distillate"], ["base", "base_level", "base_limit", "base_loop_at_max", "the reboiler" if not bool(h["reboiler_held"]) else "the bottoms"]]:
 		var limit := str(h[vessel[2]])
-		var words: String = {"normal": "", "dry": "  DRY: its outflow cut to what it holds", "full": "  FULL: the excess leaves with its product", "backed_up": "  BACKED UP: its drain shut, the excess floods the condenser"}[limit]
-		_text(Vector2(PANEL_X, y), "%-14s %5.0f %%%s" % [vessel[0], float(h[vessel[1]]) * 100.0, words], _limit_color(limit) if limit != "normal" else INK)
+		var words: String = {"normal": "", "dry": "DRY: its outflow cut to what it holds", "full": "FULL: the excess leaves with its product", "backed_up": "BACKED UP: its drain shut, the excess floods the condenser"}[limit]
+		_text(Vector2(PANEL_X, y), "%-14s %5.0f %%" % [vessel[0], float(h[vessel[1]]) * 100.0], _limit_color(limit) if limit != "normal" else INK)
 		y += 18
+		# What the limit does, on its own line: beside the level it ran off
+		# the window.
+		if words != "":
+			_text(Vector2(PANEL_X + 12, y - 2), words, _limit_color(limit), 13)
+			y += 18
 		if bool(h[vessel[3]]):
 			_text(Vector2(PANEL_X + 12, y - 2), "%s at its maximum: the level runs on" % vessel[4], WARN, 13)
 			y += 18
 	return y + 4
 
 
-func _text(at: Vector2, text: String, color: Color, size: int = 16) -> void:
-	draw_string(ThemeDB.fallback_font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+## A line of text. One too long for the space to its right — the window's edge,
+## or `width` where something is drawn beside it — is drawn smaller rather than
+## over its neighbour or off the screen.
+func _text(at: Vector2, text: String, color: Color, size: int = 16, width: float = -1.0) -> void:
+	var room := width if width > 0.0 else get_viewport_rect().size.x - at.x - 8.0
+	draw_string(ThemeDB.fallback_font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, Screen.fitting_size(text, room, size), color)
 
 
 func _halt(reason: String) -> void:

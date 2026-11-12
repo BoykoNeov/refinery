@@ -49,6 +49,8 @@
 #               nothing) to save a PNG at each scripted tick in AUTO_SHOT_TICKS.
 extends Node2D
 
+const Screen := preload("res://demo/screen.gd")
+
 ## The two plants, and the names on each the scene draws. A name missing from a
 ## plant is a load-time halt, not a guess.
 const PLANTS := {
@@ -205,6 +207,8 @@ func _ready() -> void:
 			plant_key = arg.trim_prefix("--plant=")
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
+	plant_key = Screen.chosen_plant(get_tree(), plant_key)
+	Screen.fit(get_window())
 	if not PLANTS.has(plant_key):
 		_halt("no plant '%s' (limit | boiling | gaslock)" % plant_key)
 		return
@@ -331,6 +335,11 @@ func _input(event: InputEvent) -> void:
 			_load("gaslock")
 		KEY_V:
 			_do("vent")
+		KEY_ESCAPE:
+			Screen.to_menu(get_tree())
+			return
+		KEY_F11:
+			Screen.toggle_fullscreen(get_window())
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -708,7 +717,7 @@ func _draw() -> void:
 	)
 	_text(
 		Vector2(30, 624),
-		"C clear trail   V vent   Space pause   [ ] speed   1 long suction (M50)   2 no suction model (M11)   3 gas lock (M54)",
+		"C clear trail   V vent   Space pause   [ ] speed   1 long suction (M50)   2 no suction model (M11)   3 gas lock (M54)   Esc menu",
 		DIM
 	)
 	if halted != "":

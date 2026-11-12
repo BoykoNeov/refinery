@@ -15,6 +15,8 @@
 # physics frame (1/60 s).
 extends Node2D
 
+const Screen := preload("res://demo/screen.gd")
+
 const SCENARIO := "res://scenarios/leaking_line.toml"
 ## 10 cm². The hole `leak_reference` sizes so that ~37% of the transfer goes
 ## out of it — chosen there to be visible rather than nominal, and reused here
@@ -41,6 +43,8 @@ var auto_run := false
 
 func _ready() -> void:
 	auto_run = "--auto" in OS.get_cmdline_user_args()
+	Screen.chosen_plant(get_tree(), "")
+	Screen.fit(get_window())
 
 	var err = JSON.parse_string(sim.load_scenario(SCENARIO))
 	if err != null:
@@ -96,6 +100,10 @@ func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	match event.keycode:
+		KEY_ESCAPE:
+			Screen.to_menu(get_tree())
+		KEY_F11:
+			Screen.toggle_fullscreen(get_window())
 		KEY_P:
 			_puncture(HOLE_M2)
 		KEY_F:
@@ -247,7 +255,7 @@ func _draw() -> void:
 	_draw_fire()
 
 	_text(Vector2(30, 40), _readout(sim.tick_index()), INK)
-	_text(Vector2(30, 64), "P puncture    F fire    R repair + extinguish", PIPE)
+	_text(Vector2(30, 64), "P puncture    F fire    R repair + extinguish    Esc menu", PIPE)
 
 
 func _draw_tank(rect: Rect2, id: int, label: String) -> void:

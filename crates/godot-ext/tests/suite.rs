@@ -9,6 +9,8 @@
 mod bridge;
 #[path = "column_screen.rs"]
 mod column_screen;
+#[path = "command_storm.rs"]
+mod command_storm;
 #[path = "furnace_screen.rs"]
 mod furnace_screen;
 #[path = "pump_screen.rs"]

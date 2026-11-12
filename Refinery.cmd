@@ -2,9 +2,9 @@
 rem Double-click to play. Builds the simulator library Godot loads, prepares
 rem Godot's extension cache on a fresh clone, then opens the chosen screen.
 rem
-rem   Refinery.cmd            menu of screens
+rem   Refinery.cmd            the menu: every screen and every plant
 rem   Refinery.cmd column     straight to one screen (column, reactor, pump,
-rem                           furnace or plant)
+rem                           furnace, plant or map)
 rem
 rem Needs godot (>= 4.7) on PATH; cargo too, unless the library is built already.
 rem Set REFINERY_GODOT_ARGS to run a screen in this console instead of a window
@@ -46,23 +46,10 @@ echo First run: letting Godot index the project once...
 godot --headless --path . --editor --quit >nul 2>&1
 
 :choose
+rem No screen named: the menu scene (demo\menu.tscn), which lists every
+rem screen and every plant each opens. Esc in a screen comes back to it.
 set "SCENE=%~1"
-if not "%SCENE%"=="" goto launch
-echo.
-echo   Refinery - pick a screen
-echo.
-echo   1  Distillation column (keys 1-7 switch plants)
-echo   2  Reactor
-echo   3  Pump
-echo   4  Furnace
-echo   5  Leaking line (the first demo)
-echo.
-choice /c 12345 /n /m "Press 1-5: "
-if errorlevel 5 (set "SCENE=plant" & goto launch)
-if errorlevel 4 (set "SCENE=furnace" & goto launch)
-if errorlevel 3 (set "SCENE=pump" & goto launch)
-if errorlevel 2 (set "SCENE=reactor" & goto launch)
-set "SCENE=column"
+if "%SCENE%"=="" set "SCENE=menu"
 
 :launch
 if not exist "demo\%SCENE%.tscn" goto bad_scene
@@ -78,7 +65,7 @@ popd
 exit /b %RESULT%
 
 :bad_scene
-echo No screen called "%SCENE%". Choose column, reactor, pump, furnace or plant.
+echo No screen called "%SCENE%". Choose column, reactor, pump, furnace, plant or map.
 goto fail
 
 :no_godot

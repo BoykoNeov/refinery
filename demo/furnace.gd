@@ -38,6 +38,8 @@
 #               nothing) to save a PNG at each scripted event.
 extends Node2D
 
+const Screen := preload("res://demo/screen.gd")
+
 ## The three plants, and the names on each the scene draws. A name missing from a
 ## plant is a load-time halt, not a guess.
 const PLANTS := {
@@ -206,6 +208,8 @@ func _ready() -> void:
 			plant_key = arg.trim_prefix("--plant=")
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
+	plant_key = Screen.chosen_plant(get_tree(), plant_key)
+	Screen.fit(get_window())
 	if not PLANTS.has(plant_key):
 		_halt("no plant '%s' (trip | burnout | autoreset | burst | permissive)" % plant_key)
 		return
@@ -351,6 +355,11 @@ func _input(event: InputEvent) -> void:
 			_load("burst")
 		KEY_5:
 			_load("permissive")
+		KEY_ESCAPE:
+			Screen.to_menu(get_tree())
+			return
+		KEY_F11:
+			Screen.toggle_fullscreen(get_window())
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -802,7 +811,7 @@ func _draw() -> void:
 	)
 	_text(
 		Vector2(30, 624),
-		"P patch   N new tubes   K pump   Space pause   [ ] speed   1 trip   2 burn-out   3 self-reset   4 burst   5 pump trip",
+		"P patch   N new tubes   K pump   Space pause   [ ] speed   1 trip   2 burn-out   3 self-reset   4 burst   5 pump trip   Esc menu",
 		DIM
 	)
 	if halted != "":

@@ -63,6 +63,8 @@
 #               nothing) to save a PNG at each tick in AUTO_SHOT_TICKS.
 extends Node2D
 
+const Screen := preload("res://demo/screen.gd")
+
 ## The four plants, and the names on each the scene draws. A name missing from
 ## a plant is a load-time halt, not a guess. Optional entries are absent on the
 ## plants that do not have them.
@@ -349,8 +351,8 @@ func _ready() -> void:
 			plant_key = arg.trim_prefix("--plant=")
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
-	if DisplayServer.get_name() != "headless":
-		get_window().size = Vector2i(1440, 810)
+	plant_key = Screen.chosen_plant(get_tree(), plant_key)
+	Screen.fit(get_window(), Vector2i(1440, 810))
 	if not PLANTS.has(plant_key):
 		_halt("no plant '%s' (calm | trip | quench | wall | hydrogen | h2quench)" % plant_key)
 		return
@@ -644,6 +646,11 @@ func _input(event: InputEvent) -> void:
 			_load("h2quench")
 		KEY_D:
 			_do("vent_toggle")
+		KEY_ESCAPE:
+			Screen.to_menu(get_tree())
+			return
+		KEY_F11:
+			Screen.toggle_fullscreen(get_window())
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -1242,7 +1249,7 @@ func _draw() -> void:
 	)
 	_text(
 		Vector2(30, 790),
-		"E emergency stop   R reset trips   P patch holes   M repair wall   T clear charts   Space pause   [ ] speed   1 calm  2 trip  3 quench  4 wall  5 hydrogen  6 h2 quench",
+		"E emergency stop   R reset trips   P patch holes   M repair wall   T clear charts   Space pause   [ ] speed   1 calm  2 trip  3 quench  4 wall  5 hydrogen  6 h2 quench   Esc menu",
 		DIM, 14
 	)
 	if halted != "":
