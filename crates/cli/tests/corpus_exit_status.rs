@@ -141,3 +141,30 @@ fn a_plant_that_breaks_after_a_baseline_is_moved_not_new() {
         "the verdict column must read moved, not new: {stdout}"
     );
 }
+
+/// A plant in the baseline whose file is gone (deleted, or renamed) must fail
+/// the comparison. Every row the run DOES have is graded against the
+/// baseline; nothing graded the baseline against the run, so "nothing moved"
+/// passed on a corpus that had lost a plant (found 2026-11-12).
+#[test]
+fn a_plant_that_vanished_since_the_baseline_fails_the_corpus_run() {
+    let corpus = Corpus::new("vanished");
+    corpus.write("tank_pump_valve", GOOD_SCENARIO);
+    corpus.write("second_plant", GOOD_SCENARIO);
+
+    let before = corpus.path().join("before.json");
+    let out = corpus.run(&["--out", &before.display().to_string()]);
+    assert!(out.status.success(), "the baseline run must succeed");
+
+    std::fs::remove_file(corpus.path().join("second_plant.toml")).unwrap();
+    let out = corpus.run(&["--baseline", &before.display().to_string()]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "a plant missing from the run must exit nonzero"
+    );
+    assert!(
+        stderr.contains("second_plant") && stderr.contains("did not run"),
+        "the error must name the plant that vanished, got: {stderr}"
+    );
+}

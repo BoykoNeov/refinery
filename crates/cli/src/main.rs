@@ -205,6 +205,20 @@ fn verdict(row: &CorpusRow, baseline: &[CorpusRow]) -> Verdict {
     }
 }
 
+/// The baseline's plants that have no row in this run, in the baseline's
+/// order: a plant file deleted or renamed since the baseline was written.
+///
+/// [`verdict`] grades each row of the run against the baseline and so never
+/// looks at a baseline row the run does not have. Without this the check
+/// "nothing moved" passes on a run that lost a plant.
+fn missing<'a>(rows: &[CorpusRow], baseline: &'a [CorpusRow]) -> Vec<&'a str> {
+    baseline
+        .iter()
+        .filter(|b| !rows.iter().any(|r| r.name == b.name))
+        .map(|b| b.name.as_str())
+        .collect()
+}
+
 fn corpus(
     paths: &[PathBuf],
     ticks: u64,
@@ -264,6 +278,15 @@ fn corpus(
             moved.len(),
             rows.len(),
             moved.join(", ")
+        );
+        // Checked last, and only when whole directories were run: a run of
+        // a few named files is meant to leave the rest of the baseline out.
+        let gone = missing(&rows, &base);
+        anyhow::ensure!(
+            gone.is_empty() || !paths.iter().any(|p| p.is_dir()),
+            "{} plant(s) in the baseline did not run: {} (deleted or renamed?)",
+            gone.len(),
+            gone.join(", ")
         );
     }
     Ok(())
@@ -437,5 +460,59 @@ impl Fnv1a64 {
 
     fn finish(&self) -> u64 {
         self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(name: &str, flow: &str, fingerprint: &str) -> CorpusRow {
+        CorpusRow {
+            name: name.into(),
+            flow: flow.into(),
+            ticks: 10,
+            status: STATUS_OK.into(),
+            worst_iterations: 1,
+            total_iterations: 10,
+            tick_wall_ms: 0.0,
+            fingerprint: fingerprint.into(),
+        }
+    }
+
+    #[test]
+    fn a_plant_absent_from_the_baseline_is_new() {
+        let base = [row("a", "newton", "1")];
+        assert_eq!(verdict(&row("b", "newton", "1"), &base), Verdict::New);
+    }
+
+    #[test]
+    fn the_same_solver_and_fingerprint_is_identical() {
+        let base = [row("a", "newton", "1")];
+        assert_eq!(verdict(&row("a", "newton", "1"), &base), Verdict::Identical);
+    }
+
+    #[test]
+    fn a_changed_fingerprint_or_a_changed_solver_is_moved() {
+        let base = [row("a", "newton", "1")];
+        assert_eq!(verdict(&row("a", "newton", "2"), &base), Verdict::Moved);
+        // Equal fingerprints from two solvers are not the same run.
+        assert_eq!(verdict(&row("a", "simple", "1"), &base), Verdict::Moved);
+    }
+
+    /// The bug this guards (found 2026-11-12): a plant in the baseline whose
+    /// file was deleted or renamed was never graded, so the check passed
+    /// having lost a plant.
+    #[test]
+    fn a_baseline_plant_that_did_not_run_is_missing() {
+        let base = [
+            row("a", "newton", "1"),
+            row("b", "newton", "2"),
+            row("c", "newton", "3"),
+        ];
+        let ran = [row("b", "newton", "2"), row("d", "newton", "4")];
+        assert_eq!(missing(&ran, &base), vec!["a", "c"]);
+        assert!(missing(&base, &base).is_empty());
+        assert!(missing(&ran, &[]).is_empty());
     }
 }

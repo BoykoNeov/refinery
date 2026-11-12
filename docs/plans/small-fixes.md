@@ -2,26 +2,21 @@
 
 Each is independent. One commit each. None changes a plant's numbers.
 
-## 1. The corpus check does not notice a plant that vanished
+## 1. The corpus check does not notice a plant that vanished — DONE 2026-11-12
 
 `crates/cli/src/main.rs`, `fn corpus`. With `--baseline`, each row of the
-new run is graded against its namesake in the baseline; a plant that is in
-the baseline and **missing from the run** (a deleted or renamed file) is
-never looked at, so the run exits 0 having silently lost a plant. The
-project's "every plant byte-identical (71 of 71)" claim rests on this exit
-code.
+new run was graded against its namesake in the baseline; a plant in the
+baseline and **missing from the run** (a deleted or renamed file) was never
+looked at, so the run exited 0 having silently lost a plant.
 
-- [ ] After the `moved` check, collect baseline names with no row in the
-      run; if any, fail with
-      "N plant(s) in the baseline did not run: a, b (deleted or renamed?)".
-      Print them in the table too, as rows with verdict `**missing**`.
-- [ ] Test first. `main.rs` has no tests yet: add a `#[cfg(test)] mod tests`
-      with unit tests on a small extracted function
-      `missing<'a>(rows: &[CorpusRow], baseline: &'a [CorpusRow]) -> Vec<&'a str>`
-      (present → empty; one absent → its name; order = baseline order), and
-      while there, three for `verdict` (new / identical / moved, including
-      "same fingerprint, different solver = moved").
-- [ ] Gates: this is `crates/*/src`, so FULL tier + corpus both solvers.
+- [x] `missing(rows, baseline)` and a failure naming the plants, when at
+      least one whole directory was run (a run of a few named files is
+      meant to leave the rest of the baseline out). Unit tests on `missing`
+      and `verdict`; an end-to-end test in
+      `crates/cli/tests/corpus_exit_status.rs`.
+- [ ] Left: the vanished plants are named in the error only, not as rows of
+      the printed table. Add them as rows with verdict `**missing**` if
+      someone wants the table to be the whole story.
 
 ## 2. `refinery run` writes unbuffered
 
