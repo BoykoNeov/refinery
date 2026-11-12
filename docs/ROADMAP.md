@@ -11406,3 +11406,26 @@ overhead's vapour as a stock); **past full lift held at a ceiling with an
 alarm** — 121 % of the design pressure (gauge, Ludwig Fig. 9.7A's highest
 level), the run going on. Defaults stated, not asked: the flare at
 atmosphere.
+
+### M75.3.1 — **DONE** 2026-11-12: the relief in the column's pressure solve, its vent a reading
+
+Split on M72's precedent (the physics first, the line on the map after):
+**M75.3.1** the relief inside the column's pressure solve, its vent booked
+on the column as a reading (as the slop); **M75.3.2** the vent on a real
+line to a flare on the map, the user's decision (§80.0). `relief = { kv,
+x_t }` on `condenser_limit` (refused on a `kv` not above zero, an `x_t`
+outside (0, 1]); set at the design pressure, full lift 10 % of it gauge
+above, held at a ceiling of 121 % gauge with `at_ceiling` (the alarm) past
+full lift, the flare at atmosphere (API RP-520, Ludwig 1B Fig. 9.7A). The
+engine's own laws (the spring's smoothstep, the ISA gas valve), the top
+stage's vapour of last tick at the inlet. **The open question settled
+without a decision**: what the vent asks past the top's vapour while the
+pressure falls flashes off the drum's liquid at the drum's composition — no
+refusal over 20 minutes where the probe's drum went negative, the books
+exact (DESIGN §80.5). The coolant lost (the test's own hand on its
+temperature): a valve of the book's size (Kv ≈ 4 000) peaks at 3.67 bar,
+inside its band, and the coolant back the column returns to 1.8 bar
+exactly; a twentieth of it is held at the ceiling, 4.05 bar, its alarm on.
+At rest bit-identical to the plant without one; eight tests, thirteen
+mutations caught; every plant byte-identical (71 of 71, both fidelities).
+`crates/scenarios/tests/column_relief.rs`.

@@ -1,0 +1,105 @@
+diff --git a/crates/solvers/src/column_step.rs b/crates/solvers/src/column_step.rs
+index ea7b8be..262d7c0 100644
+--- a/crates/solvers/src/column_step.rs
++++ b/crates/solvers/src/column_step.rs
+@@ -140,6 +140,8 @@ pub(crate) struct ColumnStep<'a> {
+     pub(crate) energy_scale: f64,
+     /// The convergence tolerance every scaled residual must meet [-].
+     pub(crate) tolerance: f64,
++    /// M75.3.0 PROBE: the vapour vented off the top before the condenser [mol/s].
++    pub(crate) vent: f64,
+ }
+ 
+ /// Where a tick's Newton starts: each stage's temperature [K] and vapour
+@@ -172,6 +174,9 @@ pub(crate) struct Stepped {
+     /// The reboiler's duty [W] and the condenser's [W].
+     pub(crate) reboiler_duty: f64,
+     pub(crate) condenser_duty: f64,
++    /// M75.3.0 PROBE: the vent's component flows [kg/s] and its heat [W].
++    pub(crate) vent_masses: Vec<f64>,
++    pub(crate) vent_heat: f64,
+     /// The side draws a tray short of liquid cut back, as plan indices, and
+     /// the share of their set flow each ran at.
+     pub(crate) cut_back: Vec<(usize, f64)>,
+@@ -249,6 +254,10 @@ struct Evaluation {
+     flows: Flows,
+     drum_temperature: Kelvin,
+     condenser_duty: f64,
++    /// M75.3.0 PROBE: the top vapour's molar enthalpy [J/mol].
++    big_h0: f64,
++    excess: f64,
++    reflux_enthalpy: f64,
+ }
+ 
+ impl ColumnStep<'_> {
+@@ -747,7 +756,12 @@ impl ColumnStep<'_> {
+             held_next.push(held[j] + dt * (arriving - down[j] - set.drawn[j] - out[j] - vapour[j]));
+         }
+         let drum_held: f64 = drum.iter().sum();
+-        let mut drum_next = drum_held + dt * (vapour[0] - set.reflux - set.distillate);
++        // PROBE VARIANT: the vent past the top's vapour flashes off the drum
++        // at the drum's own composition.
++        let excess = (self.vent - vapour[0]).max(0.0);
++        let into_drum = vapour[0] - self.vent.min(vapour[0]);
++        let mut drum_next =
++            drum_held + dt * (into_drum - excess - set.reflux - set.distillate);
+         // A stage or the drum may end the tick holding exactly nothing
+         // (M74.6); below it, by more than `slack`, it ran out.
+         if let Some(j) = held_next.iter().position(|h| h.is_nan() || *h < -slack) {
+@@ -791,8 +805,8 @@ impl ColumnStep<'_> {
+             let mut diagonal = vec![0.0; rows];
+             let mut upper = vec![0.0; rows];
+             let mut rhs = vec![0.0; rows];
+-            diagonal[0] = drum_next / dt + set.reflux + set.distillate;
+-            upper[0] = -vapour[0] * k[0][c];
++            diagonal[0] = drum_next / dt + set.reflux + set.distillate + excess;
++            upper[0] = -into_drum * k[0][c];
+             rhs[0] = drum[c] / dt;
+             for j in 0..n {
+                 let r = j + 1;
+@@ -913,7 +927,8 @@ impl ColumnStep<'_> {
+         let drum_amounts: Vec<f64> = x_drum.iter().map(|v| v * drum_next).collect();
+         // The condenser takes what the top vapour brings less what leaves the
+         // drum and what its liquid comes to hold.
+-        let condenser_duty = vapour[0] * big_h[0]
++        let condenser_duty = into_drum * big_h[0]
++            - excess * big_h[0]
+             - (set.reflux + set.distillate) * reflux_enthalpy
+             - (drum_next * reflux_enthalpy - drum_held * set.drum_enthalpy) / dt;
+         let flows = Flows {
+@@ -937,6 +952,9 @@ impl ColumnStep<'_> {
+             flows,
+             drum_temperature,
+             condenser_duty,
++            big_h0: big_h[0],
++            excess,
++            reflux_enthalpy,
+         })
+     }
+ 
+@@ -1068,6 +1086,16 @@ impl ColumnStep<'_> {
+                 DrawLocation::Stage(j) => flows_of(set.drawn[*j], &evaluation.x[*j]),
+             });
+         }
++        // M75.3.0 PROBE: the vent, as the sweep took it off stage 1's vapour.
++        let topv = self.vent - evaluation.excess;
++        let vent_masses: Vec<f64> = (0..mw.len())
++            .map(|c| {
++                (topv * evaluation.k[0][c] * evaluation.x[0][c]
++                    + evaluation.excess * evaluation.x_drum[c])
++                    * mw[c]
++            })
++            .collect();
++        let vent_heat = topv * evaluation.big_h0 + evaluation.excess * evaluation.big_h0;
+         let mut slop = Vec::new();
+         if set.drum_slop > 0.0 {
+             slop.push((
+@@ -1132,6 +1160,8 @@ impl ColumnStep<'_> {
+             slop,
+             reboiler_duty: set.reboiler,
+             condenser_duty: evaluation.condenser_duty,
++            vent_masses,
++            vent_heat,
+             cut_back: set.cut_back.clone(),
+             reading,
+             state: next,

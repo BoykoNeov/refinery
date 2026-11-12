@@ -1029,11 +1029,46 @@ pub struct ColumnCondenser {
     /// The pressure its control holds [Pa]: the column's declared pressure,
     /// copied by the loader (the column's own field is not moved).
     pub set_pressure: Pascal,
-    /// The most the pressure rises to [Pa]: the column's design pressure, a
-    /// GAME VALUE derived by the loader (the larger of 110 % of the set
-    /// pressure and the set pressure plus 1.72 bar, the common rule) until
-    /// M75.3's relief takes the column off it.
+    /// The column's design pressure [Pa], a GAME VALUE derived by the
+    /// loader (the larger of 110 % of the set pressure and the set pressure
+    /// plus 1.72 bar, the common rule): the most the pressure rises to
+    /// without a relief; with one, the relief's set pressure.
     pub design_pressure: Pascal,
+    /// A relief valve on the column's top, before the condenser (M75.3,
+    /// docs/DESIGN.md §80.5), or `None`: the pressure held at the design
+    /// pressure, as before M75.3. Absent, and then not serialized, on every
+    /// column that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relief: Option<ColumnRelief>,
+}
+
+/// A relief valve on a column's top, upstream of its condenser (M75.3,
+/// docs/DESIGN.md §80.5; Kister, *Distillation Operation*, §9.5, Fig. 9.3):
+/// the vapour the column sends up vented to a flare once the pressure passes
+/// the set, on the engine's own laws — the spring's memoryless opening
+/// (`relief_opening`, a smoothstep from the set to full lift) and the ISA gas
+/// valve (`gas_valve_flow`, choked at `F_k·x_T`). Every pressure the loader
+/// derives from the column's design pressure, API RP-520 as Ludwig Vol. 1B
+/// Fig. 9.7A states it: set at the design pressure (the MAWP), full lift
+/// 10 % of it (gauge) above, and the most the pressure is let rise to 121 %
+/// of it (gauge) — held there with an alarm past full lift.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ColumnRelief {
+    /// The valve's flow coefficient at full lift, in the element's SI form
+    /// [m²] (the file's `kv`, as every valve's `cv_max`).
+    pub cv_max: f64,
+    /// The valve's critical pressure-drop ratio `x_T` [-], in (0, 1].
+    pub x_t: f64,
+    /// Where it starts to open [Pa]: the column's design pressure.
+    pub set_pressure: Pascal,
+    /// Its accumulation band [Pa]: full lift at `set_pressure +
+    /// accumulation`, 10 % of the gauge set pressure.
+    pub accumulation: Pascal,
+    /// The most the pressure rises to [Pa], 121 % of the gauge set
+    /// pressure: past full lift the column is held here, its alarm on.
+    pub ceiling: Pascal,
+    /// The flare's pressure the valve vents against [Pa]: atmospheric.
+    pub flare_pressure: Pascal,
 }
 
 /// A column's steel, the heat its metal stores (M74.6, docs/DESIGN.md

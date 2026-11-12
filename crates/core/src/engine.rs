@@ -15,8 +15,8 @@ use crate::graph::{
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, ColumnOperation, Command, ComponentSnapshot, ControlSnapshot,
     DrawCutBack, EdgeSnapshot, HoldupOperation, LoopOperation, NodeSnapshot, PumpSuctionSnapshot,
-    PumpTwoPhaseSnapshot, ReboilerDeclined, RestartBar, SlopOperation, Snapshot, SupplyBoiling,
-    TrayOperation, TripSnapshot, TripStop,
+    PumpTwoPhaseSnapshot, ReboilerDeclined, ReliefOperation, RestartBar, SlopOperation, Snapshot,
+    SupplyBoiling, TrayOperation, TripSnapshot, TripStop,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, LineFlashModel, ReactionModel,
@@ -4201,6 +4201,7 @@ impl Engine {
                                         at_capacity: condenser.at_capacity,
                                         at_design: condenser.at_design,
                                         flooded_share: condenser.flooded_share,
+                                        at_ceiling: condenser.at_ceiling,
                                     }
                                 }),
                             }),
@@ -4216,6 +4217,14 @@ impl Engine {
                                     composition: slop.composition.clone(),
                                 })
                                 .collect(),
+                            // What its relief vented (M75.3, §80.5).
+                            relief: s.relief.as_ref().map(|vent| ReliefOperation {
+                                opening: vent.opening,
+                                flow_kg_s: vent.flow.value(),
+                                temperature_k: vent.temperature.value(),
+                                heat_w: vent.heat.value(),
+                                composition: vent.composition.clone(),
+                            }),
                         })
                     }),
                     // Absent wherever the criterion does not apply, which is

@@ -242,6 +242,10 @@ impl Books {
             for slop in &op.slop {
                 balance -= slop.flow_kg_s * slop.composition.fractions()[c];
             }
+            // And what its relief vented, on no pipe (M75.3, §80.5).
+            if let Some(relief) = &op.relief {
+                balance -= relief.flow_kg_s * relief.composition.fractions()[c];
+            }
             worst = worst.max(balance.abs());
         }
 
@@ -271,6 +275,10 @@ impl Books {
                 .map(|(w, c)| w * c)
                 .sum();
             heat -= slop.flow_kg_s * cp_mix * (slop.temperature_k - 273.15);
+        }
+        // The vent's heat, on the column's own datum (the top's vapour).
+        if let Some(relief) = &op.relief {
+            heat -= relief.heat_w;
         }
         (worst, heat)
     }

@@ -4732,17 +4732,23 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                             )));
                         }
                         let set_pressure = bar_to_pa(*pressure_bar);
+                        // GAME VALUE: the larger of 110 % of the operating
+                        // pressure and it plus 25 psi (1.72 bar), the common
+                        // design-pressure rule.
+                        let design_pressure = refinery_core::units::Pascal(
+                            (1.1 * set_pressure.value()).max(set_pressure.value() + 1.72e5),
+                        );
+                        let relief = match &condenser.relief {
+                            None => None,
+                            Some(relief) => Some(column_relief(name, relief, design_pressure)?),
+                        };
                         Some(refinery_core::graph::ColumnCondenser {
                             margin: condenser.margin,
                             coolant: c_to_k(condenser.coolant_c),
                             overhead_volume: CubicMeter(condenser.overhead_m3),
                             set_pressure,
-                            // GAME VALUE until M75.3: the larger of 110 % of
-                            // the operating pressure and it plus 25 psi
-                            // (1.72 bar), the common design-pressure rule.
-                            design_pressure: refinery_core::units::Pascal(
-                                (1.1 * set_pressure.value()).max(set_pressure.value() + 1.72e5),
-                            ),
+                            design_pressure,
+                            relief,
                         })
                     }
                 };
@@ -4984,6 +4990,41 @@ fn resolve_steam_inlets(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
 /// result the column cannot hold to a return temperature); a second cooler or
 /// none; a line pump declaring `npsh_required_m`, as on a draw line; a line
 /// that ends anywhere but its own column.
+/// A column's relief from its declaration (M75.3, docs/DESIGN.md §80.5):
+/// its pressures from the column's design pressure as API RP-520 states them
+/// (Ludwig Vol. 1B, Fig. 9.7A) — set at the design pressure (the MAWP), full
+/// lift 10 % of it gauge above, the most the pressure rises to 121 % of it
+/// gauge (the highest level the figure shows) — against a flare at
+/// atmosphere. Refused on a `kv` not above zero or an `x_t` outside (0, 1].
+fn column_relief(
+    name: &str,
+    relief: &crate::schema::ReliefDef,
+    design: refinery_core::units::Pascal,
+) -> Result<refinery_core::graph::ColumnRelief, SimError> {
+    if !relief.kv.is_finite() || relief.kv <= 0.0 {
+        return Err(SimError::Scenario(format!(
+            "column '{name}' declares condenser_limit.relief.kv = {}: the relief's flow              coefficient at full lift, finite and above zero (docs/DESIGN.md §80.5).",
+            relief.kv
+        )));
+    }
+    if !relief.x_t.is_finite() || relief.x_t <= 0.0 || relief.x_t > 1.0 {
+        return Err(SimError::Scenario(format!(
+            "column '{name}' declares condenser_limit.relief.x_t = {}: the relief's critical              pressure-drop ratio, above zero and at most one (docs/DESIGN.md §80.5).",
+            relief.x_t
+        )));
+    }
+    let flare = refinery_core::units::P_ATM.value();
+    let gauge = design.value() - flare;
+    Ok(refinery_core::graph::ColumnRelief {
+        cv_max: kv_to_cv_si(relief.kv),
+        x_t: relief.x_t,
+        set_pressure: design,
+        accumulation: refinery_core::units::Pascal(0.10 * gauge),
+        ceiling: refinery_core::units::Pascal(flare + 1.21 * gauge),
+        flare_pressure: refinery_core::units::Pascal(flare),
+    })
+}
+
 fn resolve_loop_lines(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Result<(), SimError> {
     for (name, def) in &scenario.nodes {
         let NodeDef::Column {

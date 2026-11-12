@@ -29,11 +29,13 @@
 use refinery_core::components::{Composition, Slate};
 use refinery_core::energy::T_REF;
 use refinery_core::error::SimError;
-use refinery_core::graph::{CascadeSpec, ColumnCondenser, ColumnHoldup, HoldupState, Pumparound};
+use refinery_core::graph::{
+    CascadeSpec, ColumnCondenser, ColumnHoldup, ColumnRelief, HoldupState, Pumparound,
+};
 use refinery_core::traits::{
     CascadeProfile, ColumnPass, CondenserReading, CutBackDraw, DeclinedHold, DrawSeparation,
-    HoldupReading, LevelLimit, LoopRun, Separation, SeparationModel, SlopFlow, SlopVessel,
-    ThermoModel,
+    HoldupReading, LevelLimit, LoopRun, ReliefVent, Separation, SeparationModel, SlopFlow,
+    SlopVessel, ThermoModel,
 };
 use refinery_core::units::{
     CubicMeter, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, R_GAS, T_AMBIENT,
@@ -780,6 +782,7 @@ impl HeatBalanceCascade {
                 holdup_reading: None,
                 draw_flows: Vec::new(),
                 slop: Vec::new(),
+                relief: None,
             });
         }
 
@@ -1110,6 +1113,7 @@ impl HeatBalanceCascade {
                         at_capacity: false,
                         at_design: false,
                         flooded_share: 0.0,
+                        at_ceiling: false,
                     })
                 }
                 None => None,
@@ -1158,6 +1162,7 @@ impl HeatBalanceCascade {
             holdup,
             draw_flows: Vec::new(),
             slop: Vec::new(),
+            relief: None,
         })
     }
 }
@@ -1436,16 +1441,28 @@ fn stepped_pass(
     feed_vapour_fraction: f64,
 ) -> Result<Separation, SimError> {
     let (Some(condenser), Some(ua)) = (&holdup.condenser, state.condenser_ua) else {
-        return stepped_pass_at(setup, holdup, state, feed_vapour_fraction);
+        return stepped_pass_at(setup, holdup, state, feed_vapour_fraction, None);
     };
     let set = condenser.set_pressure.value();
     let design = condenser.design_pressure.value();
     let previous = setup.pass.pressure.value();
+    // A relief takes the column past its design pressure to its ceiling
+    // (M75.3, docs/DESIGN.md §80.5), venting at every trial pressure the
+    // vapour its top sent up last tick.
+    let relief = match &condenser.relief {
+        Some(relief) => Some((
+            relief,
+            top_vapour(setup.pass.slate, setup.thermo, state, Pascal(previous))?,
+        )),
+        None => None,
+    };
+    let upper = relief.map_or(design, |(relief, _)| relief.ceiling.value());
     // The step at a trial top pressure, every stage moved with it (the
     // drops held), and its balance.
     let at = |pressure: f64| -> Result<(Separation, Balance), SimError> {
+        let venting = relief.map(|(relief, top)| relief_vent(relief, &top, pressure));
         let separation = if pressure == previous {
-            stepped_pass_at(setup, holdup, state, feed_vapour_fraction)?
+            stepped_pass_at(setup, holdup, state, feed_vapour_fraction, venting)?
         } else {
             let shift = pressure - previous;
             let pass = ColumnPass {
@@ -1461,7 +1478,7 @@ fn stepped_pass(
                     .collect(),
                 ..setup.clone()
             };
-            stepped_pass_at(&moved, holdup, state, feed_vapour_fraction)?
+            stepped_pass_at(&moved, holdup, state, feed_vapour_fraction, venting)?
         };
         // The share of the tubes backed up (M75.2, §80.3): the step's
         // reading of the start-of-tick drum, so every trial's is the same.
@@ -1481,7 +1498,7 @@ fn stepped_pass(
         )?;
         Ok((separation, balance))
     };
-    let start = previous.clamp(set, design);
+    let start = previous.clamp(set, upper);
     let first = at(start)?;
     let residual = first.1.residual;
     let solved = if (residual >= 0.0 && start <= set) || residual == 0.0 {
@@ -1498,7 +1515,7 @@ fn stepped_pass(
         // 1.8 in one tick) flashed the column and refused the tick
         // (docs/DESIGN.md §80.2).
         let rising = residual < 0.0;
-        let (end, toward) = if rising { (design, 1.0) } else { (set, -1.0) };
+        let (end, toward) = if rising { (upper, 1.0) } else { (set, -1.0) };
         let mut distance = (residual.abs() / first.1.store)
             .min(BRACKET_RATE_PA_PER_S * holdup.tick.value())
             .max(PRESSURE_TOLERANCE);
@@ -1517,8 +1534,9 @@ fn stepped_pass(
             } else if beyond {
                 break illinois(&at, near, (pressure, trial))?;
             } else if pressure == end {
-                // The design pressure, the most it rises to; or the set,
-                // the condenser taking the pressure back.
+                // The design pressure, the most it rises to (with a relief,
+                // its ceiling, the alarm); or the set, the condenser taking
+                // the pressure back.
                 break (pressure, trial);
             }
             near = (pressure, trial);
@@ -1535,6 +1553,7 @@ fn stepped_pass(
         capacity: Watt(balance.capacity),
         at_capacity: pressure > set,
         at_design: pressure >= design,
+        at_ceiling: relief.is_some() && pressure >= upper,
         flooded_share: separation
             .holdup_reading
             .map_or(0.0, |reading| reading.condenser_flooded),
@@ -1627,6 +1646,7 @@ fn stepped_pass_at(
     holdup: &ColumnHoldup,
     state: &HoldupState,
     feed_vapour_fraction: f64,
+    venting: Option<Venting>,
 ) -> Result<Separation, SimError> {
     let pass = setup.pass;
     let slate = pass.slate;
@@ -1655,6 +1675,7 @@ fn stepped_pass_at(
         feed_enthalpy: setup.feed_enthalpy,
         energy_scale,
         tolerance: setup.tolerance,
+        vent: venting.map_or(0.0, |venting| venting.mol_s),
     };
     // The last tick's answer is where Newton starts — a hint; failing one,
     // the state's temperatures and the vapour its trays carried.
@@ -1770,6 +1791,31 @@ fn stepped_pass_at(
             })
         })
         .collect::<Result<Vec<_>, SimError>>()?;
+    // What the relief vented (M75.3, docs/DESIGN.md §80.5); shut, the top
+    // stage's vapour as its label.
+    let relief = match venting {
+        None => None,
+        Some(venting) => {
+            let flow: f64 = stepped.vent_masses.iter().sum();
+            let composition = if flow > 0.0 {
+                Composition::from_weights(&stepped.vent_masses)?
+            } else {
+                let vapour: Vec<f64> = stepped.liquid[0]
+                    .iter()
+                    .zip(&stepped.k[0])
+                    .map(|(x, k)| x * k)
+                    .collect();
+                MoleFractions::from_amounts(&vapour)?.to_mass(slate)?
+            };
+            Some(ReliefVent {
+                opening: venting.opening,
+                flow: KgPerSec(flow),
+                composition,
+                temperature: Kelvin(stepped.temperatures[0]),
+                heat: Watt(stepped.vent_heat),
+            })
+        }
+    };
     let profile = Profile {
         temperatures: stepped.temperatures,
         liquid: stepped.liquid,
@@ -1831,7 +1877,125 @@ fn stepped_pass_at(
         holdup_reading: Some(stepped.reading),
         draw_flows,
         slop,
+        relief,
     })
+}
+
+/// A column's relief at one trial top pressure (M75.3, docs/DESIGN.md
+/// §80.5): its opening [-] and the vapour it vents [mol/s].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Venting {
+    opening: f64,
+    mol_s: f64,
+}
+
+/// The vapour a column's top sends its relief, as last tick left it (M75.3,
+/// docs/DESIGN.md §80.5): the top stage's equilibrium vapour, `y = K·x`
+/// normalised at its temperature and the pressure it ran at — its molar
+/// mass [kg/mol], its temperature [K] and its `γ` [-] as an ideal gas
+/// (`network::vapour_gamma`). Read once a tick, the same at every trial
+/// pressure.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TopVapour {
+    molar_mass: f64,
+    temperature: f64,
+    gamma: f64,
+}
+
+/// The top stage's vapour off the start-of-tick state at `pressure`.
+fn top_vapour(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    state: &HoldupState,
+    pressure: Pascal,
+) -> Result<TopVapour, SimError> {
+    let (Some(liquid), Some(&temperature)) = (
+        state.stage_composition.first(),
+        state.stage_temperature.first(),
+    ) else {
+        return Err(SimError::Numerical(
+            "the column's top stage is missing from its state: its relief cannot be sized              (docs/DESIGN.md §80.5)."
+                .into(),
+        ));
+    };
+    vapour_over(slate, thermo, liquid, temperature, pressure)
+}
+
+/// The equilibrium vapour over `liquid` (mass fractions) at `temperature`
+/// and `pressure` ([`TopVapour`]).
+fn vapour_over(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    liquid: &Composition,
+    temperature: Kelvin,
+    pressure: Pascal,
+) -> Result<TopVapour, SimError> {
+    let refused = |what: &str| {
+        SimError::Numerical(format!(
+            "the column's top vapour {what}: its relief cannot be sized (docs/DESIGN.md §80.5)."
+        ))
+    };
+    let x = MoleFractions::from_mass(liquid, slate)?;
+    let mut y = Vec::with_capacity(slate.len());
+    for (c, x) in x.fractions().iter().enumerate() {
+        y.push(x * thermo.k_value(slate, c, temperature, pressure)?);
+    }
+    let total: f64 = y.iter().sum();
+    if !total.is_finite() || total <= 0.0 {
+        return Err(refused("reads no vapour"));
+    }
+    for v in &mut y {
+        *v /= total;
+    }
+    let molar_mass = crate::cascade::molar_mass(slate, &y);
+    let mass = MoleFractions::from_amounts(&y)?.to_mass(slate)?;
+    let gamma = crate::network::vapour_gamma(slate, &mass);
+    if !gamma.is_finite() || gamma <= 1.0 {
+        return Err(refused(&format!("reads cp/cv = {gamma:.4}, not above 1")));
+    }
+    Ok(TopVapour {
+        molar_mass,
+        temperature: temperature.value(),
+        gamma,
+    })
+}
+
+/// A column's relief at top pressure `pressure` [Pa] (M75.3, docs/DESIGN.md
+/// §80.5), on the engine's own laws: the spring's opening, a smoothstep from
+/// the set to full lift (`elements::relief_opening`), and the ISA gas valve
+/// through it (`elements::gas_valve_flow`, ISA-75.01; choked at `F_k·x_T`,
+/// `F_k = γ/1.4`), the vapour ideal at the valve's inlet — the column's top,
+/// the line's loss to it neglected — against the flare. Below the engine's
+/// least opening (`network::OPEN_EPS`) it is shut, as every valve.
+fn relief_vent(relief: &ColumnRelief, top: &TopVapour, pressure: f64) -> Venting {
+    let opening = crate::elements::relief_opening(
+        pressure,
+        relief.set_pressure.value(),
+        relief.accumulation.value(),
+    );
+    let flare = relief.flare_pressure.value();
+    if opening < crate::network::OPEN_EPS {
+        return Venting {
+            opening: 0.0,
+            mol_s: 0.0,
+        };
+    }
+    if pressure <= flare {
+        return Venting {
+            opening,
+            mol_s: 0.0,
+        };
+    }
+    // Ideal gas at the inlet: ρ = P·M/(R·T).
+    let density = pressure * top.molar_mass / (R_GAS * top.temperature);
+    let cv = relief.cv_max * opening;
+    let alpha = (density / crate::network::RHO_WATER_REF) / (cv * cv);
+    let x_choke = crate::elements::specific_heat_ratio_factor(top.gamma) * relief.x_t;
+    let volume = crate::elements::gas_valve_flow(alpha, pressure - flare, pressure, x_choke, 0.0);
+    Venting {
+        opening,
+        mol_s: density * volume / top.molar_mass,
+    }
 }
 
 impl HeatBalanceCascade {
@@ -3340,6 +3504,7 @@ fn oil_free_feed(
         holdup_reading: None,
         draw_flows: Vec::new(),
         slop: Vec::new(),
+        relief: None,
     })
 }
 
@@ -3538,6 +3703,7 @@ fn flooded_pass_through(
             holdup_reading: None,
             draw_flows: Vec::new(),
             slop: Vec::new(),
+            relief: None,
         });
     }
     let mut draws: Vec<DrawSeparation> = (0..plan.mass_ratios.len())
@@ -3579,6 +3745,7 @@ fn flooded_pass_through(
         holdup_reading: None,
         draw_flows: Vec::new(),
         slop: Vec::new(),
+        relief: None,
     })
 }
 
@@ -3816,6 +3983,7 @@ fn water_only_inflow(
         holdup_reading: None,
         draw_flows: Vec::new(),
         slop: Vec::new(),
+        relief: None,
     })
 }
 
@@ -6977,5 +7145,131 @@ mod loop_tests {
             message.contains("stage 2 is in two pumparounds"),
             "{message}"
         );
+    }
+}
+
+/// M75.3.1 — a column's relief valve by hand (docs/DESIGN.md §80.5).
+#[cfg(test)]
+mod relief_tests {
+    use super::*;
+
+    /// A relief of Kv 5 000 set at 3.52 bar with the holdup plant's
+    /// derived pressures, and a top vapour of 0.113 kg/mol at 500 K, γ 1.05.
+    fn relief() -> (ColumnRelief, TopVapour) {
+        let (design, flare) = (3.52e5, 101_325.0);
+        (
+            ColumnRelief {
+                cv_max: 5000.0 / (3600.0 * 1e5_f64.sqrt()),
+                x_t: 0.7,
+                set_pressure: Pascal(design),
+                accumulation: Pascal(0.1 * (design - flare)),
+                ceiling: Pascal(flare + 1.21 * (design - flare)),
+                flare_pressure: Pascal(flare),
+            },
+            TopVapour {
+                molar_mass: 0.113,
+                temperature: 500.0,
+                gamma: 1.05,
+            },
+        )
+    }
+
+    /// Shut at and below its set; at half the band half open (the
+    /// smoothstep's middle); past full lift fully open, choked against the
+    /// flare: `ṅ = ρ·(2/3)·Cv·√(998·x_c·P/ρ)/M`, ISA-75.01 at `Y = 2/3`,
+    /// `x_c = (γ/1.4)·x_T`, `ρ = P·M/(R·T)`.
+    #[test]
+    fn the_vent_by_hand() {
+        let (relief, top) = relief();
+        let set = relief.set_pressure.value();
+        let band = relief.accumulation.value();
+        for p in [1.8e5, set - 1.0, set] {
+            assert_eq!(
+                relief_vent(&relief, &top, p),
+                Venting {
+                    opening: 0.0,
+                    mol_s: 0.0
+                }
+            );
+        }
+        assert_eq!(relief_vent(&relief, &top, set + 0.5 * band).opening, 0.5);
+        let p = set + band + 1.0e4;
+        let vent = relief_vent(&relief, &top, p);
+        assert_eq!(vent.opening, 1.0);
+        let rho = p * 0.113 / (R_GAS * 500.0);
+        let x_c = 1.05 / 1.4 * 0.7;
+        assert!((p - relief.flare_pressure.value()) / p > x_c, "choked");
+        let by_hand = rho * 2.0 / 3.0 * relief.cv_max * (998.0 * x_c * p / rho).sqrt() / 0.113;
+        assert!(
+            (vent.mol_s / by_hand - 1.0).abs() < 1e-12,
+            "{} {by_hand}",
+            vent.mol_s
+        );
+        // About 1 300 mol/s, 150 kg/s: the size of a crude column's top.
+        assert!(vent.mol_s > 1000.0 && vent.mol_s < 1600.0, "{}", vent.mol_s);
+        // It vents more the higher the pressure, through its band.
+        let mut last = 0.0;
+        for i in 1..=20 {
+            let now = relief_vent(&relief, &top, set + band * f64::from(i) / 20.0).mol_s;
+            assert!(now > last, "{i}: {now} after {last}");
+            last = now;
+        }
+    }
+
+    /// The top vapour by hand: three cuts at one `cp` (no vapour `cp` of
+    /// their own, so the liquid's), `K = (3, 1, 0.25)` at 400 K; `y ∝ K·x`,
+    /// `M = Σ y·M_c`, `γ = cp/(cp − Σ w_c·R/M_c)`, `w` the vapour's mass
+    /// fractions — the network's rule (`vapour_gamma`), not air's 1.4.
+    #[test]
+    fn the_top_vapour_by_hand() {
+        use crate::ConstantAlphaThermo;
+        use refinery_core::components::{Phase, PseudoComponent};
+        use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol};
+        let molar = [0.100, 0.150, 0.250];
+        let slate = Slate::new(
+            molar
+                .iter()
+                .enumerate()
+                .map(|(i, m)| PseudoComponent {
+                    name: format!("cut{i}"),
+                    tb: Kelvin(350.0 + 70.0 * i as f64),
+                    molar_mass: KgPerMol(*m),
+                    density: Some(KgPerM3(800.0)),
+                    cp: JPerKgK(2400.0),
+                    cp_shape: None,
+                    phase: Phase::Liquid,
+                    dh_vap: None,
+                    cp_vapour: None,
+                    free_water: false,
+                })
+                .collect(),
+        )
+        .unwrap();
+        let thermo = ConstantAlphaThermo::with_temperature_exponent(
+            &slate,
+            vec![3.0, 1.0, 0.25],
+            Kelvin(400.0),
+            10.0,
+        )
+        .unwrap();
+        let w = [0.3, 0.3, 0.4];
+        let liquid = Composition::from_weights(&w).unwrap();
+        let top = vapour_over(&slate, &thermo, &liquid, Kelvin(400.0), Pascal(2.0e5)).unwrap();
+        let x: Vec<f64> = w.iter().zip(&molar).map(|(w, m)| w / m).collect();
+        let y: Vec<f64> = x.iter().zip([3.0, 1.0, 0.25]).map(|(x, k)| x * k).collect();
+        let total: f64 = y.iter().sum();
+        let molar_mass: f64 = y.iter().zip(&molar).map(|(y, m)| y / total * m).sum();
+        let mass: Vec<f64> = y.iter().zip(&molar).map(|(y, m)| y * m).collect();
+        let mass_total: f64 = mass.iter().sum();
+        let r_over_m: f64 = mass
+            .iter()
+            .zip(&molar)
+            .map(|(w, m)| w / mass_total * R_GAS / m)
+            .sum();
+        let gamma = 2400.0 / (2400.0 - r_over_m);
+        assert!((top.molar_mass / molar_mass - 1.0).abs() < 1e-12, "{top:?}");
+        assert!((top.gamma / gamma - 1.0).abs() < 1e-12, "{top:?} {gamma}");
+        assert!(top.gamma < 1.05, "{top:?}");
+        assert_eq!(top.temperature, 400.0);
     }
 }

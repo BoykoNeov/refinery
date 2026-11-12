@@ -806,6 +806,27 @@ pub struct ColumnOperation {
     /// serialized, while neither is past full.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slop: Vec<SlopOperation>,
+    /// What its relief vented to the flare this tick (M75.3, docs/DESIGN.md
+    /// §80.5), on a column that declares one — shut, nothing. Absent, and
+    /// not serialized, on every other column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relief: Option<ReliefOperation>,
+}
+
+/// A column's relief as it ran — see `ColumnOperation::relief`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReliefOperation {
+    /// The valve's opening [-], 0 (shut) to 1 (full lift).
+    pub opening: f64,
+    /// What it vented [kg/s].
+    pub flow_kg_s: f64,
+    /// The temperature it vented at [K], the top stage's.
+    pub temperature_k: f64,
+    /// The heat it carried out of the column [W], on the column's own
+    /// enthalpy datum.
+    pub heat_w: f64,
+    /// Its composition (mass fractions).
+    pub composition: Composition,
 }
 
 /// A drum's or a base's excess past full, sent to slop — see
@@ -875,7 +896,8 @@ pub struct CondenserOperation {
     /// The pressure out of control: the column asks more than the condenser
     /// condenses at the set pressure — "column pressure high".
     pub at_capacity: bool,
-    /// The pressure at the column's design pressure, the most it rises to.
+    /// The pressure at the column's design pressure: the most it rises to
+    /// without a relief; with one, its relief lifting (M75.3).
     pub at_design: bool,
     /// The share of its tubes the drum's liquid has backed up into [-]
     /// (M75.2, docs/DESIGN.md §80.3), its drain shut: 0 to 1, the
@@ -883,6 +905,12 @@ pub struct CondenserOperation {
     /// while nothing backs up.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub flooded_share: f64,
+    /// The pressure held at its relief's ceiling, 121 % of the design
+    /// pressure (gauge), the relief at full lift unable to vent what the
+    /// condenser leaves (M75.3, docs/DESIGN.md §80.5) — the alarm. Absent,
+    /// not serialized, while off.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub at_ceiling: bool,
 }
 
 /// Whether a flag is off — what keeps `HoldupOperation::total_reflux` off

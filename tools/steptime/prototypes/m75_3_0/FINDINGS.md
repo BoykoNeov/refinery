@@ -122,3 +122,18 @@ alarm, or refused).
 **Decided (2026-11-11)**: the book rule; gradual (pop deferred, DEFERRED
 C32); past full lift held at 121 % of the design pressure (gauge) with an
 alarm.
+
+## Addendum (2026-11-12, M75.3.1): where the vent's excess comes from
+
+`drum_flash.diff` (on `relief.patch`, `column_step.rs` only): the vent past
+the top stage's vapour, `max(0, ṅ_v − V₀)`, flashes off the **drum's liquid
+at the drum's composition**, carrying the top vapour's molar enthalpy, its
+latent heat off the condenser's duty. `s0` (Kv 100 000) and `s1` (Kv 5 100),
+the coolant lost, run 1 200 s each: no refusal (the old `s0` stopped at
+755 s), the books 2.0e-10 / 2.1e-10 kg/s and 6.0 / 5.5 W, the drum steady
+at 0.296, the pressure easing off its peak (`s1` 3.643 → 3.595 bar), the
+excess at most 0.07 % / 0.4 % of the top's vapour. A first try booked the
+flash at the liquid's enthalpy: the condenser's duty then read ~0 at any
+pressure the vent passed the top's vapour, and the pressure froze at
+3.5445 bar while the drum drained — the heat must leave as vapour. The
+build takes this (DESIGN §80.5).

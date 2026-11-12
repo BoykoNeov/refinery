@@ -833,6 +833,29 @@ pub struct Separation {
     /// full. Not in `draw_flows` and on no pipe. Empty while neither is past
     /// full, and from every other column.
     pub slop: Vec<SlopFlow>,
+    /// What a column's relief vented to the flare this pass (M75.3,
+    /// docs/DESIGN.md §80.5), wherever the column declares one — a shut
+    /// valve venting nothing. `None` from every other column.
+    pub relief: Option<ReliefVent>,
+}
+
+/// The vapour a column's relief vented this pass (M75.3, docs/DESIGN.md
+/// §80.5): off the top before the condenser, on no pipe.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReliefVent {
+    /// The valve's opening [-], 0 (shut) to 1 (full lift).
+    pub opening: f64,
+    /// Its flow [kg/s].
+    pub flow: KgPerSec,
+    /// Its composition (mass fractions, `Σ = 1`): the top stage's vapour,
+    /// and the drum's liquid for what the vent takes past what the column
+    /// sends up. Shut, the top stage's vapour.
+    pub composition: Composition,
+    /// The temperature it leaves at [K]: the top stage's.
+    pub temperature: Kelvin,
+    /// The heat it carries out of the column [W], on the column's own
+    /// enthalpy datum — the books' term.
+    pub heat: Watt,
 }
 
 /// What a column that holds liquid read on a pass (M74, docs/DESIGN.md
@@ -887,6 +910,10 @@ pub struct CondenserReading {
     /// The share of its tubes the drum's liquid has backed up into [-]
     /// (M75.2, docs/DESIGN.md §80.3); `capacity` is the rest's.
     pub flooded_share: f64,
+    /// The pressure held at its relief's ceiling (M75.3, docs/DESIGN.md
+    /// §80.5): the relief at full lift cannot vent what the condenser
+    /// leaves — the alarm. Never without a relief.
+    pub at_ceiling: bool,
 }
 
 /// A drum's or a base's excess past full, sent to the slop line this pass

@@ -140,6 +140,11 @@ pub(crate) struct ColumnStep<'a> {
     pub(crate) energy_scale: f64,
     /// The convergence tolerance every scaled residual must meet [-].
     pub(crate) tolerance: f64,
+    /// The vapour the column's relief vents off its top before the
+    /// condenser [mol/s] (M75.3, docs/DESIGN.md §80.5): zero without one or
+    /// shut. What it takes past the top stage's vapour flashes off the
+    /// drum's liquid.
+    pub(crate) vent: f64,
 }
 
 /// Where a tick's Newton starts: each stage's temperature [K] and vapour
@@ -172,6 +177,11 @@ pub(crate) struct Stepped {
     /// The reboiler's duty [W] and the condenser's [W].
     pub(crate) reboiler_duty: f64,
     pub(crate) condenser_duty: f64,
+    /// What the relief vented, its component flows [kg/s per component],
+    /// and the heat it carried [W] (M75.3, docs/DESIGN.md §80.5): zero
+    /// without a vent.
+    pub(crate) vent_masses: Vec<f64>,
+    pub(crate) vent_heat: f64,
     /// The side draws a tray short of liquid cut back, as plan indices, and
     /// the share of their set flow each ran at.
     pub(crate) cut_back: Vec<(usize, f64)>,
@@ -249,6 +259,10 @@ struct Evaluation {
     flows: Flows,
     drum_temperature: Kelvin,
     condenser_duty: f64,
+    /// What the vent took past the top stage's vapour, off the drum [mol/s],
+    /// and the top vapour's molar enthalpy [J/mol] (M75.3, §80.5).
+    flashed: f64,
+    top_vapour_enthalpy: f64,
 }
 
 impl ColumnStep<'_> {
@@ -747,7 +761,15 @@ impl ColumnStep<'_> {
             held_next.push(held[j] + dt * (arriving - down[j] - set.drawn[j] - out[j] - vapour[j]));
         }
         let drum_held: f64 = drum.iter().sum();
-        let mut drum_next = drum_held + dt * (vapour[0] - set.reflux - set.distillate);
+        // The relief vents off the top vapour before the condenser (M75.3,
+        // docs/DESIGN.md §80.5; Kister, *Distillation Operation*, §9.5). What
+        // it asks past that vapour — the overhead's own as the pressure
+        // falls, a pressure here and not a stock (§80.2) — flashes off the
+        // drum's liquid at the drum's composition, so the books close. Shut,
+        // both are zero and the drum's balance is as before, to the bit.
+        let flashed = (self.vent - vapour[0]).max(0.0);
+        let into_drum = vapour[0] - self.vent.min(vapour[0]);
+        let mut drum_next = drum_held + dt * (into_drum - flashed - set.reflux - set.distillate);
         // A stage or the drum may end the tick holding exactly nothing
         // (M74.6); below it, by more than `slack`, it ran out.
         if let Some(j) = held_next.iter().position(|h| h.is_nan() || *h < -slack) {
@@ -791,8 +813,8 @@ impl ColumnStep<'_> {
             let mut diagonal = vec![0.0; rows];
             let mut upper = vec![0.0; rows];
             let mut rhs = vec![0.0; rows];
-            diagonal[0] = drum_next / dt + set.reflux + set.distillate;
-            upper[0] = -vapour[0] * k[0][c];
+            diagonal[0] = drum_next / dt + set.reflux + set.distillate + flashed;
+            upper[0] = -into_drum * k[0][c];
             rhs[0] = drum[c] / dt;
             for j in 0..n {
                 let r = j + 1;
@@ -912,8 +934,10 @@ impl ColumnStep<'_> {
             .collect();
         let drum_amounts: Vec<f64> = x_drum.iter().map(|v| v * drum_next).collect();
         // The condenser takes what the top vapour brings less what leaves the
-        // drum and what its liquid comes to hold.
-        let condenser_duty = vapour[0] * big_h[0]
+        // drum and what its liquid comes to hold. The drum's flash leaves as
+        // the top's vapour, its latent heat the condenser's to give (M75.3).
+        let condenser_duty = into_drum * big_h[0]
+            - flashed * big_h[0]
             - (set.reflux + set.distillate) * reflux_enthalpy
             - (drum_next * reflux_enthalpy - drum_held * set.drum_enthalpy) / dt;
         let flows = Flows {
@@ -937,6 +961,8 @@ impl ColumnStep<'_> {
             flows,
             drum_temperature,
             condenser_duty,
+            flashed,
+            top_vapour_enthalpy: big_h[0],
         })
     }
 
@@ -1068,6 +1094,17 @@ impl ColumnStep<'_> {
                 DrawLocation::Stage(j) => flows_of(set.drawn[*j], &evaluation.x[*j]),
             });
         }
+        // The relief's vent (M75.3, §80.5): the top vapour the sweep took off
+        // before the drum, and what it flashed off the drum.
+        let vented = self.vent - evaluation.flashed;
+        let vent_masses: Vec<f64> = (0..mw.len())
+            .map(|c| {
+                (vented * evaluation.k[0][c] * evaluation.x[0][c]
+                    + evaluation.flashed * evaluation.x_drum[c])
+                    * mw[c]
+            })
+            .collect();
+        let vent_heat = self.vent * evaluation.top_vapour_enthalpy;
         let mut slop = Vec::new();
         if set.drum_slop > 0.0 {
             slop.push((
@@ -1132,6 +1169,8 @@ impl ColumnStep<'_> {
             slop,
             reboiler_duty: set.reboiler,
             condenser_duty: evaluation.condenser_duty,
+            vent_masses,
+            vent_heat,
             cut_back: set.cut_back.clone(),
             reading,
             state: next,

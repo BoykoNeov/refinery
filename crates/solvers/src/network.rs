@@ -683,6 +683,22 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
     Ok(())
 }
 
+/// An all-vapour stream's `γ = cp/cv` [-] as an ideal gas: each member's
+/// vapour heat capacity (its liquid's where it declares none) and `cv = cp −
+/// R/M`, mass-weighted — what sizes a valve's or a hole's choke on a plant
+/// that boils (`vapour_inlet`), and a column's relief (M75.3, docs/DESIGN.md
+/// §80.5). Not checked here: a caller refuses a `γ` not above one.
+pub(crate) fn vapour_gamma(slate: &Slate, composition: &Composition) -> f64 {
+    let (mut cp, mut cv) = (0.0, 0.0);
+    for (i, w) in composition.fractions().iter().enumerate() {
+        let member = slate.get(i);
+        let cp_vapour = member.cp_vapour.unwrap_or(member.cp).value();
+        cp += w * cp_vapour;
+        cv += w * (cp_vapour - R_GAS / member.molar_mass.value());
+    }
+    cp / cv
+}
+
 /// Pinned pressure for a fixed node, or None if the node is free.
 pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
     match &node.kind {
@@ -1266,14 +1282,7 @@ fn vapour_inlet(
     if !all_vapour {
         return Ok(None);
     }
-    let (mut cp, mut cv) = (0.0, 0.0);
-    for (i, w) in composition.fractions().iter().enumerate() {
-        let member = slate.get(i);
-        let cp_vapour = member.cp_vapour.unwrap_or(member.cp).value();
-        cp += w * cp_vapour;
-        cv += w * (cp_vapour - R_GAS / member.molar_mass.value());
-    }
-    let gamma = cp / cv;
+    let gamma = vapour_gamma(slate, composition);
     if !gamma.is_finite() || gamma <= 1.0 {
         return Err(SimError::Numerical(format!(
             "pipe '{}' carries an all-vapour stream whose cp/cv = {gamma:.4} is not above \

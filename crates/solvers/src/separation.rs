@@ -149,6 +149,7 @@ impl SeparationModel for CutPointSplitter {
             holdup_reading: None,
             draw_flows: Vec::new(),
             slop: Vec::new(),
+            relief: None,
         })
     }
 }

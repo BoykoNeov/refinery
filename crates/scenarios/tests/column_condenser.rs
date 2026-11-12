@@ -73,6 +73,7 @@ fn the_condenser_limit_is_read_as_written() {
             overhead_volume: CubicMeter(100.0),
             set_pressure: Pascal(1.8e5),
             design_pressure: Pascal(1.8e5 + 1.72e5),
+            relief: None,
         })
     );
     // Absent, nothing.

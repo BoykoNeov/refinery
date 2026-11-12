@@ -31858,3 +31858,100 @@ overhead's vapour as a stock); **past full lift held at a ceiling with an
 alarm** — 121 % of the design pressure (gauge, Ludwig Fig. 9.7A's highest
 level), the run going on. Defaults stated, not asked: the flare at
 atmosphere.
+
+### 80.5 M75.3.1 landed — the relief in the column's pressure solve, its vent a reading (2026-11-12)
+
+**Split, on M72's precedent** (the loop's physics in M72.1, its line on the
+map in M72.2): **M75.3.1** the relief inside the column's pressure solve, its
+vent booked as a reading on the column (on no pipe, as the slop, §79.18);
+**M75.3.2** the vent on a real line to a flare on the map (the user's
+decision, §80.0) — the vent's composition, temperature and flow already on
+the column's pass for it to carry.
+
+**The declaration**: `condenser_limit = { …, relief = { kv = …, x_t = … } }`
+(`deny_unknown_fields`), refused on a `kv` not above zero and an `x_t`
+outside (0, 1]. Its pressures derived from the column's design pressure,
+API RP-520 as Ludwig Vol. 1B Fig. 9.7A states it: **set** at the design
+pressure (the MAWP; 3.52 bar on the holdup plant), **full lift** 10 % of it
+gauge above (3.77 bar), the **ceiling** 121 % of it gauge (4.05 bar), the
+**flare** at atmosphere. `ColumnCondenser::relief` (`ColumnRelief`), absent
+and off the wire on every column that predates it.
+
+**The law** (`heat_balance::relief_vent`): the engine's own — the spring's
+memoryless smoothstep (`relief_opening`) and the ISA gas valve through it
+(`gas_valve_flow`, choked at `F_k·x_T`, `F_k = γ/1.4`), shut below the
+engine's least opening (`OPEN_EPS`), as every valve. The vapour ideal at the
+valve's inlet, the column's top (the line's loss to it neglected), its
+molar mass, temperature and `γ` the **top stage's vapour** of last tick
+(`y = K·x` normalised; `γ` by `network::vapour_gamma`, the rule the
+network's vapour valves use, moved there out of `vapour_inlet` with its
+arithmetic unchanged) — read once a tick, the same at every trial pressure;
+the probe's drum composition was ~15 % light where it sizes (§80.4).
+
+**In the solve** (§80.2): the vent at each trial pressure is taken off the
+top vapour before the drum and the condenser — the drum's balance, its sweep
+row and the condenser's duty on `V₀ − ṅ_v`; the solve's upper end the
+ceiling in place of the design pressure. `r(ceiling) ≤ 0` is the answer —
+**held at the ceiling**, `at_ceiling` on the faceplate (the alarm), the run
+going on. `at_design` reads the relief lifting.
+
+**What the vent asks past the top's vapour flashes off the drum** — the
+question §80.4 left open. While the pressure falls the vent can ask a little
+more than the column sends up (the overhead's own vapour, a pressure here
+and not a stock). The probe booked it out of the drum at the top stage's
+vapour composition, and an idle drum went negative (refused at 755 s). Now
+that excess `ṅ_f = max(0, ṅ_v − V₀)` leaves the **drum's liquid at the
+drum's composition** (the drum's diagonal `+ ṅ_f`), carrying the top
+vapour's molar enthalpy, its latent heat taken off the condenser's duty —
+the books close exactly. Of the three candidates (a cap at the top's
+vapour, the drum flashing, the overhead a stock) the cap freezes the
+pressure at its peak with the coolant lost and the stock is C32's; the
+drum's flash passed the probe's three tests on its own story (the coolant
+lost, the relief 20 times the book's size, 1 200 s): the books at 2e-10
+kg/s and 6 W, no refusal, the drum steady at 0.30, the pressure easing
+off its peak (3.643 → 3.595 bar on the book's size), the excess at most
+0.4 % of the top's vapour (`tools/steptime/prototypes/m75_3_0/drum_flash.diff`).
+Shut, every new term is an exact zero: the drum's balance and the duty to
+the bit as before.
+
+**The faceplate**: `ColumnOperation::relief` (`opening`, `flow_kg_s`,
+`temperature_k`, `heat_w` on the column's enthalpy datum — the books' term
+— and `composition`; shut, the top stage's vapour as its label), present
+on every tick but the settling first on a column that declares one;
+`CondenserOperation::at_ceiling`, off the wire while off.
+
+**What it reads** (the holdup plant with its steel, the probe's 5 %
+condenser; `crates/scenarios/tests/column_relief.rs`; the coolant lost as
+the test's own hand — its temperature put above the condensate's bubble
+point, no command moves it):
+- **The book's size** (all the top vapour of normal running at full lift,
+  choked, by hand from the column at rest): **Kv ≈ 4 000** — below the
+  probe's ~5 000, the top stage's heavier vapour and its own `γ` (~1.03)
+  in place of the probe's drum liquid and 1.1. The coolant lost, the
+  pressure passes the set and peaks at **3.67 bar**, inside the
+  band, the vent at most 72 kg/s; the coolant back, the condenser takes the
+  pressure to its set, 1.8 bar exactly, the relief shut. On 266 ticks of the
+  fall the vent asked past the top's vapour, the rest off the drum.
+- **A twentieth of it** cannot vent what the column sends up: the pressure
+  passes full lift and is held at the ceiling, 4.0464 bar exactly, from
+  about 79 s, its alarm on, ~5.8 kg/s vented.
+- The books close every tick in both: at most 2.3e-10 kg/s and 6.8 W.
+- **At rest it changes nothing**: shut below its set, the column
+  bit-identical to the same plant without one, 150 ticks.
+- **A stand-in that failed** (kept as a lesson): the condenser flooded whole
+  by re-planting the drum past full each tick (§80.3) is not the coolant
+  lost — the drum's level loop at its ceiling drives the reflux and the top
+  vapour well past normal running, and the book's valve reached the ceiling.
+  The governing case is the coolant lost (Kister §9.3).
+
+**Gates.** Eight tests (read as written; refusals; at rest bit-identical;
+the pressures in order; the vent by hand — shut at the set, half open
+mid-band, choked past full lift to 1e-12, rising through its band; the top
+vapour by hand — its molar mass and `γ` to 1e-12; the book's size holding
+below full lift and falling back, the drum's flash seen; a twentieth held
+at the ceiling). Thirteen mutations, every one caught (the inlet's
+temperature, `F_k`, `γ` fixed at air's 1.4 — caught only once the top
+vapour's own test was added —, the upper end the design, the alarm strict,
+the flash off the stage, its heat, the vent's heat, the drum's loss, the
+band, the ceiling, the `x_t` refusal, the faceplate's alarm). Every plant
+byte-identical, 71 of 71 on both fidelities.

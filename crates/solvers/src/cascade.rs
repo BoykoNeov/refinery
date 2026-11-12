@@ -471,6 +471,7 @@ impl SeparationModel for StageCascade {
                 holdup_reading: None,
                 draw_flows: Vec::new(),
                 slop: Vec::new(),
+                relief: None,
             });
         }
 
@@ -709,6 +710,7 @@ impl SeparationModel for StageCascade {
             holdup_reading: None,
             draw_flows: Vec::new(),
             slop: Vec::new(),
+            relief: None,
         })
     }
 }

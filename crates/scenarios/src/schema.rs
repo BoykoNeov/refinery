@@ -822,6 +822,24 @@ pub struct CondenserDef {
     pub margin: f64,
     pub coolant_c: f64,
     pub overhead_m3: f64,
+    /// A relief valve on the column's top before the condenser (M75.3,
+    /// docs/DESIGN.md §80.5): `relief = { kv = 5000.0, x_t = 0.7 }`. Absent,
+    /// the pressure is held at the column's design pressure.
+    #[serde(default)]
+    pub relief: Option<ReliefDef>,
+}
+
+/// A column's relief valve (M75.3, docs/DESIGN.md §80.5): its flow
+/// coefficient at full lift, metric `kv` [m³/h at 1 bar, SG 1], as every
+/// valve's, and its critical pressure-drop ratio `x_t` [-], in (0, 1]. Its
+/// pressures are derived from the column's design pressure (API RP-520):
+/// set at it, full lift 10 % of it (gauge) above, held at 121 % (gauge)
+/// past full lift; the flare at atmosphere. **`deny_unknown_fields`**.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReliefDef {
+    pub kv: f64,
+    pub x_t: f64,
 }
 
 /// A column's liquid held: the reflux drum's and the base's working volumes
