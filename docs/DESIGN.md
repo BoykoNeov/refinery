@@ -31926,8 +31926,14 @@ the test's own hand — its temperature put above the condensate's bubble
 point, no command moves it):
 - **The book's size** (all the top vapour of normal running at full lift,
   choked, by hand from the column at rest): **Kv ≈ 4 000** — below the
-  probe's ~5 000, the top stage's heavier vapour and its own `γ` (~1.03)
-  in place of the probe's drum liquid and 1.1. The coolant lost, the
+  probe's ~5 000 for two reasons, each a basis: the test reads the top
+  stage's vapour at rest as 982 mol/s (114 kg/s) where the probe took
+  ~1 208 (137 kg/s, the figure the user approved), and it takes the vapour
+  at the running top temperature, 437 K, where the probe's sizing tick was
+  ~505 K (relieving conditions, as API RP-520 sizes); the heavier vapour
+  (0.116 kg/mol) and the lower `γ` (1.035, `x_c` 0.517) push the other way,
+  +1 % and +3 % (`Kv ∝ ṅ·√(M·T/x_c)` choked). The plant file's size is
+  M75.4's to settle on a stated basis, put to the user. The coolant lost, the
   pressure passes the set and peaks at **3.67 bar**, inside the
   band, the vent at most 72 kg/s; the coolant back, the condenser takes the
   pressure to its set, 1.8 bar exactly, the relief shut. On 266 ticks of the

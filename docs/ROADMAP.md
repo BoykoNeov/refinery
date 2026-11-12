@@ -11423,7 +11423,10 @@ without a decision**: what the vent asks past the top's vapour while the
 pressure falls flashes off the drum's liquid at the drum's composition — no
 refusal over 20 minutes where the probe's drum went negative, the books
 exact (DESIGN §80.5). The coolant lost (the test's own hand on its
-temperature): a valve of the book's size (Kv ≈ 4 000) peaks at 3.67 bar,
+temperature): a valve of the book's size on the test's basis (Kv ≈ 4 000:
+the top's vapour at rest and at its running temperature, against the
+probe's ~5 000 at relieving conditions — the plant file's basis M75.4's to
+settle with the user) peaks at 3.67 bar,
 inside its band, and the coolant back the column returns to 1.8 bar
 exactly; a twentieth of it is held at the ceiling, 4.05 bar, its alarm on.
 At rest bit-identical to the plant without one; eight tests, thirteen
