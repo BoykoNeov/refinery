@@ -20,6 +20,12 @@ const BASE_SIZE := Vector2i(1152, 648)
 
 ## Where the menu leaves the plant it was asked for, for the screen it opens.
 const PLANT_META := "refinery_plant"
+## Where the menu leaves a save to start from instead (M77).
+const SAVE_META := "refinery_save"
+
+## The quick save: F5 writes it, F9 and the menu's Continue read it (M77).
+## `user://` is Godot's folder for this game under the user's profile.
+const QUICK_SAVE := "user://saves/quick.json"
 
 
 ## The plant the menu asked for, or `otherwise`. Read once: switching plants
@@ -36,6 +42,53 @@ static func chosen_plant(tree: SceneTree, otherwise: String) -> String:
 static func open(tree: SceneTree, scene: String, plant: String) -> void:
 	tree.root.set_meta(PLANT_META, plant)
 	tree.change_scene_to_file(scene)
+
+
+## Open `scene` on the save at `path` (M77): the screen loads it in place of a
+## plant.
+static func open_save(tree: SceneTree, scene: String, path: String) -> void:
+	tree.root.set_meta(SAVE_META, path)
+	tree.change_scene_to_file(scene)
+
+
+## The save the menu asked a screen to start from, or "". Read once.
+static func chosen_save(tree: SceneTree) -> String:
+	if not tree.root.has_meta(SAVE_META):
+		return ""
+	var path := str(tree.root.get_meta(SAVE_META))
+	tree.root.remove_meta(SAVE_META)
+	return path
+
+
+## Write a save's text to `path`, making its folder: "" when written, else
+## why not. Written beside it first and then moved over it, so a failed write
+## never leaves half a save where the last whole one was.
+static func write_save(path: String, text: String) -> String:
+	var made := DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+	if made != OK:
+		return "could not make %s (error %d)" % [path.get_base_dir(), made]
+	var partial := path + ".partial"
+	var file := FileAccess.open(partial, FileAccess.WRITE)
+	if file == null:
+		return "could not write %s (error %d)" % [partial, FileAccess.get_open_error()]
+	file.store_string(text)
+	file.close()
+	var moved := DirAccess.rename_absolute(partial, path)
+	if moved != OK:
+		return "could not move %s over %s (error %d)" % [partial, path, moved]
+	return ""
+
+
+## A save's text and what its screen noted in it, or {} when there is no save
+## at `path` or it is not one a screen wrote: {text, tick, note}.
+static func read_save(path: String) -> Dictionary:
+	if not FileAccess.file_exists(path):
+		return {}
+	var text := FileAccess.get_file_as_string(path)
+	var save = JSON.parse_string(text)
+	if not (save is Dictionary) or not (save.get("frontend") is Dictionary):
+		return {}
+	return {"text": text, "tick": int(save.get("tick", 0)), "note": save["frontend"]}
 
 
 static func to_menu(tree: SceneTree) -> void:

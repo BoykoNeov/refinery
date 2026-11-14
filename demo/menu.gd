@@ -6,6 +6,9 @@
 # source of its rows here, so a plant added to a screen appears without this
 # file changing. Esc in any screen comes back here.
 #
+# M77: when a quick save exists (F5 on the pump screen), a Continue row heads
+# the list and opens its screen on it.
+#
 # Computes nothing and loads no simulator: it only chooses a scene.
 #
 #   godot --path .                     this menu (the project's main scene)
@@ -70,12 +73,17 @@ const LEFT := 40.0
 const TOP := 66.0
 const ROW := 17.0
 const HEADING := 21.0
+## The lowest a row may sit: past it the list is drawn closer together, so a
+## Continue row (M77) does not push the last screen off the window.
+const BOTTOM := 638.0
 
 ## One entry per line the menu can open: {scene, plant, label, y}.
 var rows: Array = []
 ## Each screen's heading: {name, about, y}.
 var headings: Array = []
 var selected := 0
+## The height of a row as drawn: ROW, or less when the list is squeezed.
+var row_step := ROW
 
 
 func _ready() -> void:
@@ -87,6 +95,12 @@ func _ready() -> void:
 		if arg.begins_with("--shot="):
 			_shoot.call_deferred(arg.trim_prefix("--shot="))
 	var y := TOP
+	var save: Dictionary = Screen.read_save(Screen.QUICK_SAVE)
+	if not save.is_empty() and save["note"].has("scene"):
+		y += HEADING
+		headings.append({"name": "Continue", "about": "where you left off (F5 saves, on the pump screen)", "y": y})
+		y += 4.0 + ROW
+		rows.append({"scene": str(save["note"]["scene"]), "plant": "", "save": Screen.QUICK_SAVE, "label": _save_label(save), "y": y})
 	for screen in SCREENS:
 		y += HEADING
 		headings.append({"name": screen["name"], "about": screen["about"], "y": y})
@@ -98,6 +112,11 @@ func _ready() -> void:
 		for key in plants:
 			y += ROW
 			rows.append({"scene": screen["scene"], "plant": key, "label": str(plants[key].get("title", key)), "y": y})
+	if y > BOTTOM:
+		var squeeze := (BOTTOM - TOP) / (y - TOP)
+		row_step = ROW * squeeze
+		for entry in rows + headings:
+			entry["y"] = TOP + (float(entry["y"]) - TOP) * squeeze
 	queue_redraw()
 
 
@@ -161,16 +180,29 @@ func _input(event: InputEvent) -> void:
 		queue_redraw()
 
 
+## The quick save's row: its plant, by the title its screen gives it, and when.
+func _save_label(save: Dictionary) -> String:
+	var note: Dictionary = save["note"]
+	var plant := str(note.get("plant", ""))
+	var script_path := str(note.get("scene", "")).trim_suffix(".tscn") + ".gd"
+	var plants := _plants_of(script_path) if ResourceLoader.exists(script_path) else {}
+	var title := str(plants[plant].get("title", plant)) if plants.has(plant) else plant
+	return "Quick save: %s, %d ticks in" % [title, save["tick"]]
+
+
 func _row_at(at: Vector2) -> int:
 	for i in rows.size():
 		var y: float = rows[i]["y"]
-		if at.y > y - ROW + 4.0 and at.y <= y + 4.0 and at.x >= LEFT - 10.0:
+		if at.y > y - row_step + 4.0 and at.y <= y + 4.0 and at.x >= LEFT - 10.0:
 			return i
 	return -1
 
 
 func _open() -> void:
 	var row: Dictionary = rows[selected]
+	if row.has("save"):
+		Screen.open_save(get_tree(), row["scene"], row["save"])
+		return
 	Screen.open(get_tree(), row["scene"], row["plant"])
 
 
@@ -192,8 +224,8 @@ func _draw() -> void:
 		var y: float = row["y"]
 		var chosen := i == selected
 		if chosen:
-			draw_rect(Rect2(Vector2(LEFT - 10, y - ROW + 4.0), Vector2(size.x - 2 * (LEFT - 10), ROW)), BAND)
-			draw_rect(Rect2(Vector2(LEFT - 10, y - ROW + 4.0), Vector2(3, ROW)), ACCENT)
+			draw_rect(Rect2(Vector2(LEFT - 10, y - row_step + 4.0), Vector2(size.x - 2 * (LEFT - 10), row_step)), BAND)
+			draw_rect(Rect2(Vector2(LEFT - 10, y - row_step + 4.0), Vector2(3, row_step)), ACCENT)
 		_text(Vector2(LEFT + 14, y), row["label"], INK if chosen else DIM, 14)
 
 

@@ -52,9 +52,19 @@
 #               the next tick cannot be solved. The screen undoes the command and
 #               carries on (M76, docs/plans/failed-tick-recovery.md):
 #               ... --auto --plant=gaslock --break-at=230
+# Saves (M77):  F5 saves the plant to the quick save, F9 loads it; the menu's
+#               Continue opens this screen on it. A save is the plant file and
+#               every command, replayed on load (docs/plans/save-and-load.md).
+#               In a recorded run, --save-at=<tick> saves at that tick and
+#               --continue starts from the save instead of a plant;
+#               --save-file=<path> uses that file instead of the quick save:
+#               ... --auto --plant=gaslock --save-at=120 --save-file=W:/temp/claude/x/pump.json
+#               ... --auto --continue --save-file=W:/temp/claude/x/pump.json
+#               print the same lines after tick 120.
 extends Node2D
 
 const Screen := preload("res://demo/screen.gd")
+const SCENE := "res://demo/pump.tscn"
 
 ## The two plants, and the names on each the scene draws. A name missing from a
 ## plant is a load-time halt, not a guess.
@@ -207,6 +217,12 @@ var moved_conditions := false
 var sent_what: Dictionary = {}
 ## A recorded run's tick to break the plant at (--break-at), or -1.
 var break_at := -1
+## The file F5 writes and F9 reads (M77): the quick save unless --save-file.
+var save_file: String = Screen.QUICK_SAVE
+## A recorded run's tick to save at (--save-at), or -1.
+var save_at := -1
+## A save is being loaded: the plant is not ticked until it is.
+var loading := false
 
 
 func _ready() -> void:
@@ -219,8 +235,22 @@ func _ready() -> void:
 			shots_dir = arg.trim_prefix("--shots=")
 		elif arg.begins_with("--break-at="):
 			break_at = int(arg.trim_prefix("--break-at="))
+		elif arg.begins_with("--save-at="):
+			save_at = int(arg.trim_prefix("--save-at="))
+		elif arg.begins_with("--save-file="):
+			save_file = arg.trim_prefix("--save-file=")
+	var start_from := ""
+	if "--continue" in OS.get_cmdline_user_args():
+		start_from = save_file
+	var chosen := Screen.chosen_save(get_tree())
+	if chosen != "":
+		start_from = chosen
+		save_file = chosen
 	plant_key = Screen.chosen_plant(get_tree(), plant_key)
 	Screen.fit(get_window())
+	if start_from != "":
+		_load_save(start_from)
+		return
 	if not PLANTS.has(plant_key):
 		_halt("no plant '%s' (limit | boiling | gaslock)" % plant_key)
 		return
@@ -228,6 +258,21 @@ func _ready() -> void:
 
 
 func _load(key: String) -> void:
+	_reset(key)
+	var plant: Dictionary = PLANTS[key]
+	var err = JSON.parse_string(sim.load_scenario(plant["scenario"]))
+	if err != null:
+		_halt("load failed: %s" % err)
+		return
+	if not _resolve():
+		return
+	_say("loaded %s" % plant["scenario"], false)
+	print("pump: loaded %s" % plant["scenario"])
+	queue_redraw()
+
+
+## What the screen remembers of a plant, forgotten for a new one.
+func _reset(key: String) -> void:
 	plant_key = key
 	halted = ""
 	finished = false
@@ -236,13 +281,12 @@ func _load(key: String) -> void:
 	seen_lamp = ""
 	moved_conditions = false
 	sent_what = {}
-	var plant: Dictionary = PLANTS[key]
 
-	var err = JSON.parse_string(sim.load_scenario(plant["scenario"]))
-	if err != null:
-		_halt("load failed: %s" % err)
-		return
 
+## The ids of the names the screen draws, on the plant just loaded. False (and
+## halted) when one is missing.
+func _resolve() -> bool:
+	var plant: Dictionary = PLANTS[plant_key]
 	source_id = sim.node_id(plant["source"])
 	pump_id = sim.node_id(plant["pump"])
 	valve_id = sim.node_id(plant["valve"])
@@ -250,16 +294,81 @@ func _load(key: String) -> void:
 	suction_pipe_id = sim.edge_id(plant["suction_pipe"])
 	if source_id < 0 or pump_id < 0 or valve_id < 0 or destination_id < 0 or suction_pipe_id < 0:
 		_halt("this scenario does not have the names the scene expects")
-		return
-
+		return false
 	snapshot = JSON.parse_string(sim.snapshot_json())
-	_say("loaded %s" % plant["scenario"], false)
-	print("pump: loaded %s" % plant["scenario"])
+	return true
+
+
+# ------------------------------------------------------------------ saves
+
+## F5: the plant as it stands, to the save file (M77). The note is what this
+## screen needs back: which plant, and what each command was in words.
+func _save() -> void:
+	var note := {
+		"scene": SCENE,
+		"plant": plant_key,
+		"scenario": PLANTS[plant_key]["scenario"],
+		"said": sent_what,
+		"moved_conditions": moved_conditions,
+	}
+	var text: String = sim.save_json(JSON.stringify(note))
+	var answer = JSON.parse_string(text)
+	if answer.has("code"):
+		_say("not saved: %s" % answer["message"], true)
+		return
+	var failed: String = Screen.write_save(save_file, text)
+	if failed != "":
+		_say("not saved: %s" % failed, true)
+		return
+	_say("saved at t = %.1f s to %s (F9 loads it)" % [float(snapshot.get("sim_time", 0.0)), save_file], false)
+	print("pump: t=%d  saved to %s" % [sim.tick_index(), save_file])
+
+
+## F9 (or the menu's Continue): the plant a save holds, replayed. Until it is
+## loaded the plant on screen, if any, stands still; a save that does not
+## load leaves it as it was.
+func _load_save(path: String) -> void:
+	var save: Dictionary = Screen.read_save(path)
+	if save.is_empty() or not PLANTS.has(str(save["note"].get("plant", ""))):
+		_refuse_save("there is no pump-screen save at %s" % path)
+		return
+	loading = true
+	_say("loading... replaying %d ticks" % save["tick"], false)
+	queue_redraw()
+	# Let the line be drawn before the replay holds the frame.
+	if DisplayServer.get_name() != "headless":
+		await RenderingServer.frame_post_draw
+	var started := Time.get_ticks_msec()
+	var err = JSON.parse_string(sim.load_save(save["text"]))
+	var took := (Time.get_ticks_msec() - started) / 1000.0
+	loading = false
+	if err != null:
+		_refuse_save("%s: %s" % [path, err["message"]])
+		return
+	var note: Dictionary = save["note"]
+	_reset(str(note["plant"]))
+	if not _resolve():
+		return
+	sent_what = note.get("said", {})
+	moved_conditions = bool(note.get("moved_conditions", false))
+	_say("loaded the save: t = %.1f s, %d ticks replayed in %.1f s" % [float(snapshot["sim_time"]), sim.tick_index(), took], false)
+	print("pump: loaded save %s at t=%d (%.1f s to replay)" % [path, sim.tick_index(), took])
+	queue_redraw()
+
+
+## A save that did not load: said, and the plant running is left running. With
+## none running (a Continue that failed) there is nothing to show.
+func _refuse_save(why: String) -> void:
+	if snapshot.is_empty():
+		_halt("not loaded: %s" % why)
+		return
+	_say("not loaded: %s" % why, true)
+	print("pump: save NOT loaded: %s" % why)
 	queue_redraw()
 
 
 func _physics_process(_delta: float) -> void:
-	if halted != "" or paused or finished or shooting:
+	if halted != "" or paused or finished or shooting or loading:
 		return
 	for i in ticks_per_frame:
 		if not _step():
@@ -293,6 +402,8 @@ func _step() -> bool:
 			_do(action)
 	if tick == break_at:
 		_do("supply_c_-270")
+	if tick == save_at:
+		_save()
 	if shots_dir != "" and tick in AUTO_SHOT_TICKS[plant_key]:
 		_shoot(tick)
 		return false
@@ -339,7 +450,7 @@ func _shoot(tick: int) -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if not (event is InputEventKey and event.pressed and not event.echo):
+	if not (event is InputEventKey and event.pressed and not event.echo) or loading:
 		return
 	match event.keycode:
 		KEY_1:
@@ -382,6 +493,10 @@ func _input(event: InputEvent) -> void:
 		KEY_C:
 			trail = {}
 			_say("trail cleared", false)
+		KEY_F5:
+			_save()
+		KEY_F9:
+			_load_save(save_file)
 	queue_redraw()
 
 
@@ -732,6 +847,8 @@ func _draw() -> void:
 		_text(Vector2(30, 40), "HALTED — %s" % halted, BAD)
 		return
 	if snapshot.is_empty():
+		# Before a plant: only the line saying a save is loading.
+		_text(Vector2(30, 40), message, BAD if message_bad else GOOD)
 		return
 
 	_text(Vector2(30, 34), PLANTS[plant_key]["title"], INK, 20)
@@ -753,7 +870,7 @@ func _draw() -> void:
 	)
 	_text(
 		Vector2(30, 600),
-		"Up/Down valve   K pump on/off   W/S supply pressure   E/D supply temperature   R/F destination pressure",
+		"Up/Down valve   K pump on/off   W/S supply pressure   E/D supply temperature   R/F destination pressure   F5 save   F9 load",
 		DIM
 	)
 	_text(

@@ -172,4 +172,19 @@ impl RefinerySim {
     fn last_good_tick(&self) -> i64 {
         self.session.last_good_tick()
     }
+
+    /// The session as a save (M77): the save's JSON text, or `{code,
+    /// message}`. `frontend_json` is the scene's own note, kept verbatim. The
+    /// scene writes the text to `user://` itself.
+    #[func]
+    fn save_json(&self, frontend_json: GString) -> GString {
+        GString::from(&self.session.save_json(&frontend_json.to_string()))
+    }
+
+    /// Load a save's text (M77), replaying it: `null`, or `{code, message}`
+    /// with the running plant untouched. Takes as long as the ticks took.
+    #[func]
+    fn load_save(&mut self, save_json: GString) -> GString {
+        GString::from(&self.session.load_save(&save_json.to_string()))
+    }
 }

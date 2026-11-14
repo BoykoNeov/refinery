@@ -1309,6 +1309,9 @@ fn error_codes_are_stable() {
         (BridgeError::BadRewind("x".into()), "bad_rewind"),
         (BridgeError::NothingToUndo("x".into()), "nothing_to_undo"),
         (BridgeError::ReplayDiverged("x".into()), "replay_diverged"),
+        (BridgeError::BadSave("x".into()), "bad_save"),
+        (BridgeError::SaveFormat("x".into()), "save_format"),
+        (BridgeError::SaveDiverged("x".into()), "save_diverged"),
         (
             BridgeError::Sim(SimError::SolverDiverged {
                 iterations: 7,
@@ -1409,6 +1412,10 @@ fn every_session_call_answers_before_a_scenario_is_loaded() {
     assert_eq!(outcome_code(&sim.rewind(0)).as_deref(), Some("not_loaded"));
     assert_eq!(outcome_code(&sim.recover()).as_deref(), Some("not_loaded"));
     assert_eq!(sim.last_good_tick(), MISSING_ID);
+    assert_eq!(
+        outcome_code(&sim.save_json("{}")).as_deref(),
+        Some("not_loaded")
+    );
 
     // And loading turns all of that on.
     assert_eq!(outcome_code(&sim.load_scenario(&scenario_src(LEAKY))), None);
@@ -2080,4 +2087,297 @@ fn a_failed_tick_is_replayed_too() {
     let (to, dropped) = recovery(&sim.recover());
     assert_eq!((to, dropped), (50, vec![breaking]));
     assert_eq!(sim.snapshot_json(), run_with(&src, &[], 50).snapshot_json());
+}
+
+// ------------------------------------------------------ Save and load (M77)
+
+// A save is the plant file plus the record M76 keeps — every command that
+// reached the engine, accepted or refused, and every failed tick, each at its
+// tick — and loading one replays it (docs/plans/save-and-load.md, slice 1).
+// These gate that a loaded save is the saved plant to the bit, and that a save
+// that cannot be that plant is refused without touching the running one.
+
+/// What a screen hands `save_json` to have back on load: opaque to the bridge.
+const NOTE: &str = r#"{"scene":"res://demo/pump.tscn","plant":"gaslock","said":{"a":"b"}}"#;
+
+fn save_of(sim: &Session) -> String {
+    let save = sim.save_json(NOTE);
+    assert_eq!(outcome_code_of_object(&save), None, "save refused: {save}");
+    save
+}
+
+/// `save_json` answers a save (an object with `format`) or a refusal (an
+/// object with `code`); this is the code, or `None` for a save.
+fn outcome_code_of_object(json: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(json).expect("save_json answers JSON");
+    value
+        .get("code")
+        .map(|code| code.as_str().expect("a code is text").to_string())
+}
+
+fn loaded_from(save: &str) -> Session {
+    let mut sim = Session::new();
+    assert_eq!(sim.load_save(save), "null", "the save did not load");
+    sim
+}
+
+/// A save loads as the plant it was made from, byte for byte, and the two go
+/// on the same: one more command to each and 500 ticks. The screen's note
+/// comes back as it went in.
+#[test]
+fn a_save_loads_as_the_same_plant() {
+    let src = scenario_src(LEAKY);
+    let valve = loaded(&src).node_id("discharge_valve");
+    let mut sim = run_with(&src, &leaky_commands(valve), 300);
+    let save = save_of(&sim);
+
+    let value: Value = serde_json::from_str(&save).unwrap();
+    assert_eq!(value["format"], 1);
+    assert_eq!(value["tick"], 300);
+    assert_eq!(value["engine"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(value["scenario_source"], src.as_str());
+    assert_eq!(
+        value["frontend"],
+        serde_json::from_str::<Value>(NOTE).unwrap()
+    );
+
+    let mut again = loaded_from(&save);
+    assert_eq!(again.tick_index(), 300);
+    assert_eq!(again.snapshot_json(), sim.snapshot_json());
+
+    let more = valve_json(valve, 0.35);
+    assert_eq!(sim.apply_command_json(&more), "null");
+    assert_eq!(again.apply_command_json(&more), "null");
+    for _ in 0..500 {
+        assert_eq!(sim.tick(), "null");
+        assert_eq!(again.tick(), "null");
+    }
+    assert_eq!(again.snapshot_json(), sim.snapshot_json());
+}
+
+/// The two things M76 found a replay must repeat survive a save too: a command
+/// the engine refused (it moves a vapour plant's next tick) and a failed tick
+/// (it moves the plant before it fails). A save that kept only the accepted
+/// commands would load as a different plant, or not at all.
+#[test]
+fn a_save_keeps_refused_commands_and_failed_ticks() {
+    // The refused command, on the vapour plant of `a_refused_command_is_replayed_too`.
+    let src = scenario_src("flashing_rundown.toml");
+    let mut sim = loaded(&src);
+    let tank = sim.node_id("rundown_tank");
+    for _ in 0..30 {
+        assert_eq!(sim.tick(), "null");
+    }
+    assert_eq!(
+        outcome_code(&sim.apply_command_json(&valve_json(tank, 0.5))).as_deref(),
+        Some("invalid_command")
+    );
+    for _ in 0..50 {
+        assert_eq!(sim.tick(), "null");
+    }
+    assert_ne!(sim.snapshot_json(), run_with(&src, &[], 80).snapshot_json());
+    assert_eq!(
+        loaded_from(&save_of(&sim)).snapshot_json(),
+        sim.snapshot_json()
+    );
+
+    // The failed tick, on the plant of `a_failed_tick_is_replayed_too`.
+    let src = scenario_src("vessel_pressure_control.toml");
+    let mut sim = loaded(&src);
+    let flare = sim.node_id("flare");
+    let breaking = format!(r#"{{"cmd":"set_reservoir_pressure","node":{flare},"pressure":1e300}}"#);
+    let mending =
+        format!(r#"{{"cmd":"set_reservoir_pressure","node":{flare},"pressure":110000.0}}"#);
+    for _ in 0..50 {
+        assert_eq!(sim.tick(), "null");
+    }
+    assert_eq!(sim.apply_command_json(&breaking), "null");
+    assert!(
+        outcome_code(&sim.tick()).is_some(),
+        "the next tick must fail"
+    );
+    assert_eq!(sim.apply_command_json(&mending), "null");
+    for _ in 0..50 {
+        assert_eq!(sim.tick(), "null");
+    }
+    let mut again = loaded_from(&save_of(&sim));
+    assert_eq!(again.snapshot_json(), sim.snapshot_json());
+
+    // The loaded plant's record is the saved one: undo reaches back past the
+    // save, through the failed attempt, as it does on the session saved.
+    assert_eq!(again.recover(), sim.recover());
+    assert_eq!(again.snapshot_json(), sim.snapshot_json());
+    assert_eq!(again.recover(), sim.recover());
+    assert_eq!(
+        again.snapshot_json(),
+        run_with(&src, &[], 50).snapshot_json()
+    );
+}
+
+/// A save made after a rewind holds only what the rewind kept.
+#[test]
+fn a_save_after_a_rewind_holds_only_what_survived() {
+    let src = scenario_src(LEAKY);
+    let valve = loaded(&src).node_id("discharge_valve");
+    let commands = leaky_commands(valve);
+    let kept: Vec<(i64, String)> = commands
+        .iter()
+        .filter(|(at, _)| *at < 150)
+        .cloned()
+        .collect();
+
+    let mut sim = run_with(&src, &commands, 300);
+    assert_eq!(sim.rewind(150), "null");
+    let save = save_of(&sim);
+    let record = serde_json::from_str::<Value>(&save).unwrap()["record"]
+        .as_array()
+        .expect("the record is a list")
+        .clone();
+    assert_eq!(record.len(), kept.len(), "{record:?}");
+    let mut again = loaded_from(&save);
+    assert_eq!(
+        again.snapshot_json(),
+        run_with(&src, &kept, 150).snapshot_json()
+    );
+    for _ in 0..50 {
+        assert_eq!(again.tick(), "null");
+    }
+    assert_eq!(
+        again.snapshot_json(),
+        run_with(&src, &kept, 200).snapshot_json()
+    );
+}
+
+/// A command sent after the last tick and saved before the next is in the
+/// save: a loaded plant shows it at once and ticks on with it.
+#[test]
+fn a_save_holds_a_command_sent_since_the_last_tick() {
+    let src = scenario_src(LEAKY);
+    let mut sim = run_with(&src, &[], 40);
+    let valve = sim.node_id("discharge_valve");
+    assert_eq!(sim.apply_command_json(&valve_json(valve, 0.2)), "null");
+    let mut again = loaded_from(&save_of(&sim));
+    assert_eq!(again.snapshot_json(), sim.snapshot_json());
+    for _ in 0..60 {
+        assert_eq!(again.tick(), "null");
+    }
+    let with = run_with(&src, &[(40, valve_json(valve, 0.2))], 100).snapshot_json();
+    assert_eq!(again.snapshot_json(), with);
+    assert_ne!(with, run_with(&src, &[], 100).snapshot_json());
+}
+
+/// The plant file inside the save is the truth, not the file it came from: a
+/// save whose source was changed by one number loads as the changed plant.
+#[test]
+fn a_save_is_its_own_plant_file() {
+    let src = scenario_src(LEAKY);
+    let altered = src.replacen("initial_level_m = 8.0", "initial_level_m = 7.0", 1);
+    assert_ne!(
+        altered, src,
+        "the fixture's number is no longer in the file"
+    );
+
+    let save = save_of(&run_with(&src, &[], 20));
+    let mut value: Value = serde_json::from_str(&save).unwrap();
+    value["scenario_source"] = Value::String(altered.clone());
+    let again = loaded_from(&value.to_string());
+    assert_eq!(
+        again.snapshot_json(),
+        run_with(&altered, &[], 20).snapshot_json()
+    );
+    assert_ne!(
+        again.snapshot_json(),
+        run_with(&src, &[], 20).snapshot_json()
+    );
+}
+
+/// Every way a save can be wrong has its own code, and none of them touches the
+/// plant that is running. `save_diverged` is what an engine changed between
+/// saving and loading looks like, so its message names both engines.
+#[test]
+fn a_bad_save_is_refused_and_moves_nothing() {
+    let src = scenario_src(LEAKY);
+    let valve = loaded(&src).node_id("discharge_valve");
+    let good: Value =
+        serde_json::from_str(&save_of(&run_with(&src, &leaky_commands(valve), 300))).unwrap();
+    let edited = |edit: &dyn Fn(&mut Value)| {
+        let mut value = good.clone();
+        edit(&mut value);
+        value.to_string()
+    };
+
+    let cases: Vec<(String, &str)> = vec![
+        ("not json".to_string(), "bad_save"),
+        ("[1, 2]".to_string(), "bad_save"),
+        (r#"{"tick": 3}"#.to_string(), "bad_save"),
+        (edited(&|v| v["format"] = Value::from("1")), "bad_save"),
+        (edited(&|v| v["format"] = Value::from(2)), "save_format"),
+        (r#"{"format": 2}"#.to_string(), "save_format"),
+        (edited(&|v| v["record"] = Value::from(7)), "bad_save"),
+        (
+            edited(&|v| v.as_object_mut().unwrap().remove("tick").map(drop).unwrap()),
+            "bad_save",
+        ),
+        // The record out of tick order, and an entry past the save's tick.
+        (
+            edited(&|v| v["record"].as_array_mut().unwrap().swap(0, 4)),
+            "bad_save",
+        ),
+        (edited(&|v| v["tick"] = Value::from(199)), "bad_save"),
+        // An accepted command marked refused: replayed, the engine accepts it.
+        (
+            edited(&|v| v["record"][0]["accepted"] = Value::Bool(false)),
+            "save_diverged",
+        ),
+        // A failed tick where the tick succeeds.
+        (
+            edited(&|v| {
+                v["record"]
+                    .as_array_mut()
+                    .unwrap()
+                    .insert(1, serde_json::json!({"what": "failed_tick", "tick": 50}))
+            }),
+            "save_diverged",
+        ),
+        // A plant file this engine no longer reads.
+        (
+            edited(&|v| v["scenario_source"] = Value::from("not toml")),
+            "save_diverged",
+        ),
+    ];
+
+    let mut sim = run_with(&scenario_src("tank_pump_valve.toml"), &[], 10);
+    let before = sim.snapshot_json();
+    for (save, expected) in &cases {
+        let answer = sim.load_save(save);
+        assert_eq!(
+            outcome_code(&answer).as_deref(),
+            Some(*expected),
+            "{save:.120}"
+        );
+        assert_eq!(sim.tick_index(), 10, "a refused save moved the plant");
+        assert_eq!(
+            sim.snapshot_json(),
+            before,
+            "a refused save moved the plant"
+        );
+    }
+
+    let diverged = sim.load_save(&cases[10].0);
+    let message: Value = serde_json::from_str(&diverged).unwrap();
+    let message = message["message"].as_str().unwrap();
+    assert!(
+        message.contains(env!("CARGO_PKG_VERSION")) && message.contains("tick 0"),
+        "a diverged save must name the engine and the tick: {message}"
+    );
+}
+
+/// The screen's note must be JSON, so the save is one JSON document.
+#[test]
+fn a_save_note_that_is_not_json_is_refused() {
+    let sim = run_with(&scenario_src(LEAKY), &[], 5);
+    assert_eq!(
+        outcome_code_of_object(&sim.save_json("not json")).as_deref(),
+        Some("bad_json")
+    );
 }

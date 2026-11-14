@@ -66,7 +66,7 @@ use std::collections::BTreeMap;
 use refinery_core::graph::{EdgeId, LoopId, NodeId, TripId};
 use refinery_core::snapshot::Command;
 use refinery_core::{Engine, SimError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Everything that can go wrong between a frontend and the engine.
@@ -119,6 +119,21 @@ pub enum BridgeError {
     #[error("{0}")]
     ReplayDiverged(String),
 
+    /// A save that is not one: not JSON, not the shape of a save, or a record
+    /// out of tick order or past the save's own tick (M77).
+    #[error("{0}")]
+    BadSave(String),
+
+    /// A save in a format this bridge does not read.
+    #[error("{0}")]
+    SaveFormat(String),
+
+    /// A save whose replay did not retrace the run it was made from, or whose
+    /// plant file no longer loads: what an engine changed between saving and
+    /// loading looks like. The message names both engines and the tick.
+    #[error("{0}")]
+    SaveDiverged(String),
+
     #[error(transparent)]
     Sim(#[from] SimError),
 }
@@ -149,6 +164,9 @@ impl From<&BridgeError> for ErrorReport {
             BridgeError::BadRewind(_) => "bad_rewind",
             BridgeError::NothingToUndo(_) => "nothing_to_undo",
             BridgeError::ReplayDiverged(_) => "replay_diverged",
+            BridgeError::BadSave(_) => "bad_save",
+            BridgeError::SaveFormat(_) => "save_format",
+            BridgeError::SaveDiverged(_) => "save_diverged",
             BridgeError::Sim(sim) => match sim {
                 SimError::SolverDiverged { .. } => "solver_diverged",
                 SimError::NonFiniteState { .. } => "non_finite_state",
@@ -287,6 +305,79 @@ pub struct Recovery {
     pub rewound_to: u64,
     /// The accepted commands undone, each as the JSON it was sent as.
     pub dropped: Vec<String>,
+}
+
+/// The save format [`Bridge::save_json`] writes and [`Bridge::from_save`]
+/// reads. A change to [`SaveFile`]'s shape is a new number.
+const SAVE_FORMAT: u64 = 1;
+
+/// The engine a save was made by: the workspace version. Written, and named
+/// when a save does not load; never a refusal by itself — a save from another
+/// version that replays the same is the same plant.
+const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// A save, as written (M77). Its own type, not [`Logged`] with derives, so
+/// the record's in-memory shape can change without changing format 1.
+#[derive(Debug, Serialize, Deserialize)]
+struct SaveFile {
+    format: u64,
+    engine: String,
+    /// The screen's note, verbatim (which screen, which plant).
+    frontend: serde_json::Value,
+    /// The scenario TOML as loaded — the plant, whatever its file says now.
+    scenario_source: String,
+    /// The tick index the save stands at.
+    tick: u64,
+    record: Vec<SavedEntry>,
+}
+
+/// One [`Logged`] in a save. `tick` is its `at_tick`: it acted before tick
+/// `tick + 1`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "what", rename_all = "snake_case")]
+enum SavedEntry {
+    /// A command that reached the engine, as the frontend sent it, and
+    /// whether the engine accepted it.
+    Command {
+        tick: u64,
+        json: String,
+        accepted: bool,
+    },
+    /// A tick that failed.
+    FailedTick { tick: u64 },
+}
+
+impl From<&Logged> for SavedEntry {
+    fn from(logged: &Logged) -> Self {
+        let tick = logged.at_tick;
+        match &logged.what {
+            Happened::Command { json, accepted } => SavedEntry::Command {
+                tick,
+                json: json.clone(),
+                accepted: *accepted,
+            },
+            Happened::FailedTick => SavedEntry::FailedTick { tick },
+        }
+    }
+}
+
+impl From<SavedEntry> for Logged {
+    fn from(entry: SavedEntry) -> Self {
+        match entry {
+            SavedEntry::Command {
+                tick,
+                json,
+                accepted,
+            } => Logged {
+                at_tick: tick,
+                what: Happened::Command { json, accepted },
+            },
+            SavedEntry::FailedTick { tick } => Logged {
+                at_tick: tick,
+                what: Happened::FailedTick,
+            },
+        }
+    }
 }
 
 impl Bridge {
@@ -430,7 +521,7 @@ impl Bridge {
         let kept = self
             .record
             .partition_point(|logged| logged.at_tick < to_tick);
-        *self = self.replay(to_tick, &self.record[..kept])?;
+        *self = Bridge::rebuild(&self.source, to_tick, &self.record[..kept])?;
         Ok(())
     }
 
@@ -466,19 +557,19 @@ impl Bridge {
                 )
             })?;
         let rewound_to = self.record[last].at_tick;
-        *self = self.replay(rewound_to, &self.record[..last])?;
+        *self = Bridge::rebuild(&self.source, rewound_to, &self.record[..last])?;
         Ok(Recovery {
             rewound_to,
             dropped: vec![json],
         })
     }
 
-    /// A new bridge on this one's scenario, ticked to `to_tick` with `logged`
+    /// A new bridge on scenario `source`, ticked to `to_tick` with `logged`
     /// replayed: each entry before tick `at_tick + 1`, then any left (at
-    /// `to_tick` itself) after the last tick. `logged` is a prefix of the
-    /// record, so it is in tick order.
-    fn replay(&self, to_tick: u64, logged: &[Logged]) -> Result<Bridge, BridgeError> {
-        let mut fresh = Bridge::load(&self.source)?;
+    /// `to_tick` itself) after the last tick. `logged` must be in tick order
+    /// (a prefix of a record is; a save is checked before it gets here).
+    fn rebuild(source: &str, to_tick: u64, logged: &[Logged]) -> Result<Bridge, BridgeError> {
+        let mut fresh = Bridge::load(source)?;
         let mut next = logged.iter().peekable();
         for tick in 0..to_tick {
             while let Some(logged) = next.next_if(|logged| logged.at_tick == tick) {
@@ -520,6 +611,92 @@ impl Bridge {
                 answer(again),
             )))
         }
+    }
+
+    /// The session as a save (M77, `docs/plans/save-and-load.md`): the
+    /// scenario source, the tick, and the whole record — every command that
+    /// reached the engine with its answer, and every failed tick, each at its
+    /// tick. The engine is deterministic, so that IS the plant. `frontend` is
+    /// a screen's own note (which screen, which plant), JSON, kept verbatim
+    /// and not read here.
+    pub fn save_json(&self, frontend: &str) -> Result<String, BridgeError> {
+        let frontend: serde_json::Value = serde_json::from_str(frontend).map_err(|err| {
+            BridgeError::BadJson(format!("a save's frontend note must be JSON: {err}"))
+        })?;
+        let save = SaveFile {
+            format: SAVE_FORMAT,
+            engine: ENGINE_VERSION.to_string(),
+            frontend,
+            scenario_source: self.source.clone(),
+            tick: self.tick_index(),
+            record: self.record.iter().map(SavedEntry::from).collect(),
+        };
+        // Strings, numbers and a `Value`; serde has nothing to fail on.
+        serde_json::to_string(&save).map_err(|err| BridgeError::BadSave(err.to_string()))
+    }
+
+    /// The plant a save holds: built from its own scenario source (not a
+    /// path — a plant file edited since must not change what the save means)
+    /// and its record replayed to its tick, exactly as [`Bridge::rewind`]
+    /// replays. Takes as long as the ticks took.
+    pub fn from_save(json: &str) -> Result<Bridge, BridgeError> {
+        // The format first, from the bare JSON: a save of another format is
+        // `save_format` whatever else its shape is.
+        let value: serde_json::Value = serde_json::from_str(json).map_err(|err| {
+            BridgeError::BadSave(format!("a save is JSON, and this is not: {err}"))
+        })?;
+        let format = value
+            .get("format")
+            .ok_or_else(|| BridgeError::BadSave("this is not a save: it has no format".into()))?;
+        match format.as_u64() {
+            Some(SAVE_FORMAT) => {}
+            Some(other) => {
+                return Err(BridgeError::SaveFormat(format!(
+                    "this save is in format {other}; this game reads format {SAVE_FORMAT}"
+                )))
+            }
+            None => {
+                return Err(BridgeError::BadSave(format!(
+                    "this is not a save: its format is {format}, not a number"
+                )))
+            }
+        }
+        let save: SaveFile = serde_json::from_value(value)
+            .map_err(|err| BridgeError::BadSave(format!("this is not a save: {err}")))?;
+
+        let record: Vec<Logged> = save.record.into_iter().map(Logged::from).collect();
+        if let Some(pair) = record
+            .windows(2)
+            .find(|pair| pair[1].at_tick < pair[0].at_tick)
+        {
+            return Err(BridgeError::BadSave(format!(
+                "this save's record goes back in time, from tick {} to tick {}",
+                pair[0].at_tick, pair[1].at_tick
+            )));
+        }
+        if let Some(late) = record.iter().find(|logged| logged.at_tick > save.tick) {
+            return Err(BridgeError::BadSave(format!(
+                "this save stands at tick {} and records something at tick {}",
+                save.tick, late.at_tick
+            )));
+        }
+
+        let engines = if save.engine == ENGINE_VERSION {
+            format!("made by this engine ({ENGINE_VERSION})")
+        } else {
+            format!(
+                "made by engine {}, and this is engine {ENGINE_VERSION}",
+                save.engine
+            )
+        };
+        Bridge::rebuild(&save.scenario_source, save.tick, &record).map_err(|err| {
+            BridgeError::SaveDiverged(match err {
+                BridgeError::ReplayDiverged(how) => {
+                    format!("this save does not load as the plant it was ({engines}): {how}")
+                }
+                other => format!("the plant in this save does not load ({engines}): {other}"),
+            })
+        })
     }
 
     /// Parse, validate and apply one command; [`Bridge::apply_command_json`]
@@ -771,6 +948,36 @@ impl Session {
             Ok(recovery) => serde_json::to_string(&recovery).unwrap_or_else(|_| {
                 r#"{"code":"bridge_error","message":"unserializable"}"#.to_string()
             }),
+            Err(err) => outcome_json(Err(err)),
+        }
+    }
+
+    /// The session as a save — see [`Bridge::save_json`]: the save's JSON (an
+    /// object with `format`), or `{code, message}` (`not_loaded`, or
+    /// `bad_json` for a `frontend` note that is not JSON). A scene tells the
+    /// two apart by `has("code")`, as with [`Session::recover`]. Writing it to
+    /// a file is the scene's (only Godot can write `user://`).
+    pub fn save_json(&self, frontend: &str) -> String {
+        let save = match self.bridge.as_ref() {
+            Some(bridge) => bridge.save_json(frontend),
+            None => Err(BridgeError::NotLoaded),
+        };
+        match save {
+            Ok(save) => save,
+            Err(err) => outcome_json(Err(err)),
+        }
+    }
+
+    /// Load a save's plant — see [`Bridge::from_save`]. `null`, or `{code,
+    /// message}`: `bad_save`, `save_format`, `save_diverged`. Like
+    /// [`Session::load_scenario`], a refused save leaves the running plant
+    /// untouched.
+    pub fn load_save(&mut self, json: &str) -> String {
+        match Bridge::from_save(json) {
+            Ok(bridge) => {
+                self.bridge = Some(bridge);
+                outcome_json(Ok(()))
+            }
             Err(err) => outcome_json(Err(err)),
         }
     }
