@@ -38,7 +38,11 @@ before and after (`cmp`).
 milestone. Nothing to do unless someone re-adds a milestone number there;
 if a review finds one, replace it with the pointer again.
 
-## 4. A command's value has a floor but no ceiling (ASK FIRST)
+## 4. A command's value has a floor but no ceiling — DECIDED 2026-11-14: (a), leave it
+
+The user chose (a): no ceilings in the engine. A frontend limits its own
+inputs, and `failed-tick-recovery.md` makes the failed tick survivable.
+
 
 `Engine::apply` refuses a negative or non-finite duty, pressure,
 temperature or flow, and accepts `1e300` W, `1e300` Pa or a puncture of
