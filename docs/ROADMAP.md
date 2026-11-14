@@ -11491,3 +11491,29 @@ ticks a frame (DESIGN §80.7).
 **M75 CLOSED** (2026-11-14; `docs/MILESTONES.md`): the drum side of C30.
 The base side — a base past full flooding the bottom trays and the
 reboiler's return (Kister §13.2) — stays open in C30.
+
+## M76 — a failed tick is not the end of the session: rewind by replay, in the bridge; plan `docs/plans/failed-tick-recovery.md` slice 1; opened on a decision; CLOSED 2026-11-14
+
+Asked as "what is next" after M75 (2026-11-14): the user chose plan 3 of the
+2026-11-12 review. A tick the engine cannot solve ended every screen, and
+retrying never helped. The engine is deterministic, so the bridge keeps the
+scenario and every command that reached the engine, and rebuilds any past
+tick by replaying them (DESIGN §81). No engine change.
+
+**Decided (2026-11-14), the user**, asked about a command whose harm shows
+ticks later: **recovery goes back to just before the last accepted command**,
+however long ago, and undoes it; again, the one before; with none left the
+screen stops as before.
+
+**Done**: `rewind`, `recover`, `last_good_tick` on `Session` and the binding;
+a refused command recorded and replayed (a finding: the engine notes a command
+arrived before refusing it, which moves a vapour plant's next tick); the pump
+screen recovers and says what it undid (`--break-at=` to see it run); 8 new
+gates, 13 mutants (11 killed, 2 that cannot change what a frontend sees);
+every plant byte-identical, 72 of 72 on both fidelities. A rewind costs what
+the ticks cost: 0.7 ms a tick on the slowest plant.
+
+**Open**: checkpoints for short rewinds (slice 2, asked first; DEFERRED F7);
+recovery on the other screens (F8; the map's with its own plan's slice 2).
+
+**M76 CLOSED** (2026-11-14; `docs/MILESTONES.md`).

@@ -12,6 +12,32 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M76 is CLOSED (2026-11-14): a failed tick is not the end of the session —
+rewind by replay, in the bridge (`docs/plans/failed-tick-recovery.md`, slice
+1).** Asked as "what is next" after M75; the user chose plan 3 of the
+2026-11-12 review, and, asked about a failure that shows ticks after its
+command, recovery back to just before the last accepted command.
+- **The bridge** (DESIGN §81): `Bridge` keeps its scenario source and every
+  command that reached the engine, with the tick it was sent at and its
+  answer. `rewind(to_tick)` rebuilds the plant from the file and replays the
+  record before that tick, all or nothing; `recover()` undoes the last
+  accepted command, back to just before it; `last_good_tick()` is the tick
+  index (the engine advances it last). Codes `bad_rewind`, `nothing_to_undo`,
+  `replay_diverged`; three forwarding lines in the binding.
+- **A finding**: a refused command must be replayed too — `Engine::apply`
+  notes a command arrived before judging it, and on a vapour plant that moves
+  the next tick (`flashing_rundown.toml`, last digits, 50 ticks on).
+- **The pump screen** recovers and says what it undid; 73 presses of D on the
+  gas-lock plant reach the failure, `--break-at=230` shows it in a recorded
+  run. The map sends no commands yet; the other screens still halt (F8).
+- 8 new gates, 13 mutants (11 killed; the 2 survivors cannot change what a
+  frontend sees); every plant byte-identical, 72 of 72 on both fidelities. A
+  rewind costs 0.7 ms a tick on `crude_unit_holdup` (~4 s per 10 plant
+  minutes). **Open**: checkpoints for short rewinds (slice 2, asked first;
+  F7).
+
+---
+
 **M75 is CLOSED (2026-11-14): an overfull column's knock-on effects, the
 drum side — the condenser a limit, the column's pressure rising, the drum's
 drain an operator's, a relief valve to a flare — `docs/DEFERRED.md` C30 in

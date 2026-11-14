@@ -152,7 +152,7 @@ godot --headless --path . res://demo/map.tscn -- --auto     # every plant loaded
 godot --path . res://demo/furnace.tscn       # the M39 furnace screen (keys on screen)
 godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [--plant=burnout]
 godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on screen)
-godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock]
+godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock] [--break-at=230]   # M76: break the plant, see it recover
 godot --path . res://demo/reactor.tscn       # the M57.5 reactor screen (keys on screen; 4 = M58 wall; 5/6 = M59 hydrogen)
 godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
 godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops, 7 M73 trays, 8 M74 holdup, 9 M75 overfill)
@@ -196,8 +196,8 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none open** — the user picks the next (C30's base side is still open).
-**Latest closed: M75 (2026-11-14)**: an overfull column's knock-on effects, the drum side (C30 in part) — the condenser a limit and the column's pressure rising past it, the drum's drain an operator's, a relief valve on the map to a flare, the cooling cut by command; the overfill plant on key 9; the pressure solve stepping back from a trial its step cannot settle; the base side still open; every plant byte-identical (DESIGN §80). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none open** — the user picks the next (C30's base side is still open; `docs/plans/` lists the review's plans).
+**Latest closed: M76 (2026-11-14)**: a failed tick is not the end of the session (plan `failed-tick-recovery.md`, slice 1) — the bridge keeps the scenario and every command that reached the engine and replays them: `rewind`, `recover` (undo the last accepted command, back to just before it), `last_good_tick`; refused commands replayed too; the pump screen recovers (`--break-at=`); checkpoints (slice 2) asked first; every plant byte-identical (DESIGN §81). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 
