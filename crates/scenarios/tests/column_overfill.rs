@@ -295,3 +295,81 @@ fn slow_the_shipped_plant_rides_out_its_cooling_lost() {
     assert!(worst_mass < 1e-9, "{worst_mass} kg/s");
     assert!(worst_heat < 20.0, "{worst_heat} W");
 }
+
+/// The holdup plant's key box at one corner (M74.4, DESIGN §79.8): the
+/// furnace [MW], the reflux, the reboiler held [MW] or free, the loops'
+/// flow as a share of the file's and their return [K] from the file's.
+fn to_corner(
+    engine: &mut Engine,
+    furnace: f64,
+    reflux: f64,
+    reboiler: Option<f64>,
+    loops: (f64, f64),
+) {
+    use refinery_core::units::{Kelvin, KgPerSec, Watt};
+    let column = engine.graph.find_node("column").unwrap();
+    let heater = engine.graph.find_node("furnace").unwrap();
+    let mut send = |command: Command| engine.apply(command).unwrap();
+    send(Command::SetFurnaceDuty {
+        node: heater,
+        duty: Watt(furnace * 1e6),
+    });
+    send(Command::SetRefluxRatio {
+        node: column,
+        reflux_ratio: reflux,
+    });
+    send(Command::SetReboilerDuty {
+        node: column,
+        duty: reboiler.map(|mw| Watt(mw * 1e6)),
+    });
+    // The file's loops: their flows [kg/s] and returns [°C].
+    for (i, (flow, ret)) in [(85.0, 150.0), (95.0, 215.0), (65.0, 270.0)]
+        .into_iter()
+        .enumerate()
+    {
+        send(Command::SetLoopFlow {
+            node: column,
+            pumparound_loop: i as u32,
+            flow: KgPerSec(flow * loops.0),
+        });
+        send(Command::SetLoopReturnTemperature {
+            node: column,
+            pumparound_loop: i as u32,
+            temperature: Kelvin(ret + 273.15 + loops.1),
+        });
+    }
+}
+
+/// **A jump to the key box's corner runs while the pressure moves**: the
+/// furnace at 40 MW, the reflux at 15, the reboiler free, the loops stopped
+/// and returning 60 K warm — a corner the holdup plant runs (M74.4) — sends
+/// the condenser past its capacity, and as the pressure rises the bottom
+/// stage nearly stops boiling: a trial pressure inside the bracket stalls
+/// the column's step. Refused 11 ticks in before the fix (docs/DESIGN.md
+/// §80.7); it runs.
+#[test]
+fn a_jump_to_the_key_boxs_corner_runs_while_the_pressure_moves() {
+    let mut engine = engine_of(OVERFILL_PLANT).unwrap();
+    run(&mut engine, 600);
+    to_corner(&mut engine, 40.0, 15.0, None, (0.0, 60.0));
+    for tick in 1..=600 {
+        engine.tick().unwrap_or_else(|e| panic!("tick {tick}: {e}"));
+    }
+}
+
+/// **A jump to the key box's coldest corner runs while the pressure
+/// moves**: the furnace out, the reflux at 0.5, the reboiler held at
+/// nothing, the loops stopped and returning 60 K warm — a corner the holdup
+/// plant runs (M74.4) — the pressure climbing ~25 Pa a tick; 50 s on, the
+/// bracket's first trial a few hundred pascals up stalls the column's step,
+/// where the answer a few pascals up does not. Refused at tick 499 before the
+/// fix (docs/DESIGN.md §80.7); it runs.
+#[test]
+fn slow_a_jump_to_the_key_boxs_coldest_corner_runs_while_the_pressure_moves() {
+    let mut engine = engine_of(OVERFILL_PLANT).unwrap();
+    run(&mut engine, 600);
+    to_corner(&mut engine, 0.0, 0.5, Some(0.0), (0.0, 60.0));
+    for tick in 1..=600 {
+        engine.tick().unwrap_or_else(|e| panic!("tick {tick}: {e}"));
+    }
+}

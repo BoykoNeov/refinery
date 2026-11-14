@@ -1525,13 +1525,34 @@ fn stepped_pass(
             .min(BRACKET_RATE_PA_PER_S * holdup.tick.value())
             .max(PRESSURE_TOLERANCE);
         let mut near = (start, first);
+        let mut retreats = 0;
         loop {
             let pressure = if rising {
                 (start + toward * distance).min(end)
             } else {
                 (start + toward * distance).max(end)
             };
-            let trial = at(pressure)?;
+            // A trial whose step does not converge is a search point, not
+            // the tick's answer: the bracket retreats halfway back to the
+            // last trial that converged (docs/DESIGN.md §80.7) — a column
+            // whose stage is near to stopping boiling can stall Newton at one
+            // pressure and settle a few hundred pascals nearer. Refused only
+            // when the retreat reaches that trial, or after
+            // `MAX_PRESSURE_SOLVES` retreats. A tick none of whose trials
+            // fails takes exactly the path it took before.
+            let trial = match at(pressure) {
+                Ok(trial) => trial,
+                Err(failed) => {
+                    retreats += 1;
+                    if retreats > MAX_PRESSURE_SOLVES
+                        || (pressure - near.0).abs() <= PRESSURE_TOLERANCE
+                    {
+                        return Err(failed);
+                    }
+                    distance = 0.5 * ((pressure - start).abs() + (near.0 - start).abs());
+                    continue;
+                }
+            };
             let r = trial.1.residual;
             let beyond = if rising { r > 0.0 } else { r < 0.0 };
             if r == 0.0 {
@@ -1606,11 +1627,51 @@ fn illinois(
     let mut side = 0i8;
     let mut last = f64::NAN;
     for _ in 0..MAX_PRESSURE_SOLVES {
-        let pressure = (a * rb - b * ra) / (rb - ra);
-        if !pressure.is_finite() {
+        let falsi = (a * rb - b * ra) / (rb - ra);
+        if !falsi.is_finite() {
             break;
         }
-        let trial = at(pressure)?;
+        // A trial whose step does not converge is a search point, not the
+        // tick's answer (docs/DESIGN.md §80.7): the search retreats from it
+        // halfway towards each end of the bracket in turn — both ends
+        // converged — until a trial does, the bracket then narrowed by it as
+        // by any other. Refused when both retreats reach their ends. A solve
+        // none of whose trials fails takes exactly the path it took before.
+        let (pressure, trial) = match at(falsi) {
+            Ok(trial) => (falsi, trial),
+            Err(failed) => {
+                let (mut toward_a, mut toward_b) = (falsi, falsi);
+                let mut found = None;
+                for _ in 0..MAX_PRESSURE_SOLVES {
+                    toward_a = 0.5 * (a + toward_a);
+                    let a_open = (toward_a - a).abs() > PRESSURE_TOLERANCE;
+                    if a_open {
+                        if let Ok(trial) = at(toward_a) {
+                            found = Some((toward_a, trial));
+                            break;
+                        }
+                    }
+                    toward_b = 0.5 * (toward_b + b);
+                    let b_open = (toward_b - b).abs() > PRESSURE_TOLERANCE;
+                    if b_open {
+                        if let Ok(trial) = at(toward_b) {
+                            found = Some((toward_b, trial));
+                            break;
+                        }
+                    }
+                    if !a_open && !b_open {
+                        break;
+                    }
+                }
+                match found {
+                    Some(found) => {
+                        side = 0;
+                        found
+                    }
+                    None => return Err(failed),
+                }
+            }
+        };
         let residual = trial.1.residual;
         if residual == 0.0
             || (pressure - last).abs() < PRESSURE_TOLERANCE
