@@ -41,60 +41,99 @@ macro_rules! unit {
     };
 }
 
-unit!(/// Absolute pressure [Pa]. Kelvin
-    Pascal);
-unit!(/// Temperature [K], absolute.
-    Kelvin);
-unit!(/// Mass flow [kg/s].
-    KgPerSec);
-unit!(/// Mass [kg].
-    Kg);
-unit!(/// Volume [m³].
-    CubicMeter);
-unit!(/// Volumetric flow [m³/s].
-    M3PerSec);
-unit!(/// Density [kg/m³].
-    KgPerM3);
-unit!(/// Length [m].
-    Meter);
-unit!(/// Area [m²].
-    SquareMeter);
-unit!(/// Velocity [m/s] — a vapour's through a tray's areas (M73.1).
-    MeterPerSec);
-unit!(/// Surface tension [N/m] — a tray's liquid (M73.1).
-    NewtonPerMeter);
-unit!(/// Time [s].
-    Seconds);
-unit!(/// Energy [J].
-    Joule);
-unit!(/// Power [W].
-    Watt);
-unit!(/// Specific heat capacity [J/(kg·K)].
-    JPerKgK);
-unit!(/// Specific enthalpy [J/kg]. Used for a reaction's heat `Δh_rxn`.
+unit!(
+    /// Absolute pressure [Pa]. Kelvin
+    Pascal
+);
+unit!(
+    /// Temperature [K], absolute.
+    Kelvin
+);
+unit!(
+    /// Mass flow [kg/s].
+    KgPerSec
+);
+unit!(
+    /// Mass [kg].
+    Kg
+);
+unit!(
+    /// Volume [m³].
+    CubicMeter
+);
+unit!(
+    /// Volumetric flow [m³/s].
+    M3PerSec
+);
+unit!(
+    /// Density [kg/m³].
+    KgPerM3
+);
+unit!(
+    /// Length [m].
+    Meter
+);
+unit!(
+    /// Area [m²].
+    SquareMeter
+);
+unit!(
+    /// Velocity [m/s] — a vapour's through a tray's areas (M73.1).
+    MeterPerSec
+);
+unit!(
+    /// Surface tension [N/m] — a tray's liquid (M73.1).
+    NewtonPerMeter
+);
+unit!(
+    /// Time [s].
+    Seconds
+);
+unit!(
+    /// Energy [J].
+    Joule
+);
+unit!(
+    /// Power [W].
+    Watt
+);
+unit!(
+    /// Specific heat capacity [J/(kg·K)].
+    JPerKgK
+);
+unit!(
+    /// Specific enthalpy [J/kg]. Used for a reaction's heat `Δh_rxn`.
     ///
     /// SIGN CONVENTION: positive = ENDOTHERMIC (heat ABSORBED by the reaction).
     /// A reactor holding its setpoint must then SUPPLY `ṁ·Δh_rxn` on top of the
     /// sensible change, which is why the reported physical duty is
     /// `sensible + ṁ·Δh_rxn` (docs/DESIGN.md §5, `traits::ReactionModel`). FCC
     /// cracking is endothermic, so its lumps carry a positive `Δh_rxn`.
-    JPerKg);
-unit!(/// Overall heat transfer coefficient times area, `UA` [W/K].
+    JPerKg
+);
+unit!(
+    /// Overall heat transfer coefficient times area, `UA` [W/K].
     ///
     /// Deliberately ONE number rather than a separate `U` and `A`: at this
     /// fidelity nothing distinguishes them — no geometry, no wind, no insulation
     /// model, no radiation — so splitting them would invent two quantities the
     /// model cannot tell apart (docs/DESIGN.md §4a).
-    WattPerKelvin);
-unit!(/// Heat capacity of a body [J/K] — mass times specific heat, lumped.
+    WattPerKelvin
+);
+unit!(
+    /// Heat capacity of a body [J/K] — mass times specific heat, lumped.
     ///
     /// One number for the same reason `WattPerKelvin` is one: a furnace's tube
     /// metal (M34, docs/DESIGN.md §37) is a single lumped body at this
     /// fidelity, so its mass and its steel's `cp` are never read apart.
-    JPerK);
-unit!(/// Molar mass [kg/mol].
-    KgPerMol);
-unit!(/// Molar enthalpy [J/mol]. Used for a component's heat of vaporization
+    JPerK
+);
+unit!(
+    /// Molar mass [kg/mol].
+    KgPerMol
+);
+unit!(
+    /// Molar enthalpy [J/mol]. Used for a component's heat of vaporization
     /// `Δh_vap` (`ThermoModel::dh_vap`, M7.4b).
     ///
     /// PER MOLE rather than per kilogram, and that is the mass ⇄ mole boundary
@@ -109,7 +148,8 @@ unit!(/// Molar enthalpy [J/mol]. Used for a component's heat of vaporization
     /// mole of saturated liquid into saturated vapour. Unlike `JPerKg`'s
     /// `Δh_rxn`, whose sign says which way a reaction runs, a vaporization has
     /// only one direction and a negative value would mean nothing.
-    JPerMol);
+    JPerMol
+);
 
 /// Standard gravity [m/s²].
 pub const G: f64 = 9.806_65;
