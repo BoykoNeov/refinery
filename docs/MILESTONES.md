@@ -21,7 +21,8 @@ the quick save on the pump screen (the map sends no commands).
   source, the tick, the screen's note verbatim and M76's whole record;
   `load_save` rebuilds it by `rewind`'s replay, all or nothing. Codes
   `bad_save`, `save_format`, `save_diverged` (naming the engine that made
-  the save and this one). Two forwarding lines in the binding.
+  the save and this one). Two forwarding lines in the binding; the
+  godot-feature clippy clean.
 - **One correction to the plan**: it saved accepted commands only, written
   before M76 found that refused commands and failed ticks move the plant
   too; a save holds the whole record, its own serde types so format 1

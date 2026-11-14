@@ -32300,7 +32300,7 @@ save is that, as JSON; loading it is a replay.
   "tick": 240,
   "record": [ { "what": "command", "tick": 20, "json": "{…}", "accepted": true },
               { "what": "command", "tick": 130, "json": "{…}", "accepted": false },
-              { "what": "failed_tick", "tick": 231 } ] }
+              { "what": "failed_tick", "tick": 230 } ] }
 ```
 
 - **The whole record, not the accepted commands.** The plan's shape,
@@ -32338,7 +32338,8 @@ save is that, as JSON; loading it is a replay.
 
 **Cost** — loading takes as long as the ticks it replays: 10 minutes of
 `crude_unit_holdup` (6 000 ticks, a 9 kB save) load in 4.5 s, an hour in
-32.5 s (release, below-normal priority) — under the plan's one-minute trigger
+32.5 s (release, below-normal priority; a throwaway program whose dependency
+versions were resolved afresh, so approximate) — under the plan's one-minute trigger
 for slice 2, a save holding the engine's state (DEFERRED F7). The pump plants
 load in under 0.1 s.
 
@@ -32360,4 +32361,4 @@ saved; a save after a rewind holds only what survived; a command sent since
 the last tick is in it; the source in the save is the plant; every bad save
 by its code, the running plant untouched; a note that is not JSON refused;
 `save_json` before a load is `not_loaded`. Mutation pass, 12 mutants, 12
-killed.
+killed. The godot-feature clippy is clean on the two new binding lines.
