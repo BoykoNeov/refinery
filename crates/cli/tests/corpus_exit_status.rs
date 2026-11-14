@@ -167,4 +167,44 @@ fn a_plant_that_vanished_since_the_baseline_fails_the_corpus_run() {
         stderr.contains("second_plant") && stderr.contains("did not run"),
         "the error must name the plant that vanished, got: {stderr}"
     );
+    // The table is the whole story too: the vanished plant is a row of its
+    // own, graded missing, not only a name in the error.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.contains("`second_plant`") && l.contains("**missing**")),
+        "the table must carry the vanished plant as a missing row: {stdout}"
+    );
+}
+
+/// A run of a few NAMED files is meant to leave the rest of the baseline out,
+/// so it neither fails on nor lists the plants it was not asked to run.
+#[test]
+fn a_run_of_named_files_lists_no_missing_rows() {
+    let corpus = Corpus::new("named");
+    corpus.write("tank_pump_valve", GOOD_SCENARIO);
+    corpus.write("second_plant", GOOD_SCENARIO);
+
+    let before = corpus.path().join("before.json");
+    let out = corpus.run(&["--out", &before.display().to_string()]);
+    assert!(out.status.success(), "the baseline run must succeed");
+
+    let one = corpus.path().join("tank_pump_valve.toml");
+    let out = Command::new(env!("CARGO_BIN_EXE_refinery"))
+        .arg("corpus")
+        .arg(&one)
+        .args(["--ticks", "5", "--baseline", &before.display().to_string()])
+        .output()
+        .expect("the corpus binary must run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "a run of one named file must pass against a fuller baseline: {stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !stdout.contains("**missing**") && !stdout.contains("second_plant"),
+        "a named-file run must not list the plants it was not asked to run: {stdout}"
+    );
 }

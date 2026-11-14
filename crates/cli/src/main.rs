@@ -241,7 +241,16 @@ fn corpus(
 
     let rows = run_all(&files, ticks, solver, jobs);
 
-    print_table(&rows, baseline.as_deref());
+    // The baseline's plants this run lost, counted only when whole
+    // directories were run: a run of a few named files is meant to leave the
+    // rest of the baseline out.
+    let whole_directory = paths.iter().any(|p| p.is_dir());
+    let gone: Vec<&str> = match &baseline {
+        Some(base) if whole_directory => missing(&rows, base),
+        _ => Vec::new(),
+    };
+
+    print_table(&rows, baseline.as_deref(), &gone);
 
     if let Some(p) = out {
         std::fs::write(&p, serde_json::to_string_pretty(&rows)?)
@@ -266,10 +275,10 @@ fn corpus(
         failed.join(", ")
     );
 
-    if let Some(base) = baseline {
+    if let Some(base) = &baseline {
         let moved: Vec<&str> = rows
             .iter()
-            .filter(|r| verdict(r, &base) == Verdict::Moved)
+            .filter(|r| verdict(r, base) == Verdict::Moved)
             .map(|r| r.name.as_str())
             .collect();
         anyhow::ensure!(
@@ -279,11 +288,9 @@ fn corpus(
             rows.len(),
             moved.join(", ")
         );
-        // Checked last, and only when whole directories were run: a run of
-        // a few named files is meant to leave the rest of the baseline out.
-        let gone = missing(&rows, &base);
+        // Checked last; `gone` is empty unless whole directories were run.
         anyhow::ensure!(
-            gone.is_empty() || !paths.iter().any(|p| p.is_dir()),
+            gone.is_empty(),
             "{} plant(s) in the baseline did not run: {} (deleted or renamed?)",
             gone.len(),
             gone.join(", ")
@@ -401,7 +408,9 @@ fn run_one(file: &Path, ticks: u64, solver: Option<&str>) -> CorpusRow {
     row
 }
 
-fn print_table(rows: &[CorpusRow], baseline: Option<&[CorpusRow]>) {
+/// The corpus table, one row per plant run, then one row per baseline plant
+/// in `gone` (it did not run), graded `**missing**`.
+fn print_table(rows: &[CorpusRow], baseline: Option<&[CorpusRow]>, gone: &[&str]) {
     let mut out = std::io::stdout().lock();
     let mut line = String::from(
         "| scenario | flow | ticks | worst iter | total iter | tick wall ms | fingerprint |",
@@ -435,6 +444,13 @@ fn print_table(rows: &[CorpusRow], baseline: Option<&[CorpusRow]>) {
         }
         cells.push_str(&format!(" {} |", r.status));
         let _ = writeln!(out, "{cells}");
+    }
+    // Only a baseline run has a `gone`, so the verdict column is there.
+    for name in gone {
+        let _ = writeln!(
+            out,
+            "| `{name}` | — | — | — | — | — | — | **missing** | did not run (deleted or renamed?) |"
+        );
     }
 }
 

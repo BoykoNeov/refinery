@@ -14,9 +14,9 @@ looked at, so the run exited 0 having silently lost a plant.
       meant to leave the rest of the baseline out). Unit tests on `missing`
       and `verdict`; an end-to-end test in
       `crates/cli/tests/corpus_exit_status.rs`.
-- [ ] Left: the vanished plants are named in the error only, not as rows of
-      the printed table. Add them as rows with verdict `**missing**` if
-      someone wants the table to be the whole story.
+- [x] The vanished plants are rows of the printed table too, verdict
+      `**missing**` (2026-11-14), listed only when whole directories were
+      run, as the failure is; a run of named files lists none (tested).
 
 ## 2. `refinery run` writes unbuffered
 
