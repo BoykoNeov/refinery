@@ -1,0 +1,2 @@
+cooling  furnace    0 reflux  0.5 reboiler     0 loops 0/+60: peak 1.800 bar vent    0.0 ceiling     0 ticks — ran
+cooling  furnace   40 reflux   15 reboiler  free loops 0/+60: peak 1.800 bar vent    0.0 ceiling     0 ticks — ran

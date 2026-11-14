@@ -373,3 +373,84 @@ fn slow_a_jump_to_the_key_boxs_coldest_corner_runs_while_the_pressure_moves() {
         engine.tick().unwrap_or_else(|e| panic!("tick {tick}: {e}"));
     }
 }
+
+/// **A walk whose falsi trial and the bracket's midpoint both stall runs**:
+/// one of the random walks measured for key 9's range (DESIGN §80.7, seed 16
+/// of `tools/steptime/prototypes/m75_4/`), replayed — a key a minute from
+/// tick 600: total reflux on, the reflux to 9.5, the loops' returns +20 K
+/// then back, the reflux to 10, the loops' flow to 175 %, the furnace to
+/// 25 MW, total reflux off and on again, the cooling cut. 17 ticks after the
+/// cut a falsi trial stalls the column's step, and so does the bracket's
+/// midpoint — a band of trial pressures that fail, the answer below it.
+/// Refused there with a midpoint-only retreat; the retreat halfway towards
+/// each end in turn finds a trial that converges, and the walk runs on.
+#[test]
+fn slow_a_walk_whose_falsi_and_midpoint_both_stall_runs() {
+    use refinery_core::units::{Kelvin, KgPerSec, Watt};
+    let mut engine = engine_of(OVERFILL_PLANT).unwrap();
+    let column = engine.graph.find_node("column").unwrap();
+    let heater = engine.graph.find_node("furnace").unwrap();
+    let returns = |dk: f64| -> Vec<Command> {
+        [150.0, 215.0, 270.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| Command::SetLoopReturnTemperature {
+                node: column,
+                pumparound_loop: i as u32,
+                temperature: Kelvin(c + 273.15 + dk),
+            })
+            .collect()
+    };
+    let minutes: Vec<Vec<Command>> = vec![
+        vec![Command::SetTotalReflux {
+            node: column,
+            on: true,
+        }],
+        vec![Command::SetRefluxRatio {
+            node: column,
+            reflux_ratio: 9.5,
+        }],
+        returns(20.0),
+        returns(0.0),
+        vec![Command::SetRefluxRatio {
+            node: column,
+            reflux_ratio: 10.0,
+        }],
+        [85.0, 95.0, 65.0]
+            .into_iter()
+            .enumerate()
+            .map(|(i, f)| Command::SetLoopFlow {
+                node: column,
+                pumparound_loop: i as u32,
+                flow: KgPerSec(f * 1.75),
+            })
+            .collect(),
+        vec![Command::SetFurnaceDuty {
+            node: heater,
+            duty: Watt(25.0e6),
+        }],
+        vec![Command::SetTotalReflux {
+            node: column,
+            on: false,
+        }],
+        vec![Command::SetTotalReflux {
+            node: column,
+            on: true,
+        }],
+        vec![Command::SetCondenserCooling {
+            node: column,
+            on: false,
+        }],
+    ];
+    run(&mut engine, 600);
+    for (minute, commands) in minutes.into_iter().enumerate() {
+        for command in commands {
+            engine.apply(command).unwrap();
+        }
+        for tick in 1..=600 {
+            engine
+                .tick()
+                .unwrap_or_else(|e| panic!("minute {minute}, tick {tick}: {e}"));
+        }
+    }
+}

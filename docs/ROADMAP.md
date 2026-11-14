@@ -11481,7 +11481,9 @@ measuring the key range**: 9 of 48 corner runs refused once the pressure
 moved — the column's step stalling at trial pressures of the in-tick solve,
 not at its answer. **Asked, the user**: fix it first. Fixed by a retreat
 from a failed trial (the bracket halfway back; falsi halfway towards each
-end), tests first; the 48 corners and 48 random half-hour walks all run;
+end), tests first — two corners and a replayed walk, each refused before
+(the walk by the first, midpoint-only retreat); the 48 corners and 48
+random half-hour walks all run (`tools/steptime/prototypes/m75_4/`);
 every plant byte-identical, 72 of 72 on both fidelities. Key 9 on the
 column screen: C, X, V; the valve and flare drawn; an OVERHEAD panel; two
 ticks a frame (DESIGN §80.7).

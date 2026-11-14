@@ -32149,8 +32149,13 @@ the box's keys, the cooling, total reflux and the drain toggled among them
 ceiling with its alarm for a while (the reboiler held high with the cooling
 cut or on total reflux), the run going on. Gates,
 each failing before (`column_overfill.rs`): the corner refused at tick 11
-(a falsi trial), the coldest corner refused at tick 499 (the bracket's
-first trial); each retreat removed, its own test fails.
+(a falsi trial); the coldest corner refused at tick 499 (the bracket's
+first trial); and walk 16 replayed, refused 17 ticks after its cooling cut
+by the midpoint-only retreat (falsi and the midpoint both stalling).
+Mutations on the final code: the bracket's retreat removed fails the
+coldest corner; falsi's retreat cut back to the midpoint fails the walk;
+removed whole, it fails the corner and the walk. The probes and their
+logs: `tools/steptime/prototypes/m75_4/` (`FINDINGS.md`).
 
 **Key 9** (`demo/column.gd`, `"overfill"`): the holding plant's keys and its
 box (`range_ref` §79.8, §80.7), plus C (the cooling cut and restored), X
