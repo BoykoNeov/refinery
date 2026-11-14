@@ -1533,3 +1533,153 @@ fn a_scenario_that_does_not_load_reports_as_a_scenario_error() {
     };
     assert_eq!(ErrorReport::from(&err).code, "scenario");
 }
+
+// ------------------------------------------------- refusals a player reads
+
+/// Every command shape that addresses a node, with a value each refusal of
+/// the VALUE lets through, so what is refused is the node itself (its kind,
+/// its trip, its loop). `{n}` is the node; `{c}` a composition of the plant's
+/// own length. The shapes are `command_storm.rs`'s, written out here.
+const NODE_SHAPES: &[&str] = &[
+    r#"{"cmd":"set_valve_opening","node":{n},"opening":0.5}"#,
+    r#"{"cmd":"set_valve_opening","node":{n},"opening":0.0}"#,
+    r#"{"cmd":"set_pump_on","node":{n},"on":true}"#,
+    r#"{"cmd":"vent_pump","node":{n}}"#,
+    r#"{"cmd":"set_heat_input","node":{n},"power":0.0}"#,
+    r#"{"cmd":"set_furnace_duty","node":{n},"duty":100000.0}"#,
+    r#"{"cmd":"set_cooler_duty","node":{n},"duty":100000.0}"#,
+    r#"{"cmd":"set_cooling_water_flow","node":{n},"flow":10.0}"#,
+    r#"{"cmd":"replace_tubes","node":{n}}"#,
+    r#"{"cmd":"repair_bed_wall","node":{n}}"#,
+    r#"{"cmd":"set_reservoir_pressure","node":{n},"pressure":200000.0}"#,
+    r#"{"cmd":"set_source_temperature","node":{n},"temperature":300.0}"#,
+    r#"{"cmd":"set_source_composition","node":{n},"composition":{"mass_fractions":{c}}}"#,
+    r#"{"cmd":"set_reflux_ratio","node":{n},"reflux_ratio":1.0}"#,
+    r#"{"cmd":"set_reboiler_duty","node":{n},"duty":100000.0}"#,
+    r#"{"cmd":"set_pumparound_duty","node":{n},"pumparound":7,"duty":100000.0}"#,
+    r#"{"cmd":"set_loop_flow","node":{n},"pumparound_loop":7,"flow":10.0}"#,
+    r#"{"cmd":"set_loop_return_temperature","node":{n},"pumparound_loop":7,"temperature":400.0}"#,
+    r#"{"cmd":"set_total_reflux","node":{n},"on":true}"#,
+    r#"{"cmd":"set_slop_drain","node":{n},"open":false}"#,
+    r#"{"cmd":"set_condenser_cooling","node":{n},"on":false}"#,
+];
+
+/// Every command a plant refuses, sent to every node, pipe, loop and trip it
+/// has — once with its trips armed, once with all of them pressed. The text
+/// of each `InvalidCommand`, deduplicated.
+fn every_refusal(plant: &str) -> std::collections::BTreeSet<String> {
+    let mut sim = bridge(plant);
+    for _ in 0..3 {
+        sim.tick().expect("the plant runs");
+    }
+    let snapshot: Value = serde_json::from_str(&sim.snapshot_json()).unwrap();
+    let count = |key: &str| snapshot[key].as_array().map_or(0, Vec::len);
+    let (slate, loops, trips) = (count("slate"), count("controls"), count("trips"));
+    let composition = format!("{:?}", {
+        let mut x = vec![0.0_f64; slate];
+        x[0] = 1.0;
+        x
+    });
+    let nodes: Vec<i64> = sim
+        .node_names()
+        .iter()
+        .map(|name| sim.node_id(name).unwrap())
+        .collect();
+    let edges: Vec<i64> = sim
+        .edge_names()
+        .iter()
+        .map(|name| sim.edge_id(name).unwrap())
+        .collect();
+    let mut refusals = std::collections::BTreeSet::new();
+    let mut send = |sim: &mut Bridge, json: String| {
+        if let Err(BridgeError::Sim(SimError::InvalidCommand(message))) =
+            sim.apply_command_json(&json)
+        {
+            refusals.insert(message);
+        }
+    };
+    for pressed in [false, true] {
+        if pressed {
+            for trip in 0..trips {
+                send(
+                    &mut sim,
+                    format!(r#"{{"cmd":"manual_trip","trip_id":{trip}}}"#),
+                );
+            }
+        }
+        for &node in &nodes {
+            for shape in NODE_SHAPES {
+                let json = shape
+                    .replace("{n}", &node.to_string())
+                    .replace("{c}", &composition);
+                send(&mut sim, json);
+            }
+        }
+        for &edge in &edges {
+            send(
+                &mut sim,
+                format!(r#"{{"cmd":"puncture_pipe","edge":{edge},"area":0.0001}}"#),
+            );
+        }
+        for id in 0..loops {
+            for json in [
+                format!(r#"{{"cmd":"set_controller_mode","loop_id":{id},"mode":"auto"}}"#),
+                format!(
+                    r#"{{"cmd":"set_setpoint","loop_id":{id},"value":{{"variable":"level","m":5.0}}}}"#
+                ),
+            ] {
+                send(&mut sim, json);
+            }
+        }
+        for trip in 0..trips {
+            send(
+                &mut sim,
+                format!(r#"{{"cmd":"reset_trip","trip_id":{trip}}}"#),
+            );
+        }
+    }
+    refusals
+}
+
+/// A refusal is shown to the player as it comes back (docs/DESIGN.md §44
+/// rule 2), so it names equipment by name, never by its id's debug form
+/// (`NodeId(21)`) — plan `refusal-messages.md`, ledger F6. The exception, an
+/// id that names nothing, cannot arise here: every id sent is the plant's own.
+///
+/// The hydrocracker has valves, pumps, coolers, beds, loops and trips; the
+/// three column plants add a cut-point column, pumparound loops and a column
+/// that holds liquid with a condenser limit.
+#[test]
+fn a_refusal_names_its_equipment_not_its_id() {
+    let mut refusals = std::collections::BTreeSet::new();
+    for plant in [
+        "hydrocracker_hydrogen_quench.toml",
+        "crude_column.toml",
+        "crude_unit_loops.toml",
+        "crude_unit_overfill.toml",
+    ] {
+        refusals.extend(every_refusal(plant));
+    }
+    let leaks: Vec<&String> = refusals.iter().filter(|m| m.contains("Id(")).collect();
+    assert!(
+        leaks.is_empty(),
+        "{} of {} refusals print an id:\n{}",
+        leaks.len(),
+        refusals.len(),
+        leaks
+            .iter()
+            .map(|m| m.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    // The sweep reached what it is for: many kinds of refusal, and F6's own.
+    assert!(refusals.len() >= 30, "only {} refusals", refusals.len());
+    let held = refusals
+        .iter()
+        .find(|m| m.contains("is held at opening"))
+        .expect("a valve a latched trip holds was refused");
+    assert!(
+        held.contains("moved by hand") && !held.contains("reopened"),
+        "F6: a trip-held valve's refusal says what any move needs: {held}"
+    );
+}

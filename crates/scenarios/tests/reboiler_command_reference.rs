@@ -220,7 +220,7 @@ fn the_reboiler_command_is_refused_where_nothing_could_hold_it() {
         })
         .unwrap_err()
         .to_string();
-    assert!(e.contains("'furnace') is not a column"), "{e}");
+    assert!(e.contains("'furnace' is not a column"), "{e}");
 
     let mut fcc = build(include_str!("../../../scenarios/fcc_plant.toml"));
     let fractionator = id(&fcc, "fractionator");

@@ -305,10 +305,10 @@ impl Engine {
                     if let Some(position) = trip.valve_position(node) {
                         if opening != position {
                             return Err(SimError::InvalidCommand(format!(
-                                "{node:?} ('{}') is held at opening {position} by trip '{}', \
+                                "'{}' is held at opening {position} by trip '{}', \
                                  which is latched. Reset the trip first (`reset_trip`) once \
                                  its condition has cleared; the reset moves nothing, and the \
-                                 valve can then be reopened by hand",
+                                 valve can then be moved by hand",
                                 self.graph.node(node).name,
                                 trip.name
                             )));
@@ -328,7 +328,7 @@ impl Engine {
                     .find(|c| c.actuator == Actuator::Node(node) && c.mode == ControlMode::Auto)
                 {
                     return Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{}') is actuated by control loop '{}', which is in AUTO: its \
+                        "'{}' is actuated by control loop '{}', which is in AUTO: its \
                          opening would be overwritten at the top of the next tick. Put the loop in \
                          MANUAL first (`set_controller_mode`), or move the loop's setpoint \
                          (`set_setpoint`)",
@@ -336,6 +336,7 @@ impl Engine {
                         owner.name
                     )));
                 }
+                let name = self.graph.node(node).name.clone();
                 match &mut self.graph.node_mut(node).kind {
                     NodeKind::Valve { opening: o, .. } => {
                         *o = opening;
@@ -349,16 +350,16 @@ impl Engine {
                     // (docs/DESIGN.md §3a fork 5) — so a command that appeared to
                     // set it would be silently overwritten on the next tick.
                     NodeKind::ReliefValve { .. } => Err(SimError::InvalidCommand(format!(
-                        "{node:?} is a relief valve: its opening is actuated by its own inlet \
+                        "'{name}' is a relief valve: its opening is actuated by its own inlet \
                          pressure, not by command, and would be recomputed on the next solve"
                     ))),
                     // The relief valve's reason, with the disc's own trigger: the
                     // forward drive across it (docs/DESIGN.md §33).
                     NodeKind::CheckValve { .. } => Err(SimError::InvalidCommand(format!(
-                        "{node:?} is a check valve: its disc is moved by the forward drive \
+                        "'{name}' is a check valve: its disc is moved by the forward drive \
                          across it, not by command, and would be recomputed on the next solve"
                     ))),
-                    _ => Err(SimError::InvalidCommand(format!("{node:?} is not a valve"))),
+                    _ => Err(SimError::InvalidCommand(format!("'{name}' is not a valve"))),
                 }
             }
             Command::SetPumpOn { node, on } => {
@@ -368,7 +369,7 @@ impl Engine {
                 if on {
                     if let Some(trip) = self.graph.latched_trip_on(node) {
                         return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{}') is held stopped by trip '{}', which is latched. \
+                            "'{}' is held stopped by trip '{}', which is latched. \
                              Reset the trip first (`reset_trip`) once its condition has \
                              cleared; the reset restarts nothing, and the pump can then be \
                              started by hand",
@@ -377,12 +378,13 @@ impl Engine {
                         )));
                     }
                 }
+                let name = self.graph.node(node).name.clone();
                 match &mut self.graph.node_mut(node).kind {
                     NodeKind::Pump { on: o, .. } => {
                         *o = on;
                         Ok(())
                     }
-                    _ => Err(SimError::InvalidCommand(format!("{node:?} is not a pump"))),
+                    _ => Err(SimError::InvalidCommand(format!("'{name}' is not a pump"))),
                 }
             }
             // `edge` names the PIPE the scenario declared, exactly as the JSON
@@ -410,7 +412,7 @@ impl Engine {
                     // no leak path stores a number no solver reads, which is the
                     // precise defect M6.0 found this command already had.
                     LeakRole::None => Err(SimError::InvalidCommand(format!(
-                        "pipe '{}' ({edge:?}) declares no leak path, so it cannot be \
+                        "pipe '{}' declares no leak path, so it cannot be \
                          punctured. A pipe is punctureable only where its scenario says \
                          so (`leak_to = \"<atmosphere node>\"`); the leak path is built \
                          at LOAD, because puncturing one at runtime would change the \
@@ -418,7 +420,7 @@ impl Engine {
                         self.graph.pipe(edge).name
                     ))),
                     LeakRole::Orifice { .. } => Err(SimError::InvalidCommand(format!(
-                        "'{}' ({edge:?}) IS a leak orifice, not a pipe that has one. \
+                        "'{}' IS a leak orifice, not a pipe that has one. \
                          Puncture the pipe the scenario declared; the engine routes the \
                          area onto its orifice",
                         self.graph.pipe(edge).name
@@ -429,7 +431,11 @@ impl Engine {
                     // stored here would be a number no solver reads — the same
                     // defect this command was found to have in M6.0.
                     LeakRole::BoilOffVent { .. } => Err(SimError::InvalidCommand(format!(
-                        "'{}' ({edge:?}) is a boil-off vent, not a pipe that can be \n                         punctured. It exists because this plant selects \n                         `[fidelity] boiloff = \"flash\"`, and its flow is prescribed \n                         by the tank's enthalpy balance rather than by any area \n                         (docs/DESIGN.md §14)",
+                        "'{}' is a boil-off vent, not a pipe that can be \
+                         punctured. It exists because this plant selects \
+                         `[fidelity] boiloff = \"flash\"`, and its flow is prescribed \
+                         by the tank's enthalpy balance rather than by any area \
+                         (docs/DESIGN.md §14)",
                         self.graph.pipe(edge).name
                     ))),
                     // Not damage either, and not commandable for the vent's
@@ -437,7 +443,7 @@ impl Engine {
                     // end of the tick, so an area stored here is a number no
                     // solver reads (M23, docs/DESIGN.md §27 fork 3).
                     LeakRole::Overflow { .. } => Err(SimError::InvalidCommand(format!(
-                        "'{}' ({edge:?}) is a tank's overflow, not a pipe that can be \
+                        "'{}' is a tank's overflow, not a pipe that can be \
                          punctured. The loader builds one for every tank, and its flow is \
                          whatever liquid stands above the tank's brim at the end of a tick, \
                          not anything an area would set (docs/DESIGN.md §27)",
@@ -478,7 +484,7 @@ impl Engine {
                 if duty.value() != 0.0 {
                     if let Some(trip) = self.graph.latched_trip_on(node) {
                         return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{}') has its fuel cut by trip '{}', which is latched. \
+                            "'{}' has its fuel cut by trip '{}', which is latched. \
                              Reset the trip first (`reset_trip`) once its condition has \
                              cleared; the reset relights nothing, and the furnace can then be \
                              fired by hand",
@@ -491,13 +497,14 @@ impl Engine {
                 // actuator (docs/DESIGN.md §22 fork 4) — and one function for both
                 // duty commands, so neither can grow a guard the other lacks.
                 self.check_loop_owned_duty(node, duty, "furnace")?;
+                let name = self.graph.node(node).name.clone();
                 match &mut self.graph.node_mut(node).kind {
                     NodeKind::Furnace { duty: d, .. } => {
                         *d = duty;
                         Ok(())
                     }
                     _ => Err(SimError::InvalidCommand(format!(
-                        "{node:?} is not a furnace"
+                        "'{name}' is not a furnace"
                     ))),
                 }
             }
@@ -508,7 +515,7 @@ impl Engine {
                 // docs/DESIGN.md §77.2).
                 if let Some((column, index)) = self.graph.loop_cooler(node) {
                     return Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{}') is the cooler of pumparound loop {index} of column \
+                        "'{}' is the cooler of pumparound loop {index} of column \
                          '{}', whose duty the column sets each tick to bring the loop to its \
                          return temperature: set that (`SetLoopReturnTemperature`, \
                          docs/DESIGN.md §77.3)",
@@ -516,18 +523,19 @@ impl Engine {
                         self.graph.node(column).name
                     )));
                 }
+                let name = self.graph.node(node).name.clone();
                 match &mut self.graph.node_mut(node).kind {
                     NodeKind::Cooler { duty: d } => {
                         *d = duty;
                         Ok(())
                     }
                     NodeKind::WaterCooler { .. } => Err(SimError::InvalidCommand(format!(
-                        "{node:?} is a water cooler, whose duty is a result of its cooling \
+                        "'{name}' is a water cooler, whose duty is a result of its cooling \
                          water, not a setting: set its water's flow \
                          (`SetCoolingWaterFlow`, docs/DESIGN.md §67.13)"
                     ))),
                     _ => Err(SimError::InvalidCommand(format!(
-                        "{node:?} is not a cooler"
+                        "'{name}' is not a cooler"
                     ))),
                 }
             }
@@ -538,13 +546,14 @@ impl Engine {
                         flow.value()
                     )));
                 }
+                let name = self.graph.node(node).name.clone();
                 match &mut self.graph.node_mut(node).kind {
                     NodeKind::WaterCooler { water_flow, .. } => {
                         *water_flow = flow;
                         Ok(())
                     }
                     _ => Err(SimError::InvalidCommand(format!(
-                        "{node:?} is not a water cooler, so it has no cooling water"
+                        "'{name}' is not a water cooler, so it has no cooling water"
                     ))),
                 }
             }
@@ -576,7 +585,7 @@ impl Engine {
                     NodeKind::Sink { .. } => {}
                     NodeKind::Tank(_) => {
                         return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') is a tank: its pressure is the weight of its \
+                            "'{name}' is a tank: its pressure is the weight of its \
                              own liquid, and setting it would mean setting its level, which \
                              would create or destroy liquid. Only a supply or a destination \
                              takes a pressure"
@@ -584,13 +593,13 @@ impl Engine {
                     }
                     NodeKind::Atmosphere => {
                         return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') is the atmosphere, fixed at 1 atm. Only a \
+                            "'{name}' is the atmosphere, fixed at 1 atm. Only a \
                              supply or a destination takes a pressure"
                         )))
                     }
                     _ => {
                         return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') is not a supply or a destination (a source or \
+                            "'{name}' is not a supply or a destination (a source or \
                              a sink), so it has no pinned pressure to set"
                         )))
                     }
@@ -603,7 +612,7 @@ impl Engine {
                     // Unreachable: the match above returned for every other kind.
                     // An `Err` rather than a panic, for rule 5.
                     _ => Err(SimError::InvalidCommand(format!(
-                        "{node:?} is not a source or a sink"
+                        "'{name}' is not a source or a sink"
                     ))),
                 }
             }
@@ -634,7 +643,7 @@ impl Engine {
                     // it hands back on a reverse flow, not an operating condition.
                     NodeKind::Sink { .. } => {
                         return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') is a destination (a sink). Its temperature is \
+                            "'{name}' is a destination (a sink). Its temperature is \
                              only the fluid it would hand back if the plant drove flow \
                              backwards into it, and is fixed by the plant file; only a supply's \
                              temperature can be set"
@@ -642,7 +651,7 @@ impl Engine {
                     }
                     _ => {
                         return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') is not a supply (a source)"
+                            "'{name}' is not a supply (a source)"
                         )))
                     }
                 }
@@ -652,7 +661,7 @@ impl Engine {
                         Ok(())
                     }
                     _ => Err(SimError::InvalidCommand(format!(
-                        "{node:?} is not a source"
+                        "'{name}' is not a source"
                     ))),
                 }
             }
@@ -699,7 +708,7 @@ impl Engine {
                     }
                     NodeKind::Sink { .. } => {
                         return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') is a destination (a sink). Its composition is \
+                            "'{name}' is a destination (a sink). Its composition is \
                              only the fluid it would hand back if the plant drove flow \
                              backwards into it, and is fixed by the plant file; only a supply's \
                              composition can be set"
@@ -707,7 +716,7 @@ impl Engine {
                     }
                     _ => {
                         return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') is not a supply (a source)"
+                            "'{name}' is not a supply (a source)"
                         )))
                     }
                 }
@@ -720,7 +729,7 @@ impl Engine {
                         Ok(())
                     }
                     _ => Err(SimError::InvalidCommand(format!(
-                        "{node:?} is not a source"
+                        "'{name}' is not a source"
                     ))),
                 }
             }
@@ -744,12 +753,12 @@ impl Engine {
                     }
                     NodeKind::Column { cascade: None, .. } => {
                         Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') is a cut-point column: it splits its feed by \
+                            "'{name}' is a cut-point column: it splits its feed by \
                              boiling range and has no reflux to set"
                         )))
                     }
                     _ => Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{name}') is not a column"
+                        "'{name}' is not a column"
                     ))),
                 }
             }
@@ -768,7 +777,7 @@ impl Engine {
                     } => {
                         if model != "heat_balance" {
                             return Err(SimError::InvalidCommand(format!(
-                                "{node:?} ('{name}') runs under separation \"{model}\": only \
+                                "'{name}' runs under separation \"{model}\": only \
                                  separation = \"heat_balance\" solves a stage energy balance, so \
                                  only it can hold a reboiler and take the reflux as the result \
                                  (docs/DESIGN.md §69)"
@@ -779,12 +788,12 @@ impl Engine {
                     }
                     NodeKind::Column { cascade: None, .. } => {
                         Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') is a cut-point column: it splits its feed by \
+                            "'{name}' is a cut-point column: it splits its feed by \
                              boiling range and has no reboiler to hold"
                         )))
                     }
                     _ => Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{name}') is not a column"
+                        "'{name}' is not a column"
                     ))),
                 }
             }
@@ -795,14 +804,14 @@ impl Engine {
                 let name = self.graph.node(node).name.clone();
                 let NodeKind::Column { cascade, .. } = &mut self.graph.node_mut(node).kind else {
                     return Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{name}') is not a column"
+                        "'{name}' is not a column"
                     )));
                 };
                 let holdup = match cascade.as_mut().and_then(|spec| spec.holdup.as_mut()) {
                     Some(holdup) if model == "heat_balance" => holdup,
                     _ => {
                         return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') holds no liquid under separation \
+                            "'{name}' holds no liquid under separation \
                              \"heat_balance\": total reflux shuts a column's products and \
                              holds its drum on the reflux, and only a column that holds \
                              liquid has a drum to hold (docs/DESIGN.md §79.17)"
@@ -811,7 +820,7 @@ impl Engine {
                 };
                 if on && holdup.steel.is_none() {
                     return Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{name}') declares no steel: total reflux on a column \
+                        "'{name}' declares no steel: total reflux on a column \
                          without its steel is refused at full reboiler (docs/DESIGN.md \
                          §79.15) — declare holdup.steel in its file"
                     )));
@@ -827,14 +836,14 @@ impl Engine {
                 let name = self.graph.node(node).name.clone();
                 let NodeKind::Column { cascade, .. } = &mut self.graph.node_mut(node).kind else {
                     return Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{name}') is not a column"
+                        "'{name}' is not a column"
                     )));
                 };
                 let holdup = match cascade.as_mut().and_then(|spec| spec.holdup.as_mut()) {
                     Some(holdup) if model == "heat_balance" => holdup,
                     _ => {
                         return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') holds no liquid under separation \
+                            "'{name}' holds no liquid under separation \
                              \"heat_balance\": the slop drain is a reflux drum's, and only a \
                              column that holds liquid has a drum (docs/DESIGN.md §80.3)"
                         )))
@@ -842,7 +851,7 @@ impl Engine {
                 };
                 if !open && holdup.condenser.is_none() {
                     return Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{name}') declares no condenser limit: a shut drain backs \
+                        "'{name}' declares no condenser limit: a shut drain backs \
                          the drum's liquid up into its condenser's tubes, and only a condenser \
                          declared as a limit has tubes to flood (docs/DESIGN.md §80.3) — \
                          declare condenser_limit in its file"
@@ -859,7 +868,7 @@ impl Engine {
                 let name = self.graph.node(node).name.clone();
                 let NodeKind::Column { cascade, .. } = &mut self.graph.node_mut(node).kind else {
                     return Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{name}') is not a column"
+                        "'{name}' is not a column"
                     )));
                 };
                 let condenser = match cascade.as_mut().and_then(|spec| spec.holdup.as_mut()) {
@@ -867,13 +876,18 @@ impl Engine {
                         Some(condenser) => condenser,
                         None => {
                             return Err(SimError::InvalidCommand(format!(
-                                "{node:?} ('{name}') declares no condenser limit: its                                  condenser condenses all it is sent, whatever cools it, so                                  there is no cooling water to cut (docs/DESIGN.md §80.7) —                                  declare condenser_limit in its file"
+                                "'{name}' declares no condenser limit: its condenser \
+                                 condenses all it is sent, whatever cools it, so there is no \
+                                 cooling water to cut (docs/DESIGN.md §80.7) — declare \
+                                 condenser_limit in its file"
                             )))
                         }
                     },
                     _ => {
                         return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') holds no liquid under separation                              \"heat_balance\": only a column that holds liquid has a                              condenser that can run out (docs/DESIGN.md §80.7)"
+                            "'{name}' holds no liquid under separation \
+                             \"heat_balance\": only a column that holds liquid has a \
+                             condenser that can run out (docs/DESIGN.md §80.7)"
                         )))
                     }
                 };
@@ -900,13 +914,13 @@ impl Engine {
                                 Ok(())
                             }
                             None => Err(SimError::InvalidCommand(format!(
-                                "{node:?} ('{name}') has {count} pumparound(s); there is no \
+                                "'{name}' has {count} pumparound(s); there is no \
                                  pumparound {pumparound}"
                             ))),
                         }
                     }
                     _ => Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{name}') is not a column with pumparounds"
+                        "'{name}' is not a column with pumparounds"
                     ))),
                 }
             }
@@ -1160,7 +1174,7 @@ impl Engine {
                         Ok(())
                     }
                     _ => Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{name}') is not a pump, so it has nothing to vent"
+                        "'{name}' is not a pump, so it has nothing to vent"
                     ))),
                 }
             }
@@ -1168,7 +1182,7 @@ impl Engine {
                 let name = self.graph.node(node).name.clone();
                 let NodeKind::Furnace { coil, tubes, .. } = &self.graph.node(node).kind else {
                     return Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{name}') is not a furnace, so it has no tubes to replace"
+                        "'{name}' is not a furnace, so it has no tubes to replace"
                     )));
                 };
                 if !tubes.state.is_failed() {
@@ -1209,7 +1223,7 @@ impl Engine {
                 let name = self.graph.node(node).name.clone();
                 let NodeKind::BedReactor { bed, wall } = &self.graph.node(node).kind else {
                     return Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{name}') is not a catalyst bed, so it has no wall to repair"
+                        "'{name}' is not a catalyst bed, so it has no wall to repair"
                     )));
                 };
                 if !wall.state.is_failed() {
@@ -4067,13 +4081,13 @@ impl Engine {
                         Ok(())
                     }
                     None => Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{name}') has {count} pumparound loop(s); there is no loop \
+                        "'{name}' has {count} pumparound loop(s); there is no loop \
                          {pumparound_loop}"
                     ))),
                 }
             }
             _ => Err(SimError::InvalidCommand(format!(
-                "{node:?} ('{name}') is not a column with pumparound loops"
+                "'{name}' is not a column with pumparound loops"
             ))),
         }
     }
@@ -4103,7 +4117,7 @@ impl Engine {
         {
             if owner.mode == ControlMode::Auto {
                 return Err(SimError::InvalidCommand(format!(
-                    "{node:?} ('{}') is actuated by control loop '{}', which is in AUTO: \
+                    "'{}' is actuated by control loop '{}', which is in AUTO: \
                      its duty would be overwritten at the top of the next tick. Put the \
                      loop in MANUAL first (`set_controller_mode`), or move the loop's \
                      setpoint (`set_setpoint`)",
