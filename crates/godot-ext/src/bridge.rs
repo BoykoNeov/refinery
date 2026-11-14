@@ -243,13 +243,14 @@ pub struct Bridge {
     /// The scenario TOML this plant was built from, kept to build it again:
     /// a rewind is this file plus [`Bridge::record`] replayed (M76).
     source: String,
-    /// Every command that reached the engine, in the order sent, its tick
-    /// index never decreasing (a rewind truncates it). See [`Sent`].
-    record: Vec<Sent>,
+    /// Everything besides a good tick that moved the engine, in order, its
+    /// tick index never decreasing (a rewind truncates it). See [`Logged`].
+    record: Vec<Logged>,
 }
 
-/// One command that reached the engine (M76, `docs/plans/failed-tick-
-/// recovery.md`).
+/// One thing besides a good tick that moved the engine (M76,
+/// `docs/plans/failed-tick-recovery.md`): a command that reached it, or a
+/// tick that failed.
 ///
 /// **A refused command is recorded too.** `Engine::apply` notes that a command
 /// arrived before it judges the command, and on a plant whose lines carry
@@ -257,14 +258,25 @@ pub struct Bridge {
 /// that left the refusal out would rebuild a different plant
 /// (`a_refused_command_is_replayed_too`). A command the BRIDGE refused (bad
 /// JSON, an unknown id) never reached the engine and is not recorded.
+///
+/// **So is a failed tick.** A failed tick is not all-or-nothing — the trips,
+/// latches and loops run before the solve — so the attempt moves the plant,
+/// and a frontend that carries on after one (a correcting command, then good
+/// ticks) has a plant that went through it (`a_failed_tick_is_replayed_too`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Sent {
-    /// The tick index when it was sent: it acts before tick `at_tick + 1`.
+struct Logged {
+    /// The tick index when it happened: it acts before tick `at_tick + 1`.
     at_tick: u64,
-    /// The command's JSON, exactly as the frontend sent it.
-    json: String,
-    /// Whether the engine accepted it. A replay must get the same answer.
-    accepted: bool,
+    what: Happened,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Happened {
+    /// A command, its JSON exactly as the frontend sent it, and whether the
+    /// engine accepted it. A replay must get the same answer.
+    Command { json: String, accepted: bool },
+    /// A tick that returned `Err`. A replay must fail it again.
+    FailedTick,
 }
 
 /// What [`Bridge::recover`] did, for the screen to say.
@@ -337,8 +349,19 @@ impl Bridge {
     /// rollback and does not refuse later ticks. A diverged solve is not
     /// necessarily terminal — closing a valve may make the next one solve —
     /// so the decision to stop, reload or carry on belongs to the frontend.
+    ///
+    /// The failed attempt is recorded (see [`Logged`]): it moved the plant,
+    /// so a later [`Bridge::rewind`] repeats it.
     pub fn tick(&mut self) -> Result<(), BridgeError> {
-        self.engine.tick().map_err(BridgeError::Sim)
+        let result = self.engine.tick().map_err(BridgeError::Sim);
+        if result.is_err() {
+            let at_tick = self.tick_index();
+            self.record.push(Logged {
+                at_tick,
+                what: Happened::FailedTick,
+            });
+        }
+        result
     }
 
     /// The engine's own snapshot JSON, verbatim. See the module docs for what
@@ -360,15 +383,17 @@ impl Bridge {
     /// command cannot leave the plant half-modified.
     ///
     /// A command that reached the engine is recorded, accepted or not, for a
-    /// later [`Bridge::rewind`] — see [`Sent`] for why a refusal is kept.
+    /// later [`Bridge::rewind`] — see [`Logged`] for why a refusal is kept.
     pub fn apply_command_json(&mut self, json: &str) -> Result<(), BridgeError> {
         let at_tick = self.tick_index();
         let result = self.forward_command_json(json);
         if matches!(result, Ok(()) | Err(BridgeError::Sim(_))) {
-            self.record.push(Sent {
+            self.record.push(Logged {
                 at_tick,
-                json: json.to_string(),
-                accepted: result.is_ok(),
+                what: Happened::Command {
+                    json: json.to_string(),
+                    accepted: result.is_ok(),
+                },
             });
         }
         result
@@ -385,9 +410,9 @@ impl Bridge {
     }
 
     /// Put the plant back as tick `to_tick` left it, before any command sent
-    /// at that tick index: rebuilt from its scenario and every recorded
-    /// command sent before `to_tick`, each at its own tick, in its own order.
-    /// The commands from `to_tick` on are forgotten.
+    /// (or tick failed) at that tick index: rebuilt from its scenario and the
+    /// record before `to_tick` — every command and failed attempt, each at its
+    /// own tick, in its own order. The record from `to_tick` on is forgotten.
     ///
     /// Takes as long as the ticks took (the replay runs them all again).
     /// All or nothing: on any `Err` the plant is left exactly as it was.
@@ -402,7 +427,9 @@ impl Bridge {
                      rewind goes back to a tick between 0 and that"
                 ))
             })?;
-        let kept = self.record.partition_point(|sent| sent.at_tick < to_tick);
+        let kept = self
+            .record
+            .partition_point(|logged| logged.at_tick < to_tick);
         *self = self.replay(to_tick, &self.record[..kept])?;
         Ok(())
     }
@@ -411,16 +438,26 @@ impl Bridge {
     /// stood just before that command was sent, with every command before it
     /// replayed — however many good ticks ran since, so a command whose harm
     /// shows only ticks later is undone too (the user's choice, 2026-11-14).
-    /// Refused commands after it go with it.
+    /// What came after it — refused commands, failed ticks — goes with it;
+    /// what came before it at the same tick index stays, so the plant is the
+    /// one the command was sent into.
     ///
     /// Called again, it undoes the accepted command before that one. With
     /// none left it is refused as `nothing_to_undo`: the plant itself cannot
     /// be solved, and going back would only fail again.
     pub fn recover(&mut self) -> Result<Recovery, BridgeError> {
-        let last = self
+        let (last, json) = self
             .record
             .iter()
-            .rposition(|sent| sent.accepted)
+            .enumerate()
+            .rev()
+            .find_map(|(index, logged)| match &logged.what {
+                Happened::Command {
+                    json,
+                    accepted: true,
+                } => Some((index, json.clone())),
+                _ => None,
+            })
             .ok_or_else(|| {
                 BridgeError::NothingToUndo(
                     "no command sent to this plant is left to undo, so going back \
@@ -428,25 +465,24 @@ impl Bridge {
                         .to_string(),
                 )
             })?;
-        let undone = &self.record[last];
-        let recovery = Recovery {
-            rewound_to: undone.at_tick,
-            dropped: vec![undone.json.clone()],
-        };
-        *self = self.replay(undone.at_tick, &self.record[..last])?;
-        Ok(recovery)
+        let rewound_to = self.record[last].at_tick;
+        *self = self.replay(rewound_to, &self.record[..last])?;
+        Ok(Recovery {
+            rewound_to,
+            dropped: vec![json],
+        })
     }
 
-    /// A new bridge on this one's scenario, ticked to `to_tick` with `sent`
-    /// replayed: each command before tick `at_tick + 1`, then any left (sent
-    /// at `to_tick` itself) after the last tick. `sent` is a prefix of the
+    /// A new bridge on this one's scenario, ticked to `to_tick` with `logged`
+    /// replayed: each entry before tick `at_tick + 1`, then any left (at
+    /// `to_tick` itself) after the last tick. `logged` is a prefix of the
     /// record, so it is in tick order.
-    fn replay(&self, to_tick: u64, sent: &[Sent]) -> Result<Bridge, BridgeError> {
+    fn replay(&self, to_tick: u64, logged: &[Logged]) -> Result<Bridge, BridgeError> {
         let mut fresh = Bridge::load(&self.source)?;
-        let mut next = sent.iter().peekable();
+        let mut next = logged.iter().peekable();
         for tick in 0..to_tick {
-            while let Some(sent) = next.next_if(|sent| sent.at_tick == tick) {
-                fresh.replay_one(sent)?;
+            while let Some(logged) = next.next_if(|logged| logged.at_tick == tick) {
+                fresh.replay_one(logged)?;
             }
             fresh.tick().map_err(|err| {
                 BridgeError::ReplayDiverged(format!(
@@ -456,25 +492,32 @@ impl Bridge {
                 ))
             })?;
         }
-        for sent in next {
-            fresh.replay_one(sent)?;
+        for logged in next {
+            fresh.replay_one(logged)?;
         }
         Ok(fresh)
     }
 
-    /// Send one recorded command again; the engine must answer as it did.
-    fn replay_one(&mut self, sent: &Sent) -> Result<(), BridgeError> {
-        let result = self.apply_command_json(&sent.json);
-        if result.is_ok() == sent.accepted {
+    /// Do one recorded thing again — send the command, or attempt the tick —
+    /// and require the engine to answer as it did the first time.
+    fn replay_one(&mut self, logged: &Logged) -> Result<(), BridgeError> {
+        let (what, first, again) = match &logged.what {
+            Happened::Command { json, accepted } => (
+                json.as_str(),
+                *accepted,
+                self.apply_command_json(json).is_ok(),
+            ),
+            Happened::FailedTick => ("the tick", false, self.tick().is_ok()),
+        };
+        if first == again {
             Ok(())
         } else {
+            let answer = |ok: bool| if ok { "succeeded" } else { "failed" };
             Err(BridgeError::ReplayDiverged(format!(
-                "replaying {} at tick {}: the engine {} it the first time and {} it \
-                 now",
-                sent.json,
-                sent.at_tick,
-                if sent.accepted { "accepted" } else { "refused" },
-                if sent.accepted { "refused" } else { "accepted" },
+                "replaying {what} at tick {}: it {} the first time and {} now",
+                logged.at_tick,
+                answer(first),
+                answer(again),
             )))
         }
     }

@@ -2033,3 +2033,51 @@ fn recover_undoes_only_the_last_accepted_command() {
         run_with(&src, &kept, 30).snapshot_json()
     );
 }
+
+/// A failed tick is not all-or-nothing: the trips, latches and loops run
+/// before the solve, so a failed attempt moves the plant. A frontend that
+/// carries on after one — a correcting command, then good ticks — has a plant
+/// that went through it, and a rewind must go through it too: the failed
+/// attempt is in the record and is replayed, failing again.
+#[test]
+fn a_failed_tick_is_replayed_too() {
+    let src = scenario_src("vessel_pressure_control.toml");
+    let mut sim = loaded(&src);
+    let flare = sim.node_id("flare");
+    let breaking = format!(r#"{{"cmd":"set_reservoir_pressure","node":{flare},"pressure":1e300}}"#);
+    let mending =
+        format!(r#"{{"cmd":"set_reservoir_pressure","node":{flare},"pressure":110000.0}}"#);
+    for _ in 0..50 {
+        assert_eq!(sim.tick(), "null");
+    }
+    assert_eq!(sim.apply_command_json(&breaking), "null");
+    assert!(
+        outcome_code(&sim.tick()).is_some(),
+        "the next tick must fail"
+    );
+    assert_eq!(sim.apply_command_json(&mending), "null");
+    for _ in 0..50 {
+        assert_eq!(sim.tick(), "null");
+    }
+    let before = sim.snapshot_json();
+    assert_ne!(
+        before,
+        run_with(&src, &[(50, breaking.clone()), (50, mending)], 100).snapshot_json(),
+        "the fixture needs a failed attempt that leaves a trace"
+    );
+    assert_eq!(sim.rewind(100), "null");
+    assert_eq!(
+        sim.snapshot_json(),
+        before,
+        "the replay skipped the failed attempt"
+    );
+
+    // `recover` undoes the mending command, back to the state it was sent
+    // into — the failed attempt's — and then the breaking one, back to the
+    // plant as tick 50 left it.
+    let (to, _) = recovery(&sim.recover());
+    assert_eq!(to, 50);
+    let (to, dropped) = recovery(&sim.recover());
+    assert_eq!((to, dropped), (50, vec![breaking]));
+    assert_eq!(sim.snapshot_json(), run_with(&src, &[], 50).snapshot_json());
+}

@@ -39,6 +39,9 @@ change is needed for a first version.
   command arrived before judging it, which changes the next tick on a vapour
   plant; leaving it out rebuilt a different plant (test 4, seen to fail).
   Only what the bridge refuses (bad JSON, unknown id) is left out.
+- **A failed tick IS recorded and replayed** (found at review): the attempt
+  moves the plant before it fails, so a frontend that carries on after one
+  has a plant a replay must take through it too.
 - The record and the replay live in `Bridge` (Rust `Result` API);
   `Session` wraps them as JSON. New codes `bad_rewind`, `nothing_to_undo`,
   `replay_diverged`.

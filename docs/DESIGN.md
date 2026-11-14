@@ -4591,8 +4591,8 @@ The only gate no mutation fires is `a_tanks_pressure_carries_no_density_to_gate
 _one` — which is the point of it: it documents an impossibility rather than
 guarding a behaviour.
 
-**M76: a failed tick is survivable.** `Session` keeps the scenario source and
-every command that reached the engine, and offers `rewind(to_tick)`,
+**M76: a failed tick is survivable.** `Session` keeps the scenario source,
+every command that reached the engine and every failed tick, and offers `rewind(to_tick)`,
 `recover()` (undo the last accepted command) and `last_good_tick()` — see §81.
 
 ## 9. Error handling & diagnostics
@@ -32202,10 +32202,11 @@ latches and loops run before the solve, so 15 of 108 changed the snapshot
 while failing. A frontend can neither retry nor trust the state it holds.
 
 **The idea.** The engine is deterministic (rule 3), so the plant at any past
-tick is its scenario file plus the commands sent to it, each sent again at its
-own tick. No engine change: `Bridge` keeps the TOML source it loaded and a
-record of every command that reached the engine (`Sent { at_tick, json,
-accepted }`), cleared by a new load.
+tick is its scenario file plus everything else that moved it — the commands
+sent to it and the ticks that failed — each done again at its own tick. No
+engine change: `Bridge` keeps the TOML source it loaded and a record
+(`Logged { at_tick, what }`, `what` a `Command { json, accepted }` or a
+`FailedTick`), cleared by a new load.
 
 - **`rewind(to_tick)`**: the plant as tick `to_tick` left it, before any
   command sent at that tick index — a new `Bridge` from the source, ticked to
@@ -32260,8 +32261,23 @@ exactly at it included), keeps order within a tick, and `rewind(0)` is the
 plant as loaded; out-of-range rewinds refused; the refused command replayed;
 recovery of an immediate failure (twice, then `nothing_to_undo`), of a delayed
 one, and of only the last of several commands at one tick; a load starts a new
-record; every new call answers before a load. Mutation pass, 13 mutants: 11
-killed; the 2 survivors cannot change what a frontend sees — recording
-bridge-refused commands as well (replayed, they are refused alike) and
-dropping the replay's same-answer check (a deterministic engine always gives
-it).
+record; every new call answers before a load; a failed attempt replayed.
+Mutation pass, 16 mutants: 14 killed; the 2 survivors cannot change what a
+frontend sees — recording bridge-refused commands as well (replayed, they are
+refused alike) and dropping the replay's same-answer check (a deterministic
+engine always gives it).
+
+**A failed tick is recorded and replayed too** (found at review, before
+pushing; `fix(godot-ext): M76 — a failed tick is replayed too`). A failed
+attempt moves the plant (the trips, latches and loops run before the solve;
+the plan measured 15 of 108). A frontend that carries on after one — the
+bridge's `tick` leaves that to it — with a correcting command and good ticks
+has a plant that went through the attempt, and a replay that skipped it
+rebuilt a different one (`a_failed_tick_is_replayed_too`: the flare spiked to
+1e300 Pa, the tick failing, the flare set back, 50 good ticks; seen to fail
+before the fix). So `Bridge::tick` records a `FailedTick`, a replay attempts it
+again and requires it to fail, `rewind(N)` drops it with the rest of tick N,
+and `recover` passes over it to the last accepted command. No shipped screen
+reached this — the pump screen recovers at once — but the guarantee is that a
+rewound plant is the same plant, and the map's commands (F8) will build on
+it.

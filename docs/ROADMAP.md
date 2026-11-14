@@ -11497,8 +11497,8 @@ reboiler's return (Kister §13.2) — stays open in C30.
 Asked as "what is next" after M75 (2026-11-14): the user chose plan 3 of the
 2026-11-12 review. A tick the engine cannot solve ended every screen, and
 retrying never helped. The engine is deterministic, so the bridge keeps the
-scenario and every command that reached the engine, and rebuilds any past
-tick by replaying them (DESIGN §81). No engine change.
+scenario, every command that reached the engine and every failed tick, and
+rebuilds any past tick by replaying them (DESIGN §81). No engine change.
 
 **Decided (2026-11-14), the user**, asked about a command whose harm shows
 ticks later: **recovery goes back to just before the last accepted command**,
@@ -11507,9 +11507,10 @@ screen stops as before.
 
 **Done**: `rewind`, `recover`, `last_good_tick` on `Session` and the binding;
 a refused command recorded and replayed (a finding: the engine notes a command
-arrived before refusing it, which moves a vapour plant's next tick); the pump
-screen recovers and says what it undid (`--break-at=` to see it run); 8 new
-gates, 13 mutants (11 killed, 2 that cannot change what a frontend sees);
+arrived before refusing it, which moves a vapour plant's next tick), and a
+failed tick too (it moves the plant before it fails); the pump
+screen recovers and says what it undid (`--break-at=` to see it run); 9 new
+gates, 16 mutants (14 killed, 2 that cannot change what a frontend sees);
 every plant byte-identical, 72 of 72 on both fidelities. A rewind costs what
 the ticks cost: 0.7 ms a tick on the slowest plant.
 
