@@ -126,10 +126,15 @@ fn run(
 ) -> Result<()> {
     let (mut engine, _) = load(scenario, solver)?;
 
-    let mut sink: Box<dyn Write> = match out {
-        Some(p) => Box::new(std::fs::File::create(p)?),
+    // Buffered: `serde_json::to_writer` on a bare `File` or stdout makes one
+    // write call per token. The flush at the end reports what the buffer's
+    // drop would swallow.
+    let mut sink: std::io::BufWriter<Box<dyn Write>> = std::io::BufWriter::new(match out {
+        Some(p) => Box::new(
+            std::fs::File::create(&p).with_context(|| format!("creating {}", p.display()))?,
+        ),
         None => Box::new(std::io::stdout().lock()),
-    };
+    });
 
     for t in 1..=ticks {
         engine.tick().with_context(|| format!("tick {t} failed"))?;
@@ -139,6 +144,7 @@ fn run(
             sink.write_all(b"\n")?;
         }
     }
+    sink.flush().context("writing the snapshots")?;
     Ok(())
 }
 

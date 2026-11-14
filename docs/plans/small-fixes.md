@@ -18,7 +18,11 @@ looked at, so the run exited 0 having silently lost a plant.
       `**missing**` (2026-11-14), listed only when whole directories were
       run, as the failure is; a run of named files lists none (tested).
 
-## 2. `refinery run` writes unbuffered
+## 2. `refinery run` writes unbuffered — DONE 2026-11-14
+
+- [x] Buffered, flushed with its error reported; 1 000 ticks of
+      `tank_pump_valve.toml` byte-identical before and after, to a file and
+      to stdout.
 
 Same file, `fn run`: `serde_json::to_writer` straight onto a `File` or
 stdout makes one system call per token. Wrap the sink in
