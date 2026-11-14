@@ -11296,7 +11296,7 @@ carry the 5 held runs.** A refused tick run again as ten steps of a tenth
 hours 65 of 70, the same 5, later (DESIGN §79.19). **Deferred: the dry state
 with the draining (C29). M74 CLOSED** (DESIGN §79.20; `docs/MILESTONES.md`).
 
-## M75 — an overfull column's knock-on effects: the condenser backed up, the column's pressure rising, the bottom trays flooded; ledger row C30; opened on a decision
+## M75 — an overfull column's knock-on effects: the condenser backed up, the column's pressure rising, the bottom trays flooded; ledger row C30; opened on a decision; CLOSED 2026-11-14
 
 Asked after M74 as "what is next" (2026-11-11): the user chose C30, an
 overfull reflux drum or base's knock-on effects — where since M74.6 step 3 the
@@ -11462,3 +11462,30 @@ across nearly its band (DEFERRED C34). DESIGN §80.6.
   and the plant the plain one's to 1e-6 (two more nodes move the cold start's
   last bits). Mutations: sixteen, fourteen caught, two argued equivalent (the vent's pipe counted as feed reads the solve's zero; the valve in the relief memory re-solves to the same answer). Every plant byte-identical, 71 of 71 on both
   fidelities.
+
+### M75.4 — **DONE** 2026-11-14: the overfill plant, the cooling cut by command, the pressure solve's retreat, key 9
+
+`scenarios/crude_unit_overfill.toml`: the holdup plant with its steel, the
+condenser limit, the drain and the relief valve to a flare — exactly M75's
+inline fixture, pinned to it by test. **The valve, Kv 5 000**: the larger of
+the two book-rule sizes put to the user (their decision); most of its gap
+over ~4 000 is the probe's larger reading of the top's vapour, not the
+relief temperature — the reading's 23 % gap left open (DESIGN §80.7).
+**Asked, the user**: what key 9 lets the player do — measured, the drum
+never overfills on the holding plant's keys, so the drain alone shows
+nothing; they chose a new command for **the cooling water cut**
+(`SetCondenserCooling`), the case the valve is sized for, with total reflux
+and the drain beside it. The cooling cut: the relief lifts at 57 s, holds
+3.65 bar, ~72 kg/s to the flare; restored, 1.8 bar exactly. **Found
+measuring the key range**: 9 of 48 corner runs refused once the pressure
+moved — the column's step stalling at trial pressures of the in-tick solve,
+not at its answer. **Asked, the user**: fix it first. Fixed by a retreat
+from a failed trial (the bracket halfway back; falsi halfway towards each
+end), tests first; the 48 corners and 48 random half-hour walks all run;
+every plant byte-identical, 72 of 72 on both fidelities. Key 9 on the
+column screen: C, X, V; the valve and flare drawn; an OVERHEAD panel; two
+ticks a frame (DESIGN §80.7).
+
+**M75 CLOSED** (2026-11-14; `docs/MILESTONES.md`): the drum side of C30.
+The base side — a base past full flooding the bottom trays and the
+reboiler's return (Kister §13.2) — stays open in C30.

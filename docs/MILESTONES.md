@@ -12,6 +12,41 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M75 is CLOSED (2026-11-14): an overfull column's knock-on effects, the
+drum side — the condenser a limit, the column's pressure rising, the drum's
+drain an operator's, a relief valve to a flare — `docs/DEFERRED.md` C30 in
+part.** Asked as "what is next" after M74; the user chose C30, the drum side
+first.
+- **M75.0, the probe** (§80.0–§80.1): an overfilling column overloads its
+  condenser within minutes, long before its drum fills. Decided: the
+  flooded condenser (Kister §17.2.2) sized from its running duty with a
+  margin, the slop line an operator's drain, relief a real line to a flare.
+- **M75.1, the condenser a limit** (§80.2): `condenser_limit`, its `UA` from
+  the first tick; the top pressure solved within each tick (a tick-late
+  update rang); 1.8 → 3.2 bar in five minutes on total reflux.
+- **M75.2, the drain** (§80.3): `SetSlopDrain`; shut, a drum past full backs
+  up into the condenser's tubes, which condense less.
+- **M75.3, relief** (§80.4–§80.6): the probe, then the valve inside the
+  pressure solve (gradual, set at the design pressure, held at 121 % with an
+  alarm past full lift), then on the map as a `relief_valve` node with its
+  line to a flare; what the vent asks past the top's vapour flashes off the
+  drum.
+- **M75.4, the plant and key 9** (§80.7): `scenarios/crude_unit_overfill.toml`
+  (Kv 5 000, the user's choice — most of its gap over ~4 000 is a larger
+  reading of the top's vapour, left open); `SetCondenserCooling`, the
+  cooling cut, the case the valve is sized for (relief at 57 s, 3.65 bar, ~72
+  kg/s to the flare); the key range measured with the pressure moving found
+  9 of 48 corners refused — the column's step stalling at trial pressures of
+  the in-tick solve — fixed by a retreat from a failed trial (48 corners and
+  48 random walks all run); key 9 with C, X, V, the valve, the flare and an
+  OVERHEAD panel.
+- Every shipped plant byte-identical through the milestone, 72 of 72 on both
+  fidelities. **Open**: the base side of C30 (a base past full flooding the
+  bottom trays, Kister §13.2); the pop valve (C32); the relief line's back
+  pressure (C34).
+
+---
+
 **M74 is CLOSED (2026-11-11): a column that holds liquid — the trays, the
 base and the reflux drum, then the start from empty — `docs/DEFERRED.md` C2
 taken.** Asked as "what is next" after M73; the user chose holdup (C2), "start

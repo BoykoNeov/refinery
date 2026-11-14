@@ -32061,3 +32061,124 @@ where M75.3.1 counted the faceplate's (`column_empty::Books`, once either
 way).
 
 Sixteen mutations, fourteen caught: the pipes left pressure-driven; no vent written by the sweep, or by the engine; the latent heat without its sensible part, or never written; the valve read for cavitation; pinned at the flare; the first pipe's state not the vent's; the sweep not waiting on the line; the set at the running pressure, above the design pressure, full lift to 121 %, the flare always atmospheric, a flare at the set — each refused or caught. Two survived, argued equivalent: the vent's pipe counted as the column's feed — the solve wrote it zero, so it adds nothing; and the valve left in the network's relief memory — its pipes prescribed, the held re-solve lands on the same answer, only slower. Both guards kept, the first as the loops' is, the second for the work it saves.
+
+### 80.7 M75.4 landed — the overfill plant, the cooling cut by command, the pressure solve's retreat, key 9 (2026-11-14)
+
+**The plant** (`scenarios/crude_unit_overfill.toml`): the holdup plant
+(`crude_unit_holdup.toml`, untouched) with its steel, the M75.1 condenser
+limit (`margin` 0.05, coolant 35 °C, 100 m³ of overhead), the M75.2 drain
+and the M75.3.2 relief valve on the map, `column_psv`, set at the design
+pressure 3.52 bar, full lift 10 % of it gauge above (3.77 bar), `x_t` 0.7,
+its line to a `flare` sink at atmosphere — exactly the plant M75's inline
+tests build (`column_relief::with_relief`). `column_overfill.rs` pins the
+two to each other: every node, pipe and the column's state by name to 1e-6
+over 150 ticks.
+
+**The valve's size, Kv 5 000 — where it comes from, stated plainly.** Two
+sizes were put to the user (2026-11-14), both the book rule (Kister §9.3:
+all the top vapour of normal running, vented at full lift): ~4 000, the
+figure §80.5's test reads, and ~5 000, the M75.3.0 probe's (§80.4). They
+chose the larger. It was first described to them as the larger "because
+sized at the hotter conditions during a relief, as API RP-520 says"; that
+is mostly not so. `Kv ∝ ṅ·√(M·T/x_c)` choked: the hotter temperature (437 →
+~505 K) accounts only for ~4 000 → ~4 300; most of the gap is the vapour —
+the probe took the top's vapour as ~1 208 mol/s (137 kg/s) where the tests
+read 982 mol/s (114 kg/s) at rest. **Open, not chased**: why the two
+readings of the same top vapour differ by ~23 % (the probe's from the
+separation's profile on its sizing tick, the test's from the snapshot's
+`stage_vapour_mol_s[0]` after 100 ticks at rest). It changes neither the
+valve, which the user chose, nor the story: the coolant lost peaks at
+3.65 bar on 5 000 against 3.67 on ~4 000.
+
+**The cooling cut by command** (`Command::SetCondenserCooling { node, on }`,
+`"set_condenser_cooling"`): the case that usually sets a column's relief
+load (Kister §9.3) and the user's choice for the screen — the measured
+alternatives were weaker: on the holding plant's keys the drum never
+overfills (its level loop holds it near half, the reboiler held or free,
+the reflux anywhere in 0.5–15), so a shut drain shows nothing on its own;
+the reflux at 15 takes the pressure to 3.35 bar in 20 minutes, the
+reboiler held at 120 MW to 2.4 bar. Cut, `condenser_balance` takes the
+capacity as zero; `UA` and the coolant are kept, so restored the condenser
+is the one it was. `holdup.condenser.coolant_lost` on the column's kind,
+off the wire while running; refused off a heat-balance column that holds
+liquid and on one whose condenser is not a limit, each by name. **It is
+M75.3's hand to the bit** (the coolant put at 2 000 K, `(T_b − T_c).max(0)`
+then zero): every node, pipe and the column's state identical, 90 s cut and
+30 s back.
+
+**The shipped plant's cooling lost** (5 minutes, then 3 restored): the
+pressure leaves its set at once, the relief lifts at **57.4 s**, holds at
+most **3.65 bar** with ~**72 kg/s** to the flare two minutes in (easing to
+~32 kg/s at ten minutes), never at the ceiling; restored, the relief shuts
+and the column is at 1.8 bar exactly ~2.5 minutes on. The books close every
+tick (2.2e-10 kg/s, 5.8 W at worst).
+
+**Found measuring the key range, and fixed: a trial pressure the column's
+step cannot settle refused the whole tick.** The holding plant's box (M74.4,
+§79.8) was measured again on the overfill plant, the pressure now moving:
+its 48 corners (furnace 0/40 MW, reflux 0.5/15, the reboiler held at 0 or
+215 MW or free, the loops stopped and 60 K warm or doubled and 60 K cold),
+each followed by the cooling cut or total reflux for 10 minutes. **Nine were
+refused** — seven within two minutes of the jump, before either event —
+where the plain holding plant (with its steel) runs all of them; with a
+condenser that never runs out (`margin` 10) the two tried ran. The column's
+step stalls where a stage nears the edge of boiling: both line searches
+(§79.10) find no descent at the kink, and the tick is refused. It does so
+at **some trial pressures of the in-tick solve (§80.2), not at its answer**:
+on the first corner a falsi trial 436 Pa above the start failed where
+trials 300 Pa either side converged and the answer was 260 Pa up; on the
+coldest, the bracket's first trial 413 Pa up failed where the answer was
+25 Pa up.
+
+**The retreat** (`stepped_pass`, `illinois`): a trial whose step does not
+converge is a search point, not the tick's answer. The bracket's growth
+retreats halfway back to the last trial that converged; regula falsi
+retreats from a failed trial halfway towards each end of the bracket in
+turn (both converged) until one converges, the bracket then narrowed by it
+as by any other trial. Refused only when a retreat reaches a converged
+trial (or after 40). A first fallback to the bracket's midpoint alone
+fixed one corner of the nine and left two of 24 random walks refused — a
+band of failing pressures can hold both falsi and the midpoint; the answer
+sat below it. **A tick none of whose trials fails takes exactly the path it
+took before**: every plant byte-identical, 72 of 72 on both fidelities.
+
+Measured after: **the 48 corners all run** (21 minutes each); **48
+half-hour walks** of a random key a minute — a press or a jump on any of
+the box's keys, the cooling, total reflux and the drain toggled among them
+— **all run**; 17 of the walks and 8 of the corners were held at the
+ceiling with its alarm for a while (the reboiler held high with the cooling
+cut or on total reflux), the run going on. Gates,
+each failing before (`column_overfill.rs`): the corner refused at tick 11
+(a falsi trial), the coldest corner refused at tick 499 (the bracket's
+first trial); each retreat removed, its own test fails.
+
+**Key 9** (`demo/column.gd`, `"overfill"`): the holding plant's keys and its
+box (`range_ref` §79.8, §80.7), plus C (the cooling cut and restored), X
+(total reflux on and off), V (the drain shut and open). The valve drawn on
+the column's top, red while open, its line to a flare whose flame follows
+the vent; the panel's OVERHEAD block in place of the furnace's (its numbers
+stand beside it on the left): the top pressure against its set and its
+alarm (PRESSURE HIGH past the condenser, RELIEF LIFTING, HELD: ALARM at the
+ceiling), what the condenser can take (COOLING LOST), the relief's opening
+and flow to the flare, the drain and total reflux. **Two ticks a frame**:
+measured 1.2–1.3 ms a tick at rest, 3–11 ms while the pressure moves, 28.7
+ms the first 30 s after the cooling is cut (the pressure solve's trials).
+
+**The screen's measured table** (`AUTO_OVERFILL`, gated in
+`column_screen.rs::slow_the_overfill_plant_timeline`, run in Godot):
+
+| tick | key | what it shows |
+|---|---|---|
+| 600 | V, the drain shut | nothing: the drum holds its level, 1.8 bar |
+| 1 200 | C, the cooling cut | the condenser can take 0 MW; the pressure climbs |
+| 1 775 | — | the relief lifts (3.52 bar) |
+| ~2 400 | — | 3.65 bar at most, ~72 kg/s to the flare; never the ceiling |
+| 4 200 | C, restored | the relief shuts; 1.8 bar exactly by 6 000 |
+| 6 000 | X, total reflux | the condenser overloaded slowly (from rest: 349 s to lift) |
+| 10 515 | — | the relief lifts; 3.58 bar, ~21 kg/s at 12 000 |
+| 12 000 | X, off | the products open; the pressure falls back (2.76 bar at 15 000) |
+
+**Not done, stated**: the base side of C30 (a base past full flooding the
+bottom trays, Kister §13.2) — still to slop either way; the drum's back-up
+is reachable only by a history the keys rarely make (M75.2's tests
+re-plant it); the vapour readings' 23 % gap above.

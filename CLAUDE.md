@@ -155,8 +155,8 @@ godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on scre
 godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock]
 godot --path . res://demo/reactor.tscn       # the M57.5 reactor screen (keys on screen; 4 = M58 wall; 5/6 = M59 hydrogen)
 godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
-godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops, 7 M73 trays, 8 M74 holdup)
-godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped|cold|loops|trays|holdup]
+godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops, 7 M73 trays, 8 M74 holdup, 9 M75 overfill)
+godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped|cold|loops|trays|holdup|overfill]
 ```
 
 ## Testing
@@ -196,8 +196,8 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M75** — an overfull column's knock-on effects (C30): the condenser backed up, the column's pressure rising, the bottom trays flooded; a probe first.
-**Latest closed: M74 (2026-11-11)**: a column that holds liquid (C2) — each tray's liquid following its weir, the drum and base with their level loops, stages that stop boiling, the steel a heat store, the start from empty and total reflux, a full vessel to slop; the holdup plant on key 8 and the empty-start plant; the draining and a stage that boils dry deferred (C29); every plant byte-identical (DESIGN §79). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none open** — the user picks the next (C30's base side is still open).
+**Latest closed: M75 (2026-11-14)**: an overfull column's knock-on effects, the drum side (C30 in part) — the condenser a limit and the column's pressure rising past it, the drum's drain an operator's, a relief valve on the map to a flare, the cooling cut by command; the overfill plant on key 9; the pressure solve stepping back from a trial its step cannot settle; the base side still open; every plant byte-identical (DESIGN §80). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 
