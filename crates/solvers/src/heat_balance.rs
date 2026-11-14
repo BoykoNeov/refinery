@@ -1372,6 +1372,11 @@ fn condenser_balance(
     let x = MoleFractions::from_mass(&next.drum_composition, slate)?;
     let bubble = bubble_temperature(slate, thermo, &x, pressure, "the column's condensate")?;
     let mut capacity = ua.value() * (bubble.value() - condenser.coolant.value()).max(0.0);
+    if condenser.coolant_lost {
+        // No cooling water, nothing condensed (M75.4, docs/DESIGN.md §80.7;
+        // Kister, *Distillation Operation*, §9.3).
+        capacity = 0.0;
+    }
     if flooded > 0.0 {
         // The tubes the drum's back-up floods condense nothing (Kister,
         // *Distillation Operation*, §13.3).

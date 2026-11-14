@@ -1040,6 +1040,16 @@ pub struct ColumnCondenser {
     /// column that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relief: Option<ColumnRelief>,
+    /// Its cooling water lost (M75.4, docs/DESIGN.md §80.7; Kister,
+    /// *Distillation Operation*, §9.3 — the case that usually sets a
+    /// column's relief load): the condenser condenses nothing, its capacity
+    /// zero, and the column's pressure rises to its relief. Set by
+    /// `Command::SetCondenserCooling`, from the next tick on; `UA` and the
+    /// coolant's temperature are kept, so restored the condenser is the one
+    /// it was. Running (`false`, not serialized) on every column until a
+    /// command cuts it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub coolant_lost: bool,
 }
 
 /// A relief valve on a column's top, upstream of its condenser (M75.3,

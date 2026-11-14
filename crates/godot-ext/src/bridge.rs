@@ -204,6 +204,7 @@ fn referent(cmd: &Command) -> Referent {
         Command::SetReboilerDuty { node, .. } => Referent::Node(*node),
         Command::SetTotalReflux { node, .. } => Referent::Node(*node),
         Command::SetSlopDrain { node, .. } => Referent::Node(*node),
+        Command::SetCondenserCooling { node, .. } => Referent::Node(*node),
     }
 }
 

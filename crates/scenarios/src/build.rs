@@ -4752,6 +4752,8 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                             // every node and pipe exists
                             // (`resolve_column_reliefs`, M75.3.2).
                             relief: None,
+                            // Running; only a command cuts it (M75.4).
+                            coolant_lost: false,
                         })
                     }
                 };

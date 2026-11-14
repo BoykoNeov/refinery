@@ -51,7 +51,7 @@ fn command(rng: &mut Rng, nodes: u64, edges: u64) -> String {
     let v = *rng.pick(VALUES);
     let i = rng.below(4);
     let b = rng.below(2) == 0;
-    match rng.below(24) {
+    match rng.below(25) {
         0 => format!(r#"{{"cmd":"set_valve_opening","node":{n},"opening":{v:e}}}"#),
         1 => format!(r#"{{"cmd":"set_pump_on","node":{n},"on":{b}}}"#),
         2 => format!(r#"{{"cmd":"puncture_pipe","edge":{e},"area":{v:e}}}"#),
@@ -99,6 +99,7 @@ fn command(rng: &mut Rng, nodes: u64, edges: u64) -> String {
         }
         21 => format!(r#"{{"cmd":"set_total_reflux","node":{n},"on":{b}}}"#),
         22 => format!(r#"{{"cmd":"set_slop_drain","node":{n},"open":{b}}}"#),
+        23 => format!(r#"{{"cmd":"set_condenser_cooling","node":{n},"on":{b}}}"#),
         _ => format!(
             r#"{{"cmd":"set_valve_opening","node":{n},"opening":{:e}}}"#,
             (rng.below(101) as f64) / 100.0

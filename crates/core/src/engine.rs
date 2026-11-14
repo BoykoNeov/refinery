@@ -851,6 +851,35 @@ impl Engine {
                 holdup.slop_drain_shut = !open;
                 Ok(())
             }
+            // The condenser's cooling water cut or restored (M75.4,
+            // docs/DESIGN.md §80.7): a column that holds liquid whose
+            // condenser is a limit only.
+            Command::SetCondenserCooling { node, on } => {
+                let model = self.separation.name();
+                let name = self.graph.node(node).name.clone();
+                let NodeKind::Column { cascade, .. } = &mut self.graph.node_mut(node).kind else {
+                    return Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{name}') is not a column"
+                    )));
+                };
+                let condenser = match cascade.as_mut().and_then(|spec| spec.holdup.as_mut()) {
+                    Some(holdup) if model == "heat_balance" => match holdup.condenser.as_mut() {
+                        Some(condenser) => condenser,
+                        None => {
+                            return Err(SimError::InvalidCommand(format!(
+                                "{node:?} ('{name}') declares no condenser limit: its                                  condenser condenses all it is sent, whatever cools it, so                                  there is no cooling water to cut (docs/DESIGN.md §80.7) —                                  declare condenser_limit in its file"
+                            )))
+                        }
+                    },
+                    _ => {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{name}') holds no liquid under separation                              \"heat_balance\": only a column that holds liquid has a                              condenser that can run out (docs/DESIGN.md §80.7)"
+                        )))
+                    }
+                };
+                condenser.coolant_lost = !on;
+                Ok(())
+            }
             // One pumparound's duty (M60, docs/DESIGN.md §65.4).
             Command::SetPumparoundDuty {
                 node,
@@ -3991,7 +4020,8 @@ impl Engine {
             | Command::SetLoopReturnTemperature { node, .. }
             | Command::SetReboilerDuty { node, .. }
             | Command::SetTotalReflux { node, .. }
-            | Command::SetSlopDrain { node, .. } => {
+            | Command::SetSlopDrain { node, .. }
+            | Command::SetCondenserCooling { node, .. } => {
                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
             }
             Command::PuncturePipe { edge, .. } => {

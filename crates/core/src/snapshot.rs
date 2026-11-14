@@ -296,6 +296,20 @@ pub enum Command {
         node: NodeId,
         open: bool,
     },
+    /// Cut a column's condenser cooling water, or restore it (M75.4,
+    /// docs/DESIGN.md §80.7; Kister, *Distillation Operation*, §9.3 — loss
+    /// of coolant, the case that usually sets a column's relief load): from
+    /// the next tick on, cut (`on: false`), the condenser condenses nothing
+    /// and the column's pressure rises to its relief; restored, it condenses
+    /// as it did, its `UA` and coolant unchanged. Refused off a heat-balance
+    /// column that holds liquid, and on one whose condenser is not a limit
+    /// (`condenser_limit`), which condenses all it is sent whatever cools
+    /// it. Its consequence is `holdup.condenser.coolant_lost` on the
+    /// column's `kind`.
+    SetCondenserCooling {
+        node: NodeId,
+        on: bool,
+    },
 }
 
 /// A held reboiler duty a column declined (M66.2, docs/DESIGN.md §71.2).

@@ -288,7 +288,7 @@ struct Story {
 
 /// The condenser's coolant [K], as a frontend cannot set it: the test's
 /// own hand on the plant (no command moves it).
-fn set_coolant(engine: &mut Engine, coolant: f64) {
+pub(crate) fn set_coolant(engine: &mut Engine, coolant: f64) {
     let node = engine.graph.find_node("column").unwrap();
     if let NodeKind::Column {
         cascade: Some(spec),

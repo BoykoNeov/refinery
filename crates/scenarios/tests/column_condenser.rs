@@ -74,6 +74,7 @@ fn the_condenser_limit_is_read_as_written() {
             set_pressure: Pascal(1.8e5),
             design_pressure: Pascal(1.8e5 + 1.72e5),
             relief: None,
+            coolant_lost: false,
         })
     );
     // Absent, nothing.
