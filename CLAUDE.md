@@ -153,6 +153,7 @@ godot --path . res://demo/furnace.tscn       # the M39 furnace screen (keys on s
 godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [--plant=burnout]
 godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on screen)
 godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock] [--break-at=230]   # M76: break the plant, see it recover
+#   M77: [--save-at=120 --save-file=W:/temp/claude/<task>/pump.json], then [--continue --save-file=…] prints the same lines after 120 (F5/F9 save and load by hand)
 godot --path . res://demo/reactor.tscn       # the M57.5 reactor screen (keys on screen; 4 = M58 wall; 5/6 = M59 hydrogen)
 godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
 godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops, 7 M73 trays, 8 M74 holdup, 9 M75 overfill)
@@ -197,7 +198,7 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 ## Current milestone
 
 Work only on the current milestone unless asked. **Current: none open** — the user picks the next (C30's base side is still open; `docs/plans/` lists the review's plans).
-**Latest closed: M76 (2026-11-14)**: a failed tick is not the end of the session (plan `failed-tick-recovery.md`, slice 1) — the bridge keeps the scenario, every command that reached the engine and every failed tick, and replays them: `rewind`, `recover` (undo the last accepted command, back to just before it), `last_good_tick`; refused commands and failed ticks replayed too; the pump screen recovers (`--break-at=`); checkpoints (slice 2) asked first; every plant byte-identical (DESIGN §81). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+**Latest closed: M77 (2026-11-15)**: save and load (plan `save-and-load.md`, slice 1) — a save is the scenario source, the tick and M76's whole record (refused commands and failed ticks included) plus the screen's own note, and loading replays it: `save_json`, `load_save`, codes `bad_save`/`save_format`/`save_diverged`; the pump screen saves on F5 and loads on F9 under `user://saves/`, the menu has a Continue row; an hour of the slowest plant loads in 32.5 s, so slice 2 waits (F7); every plant byte-identical (DESIGN §82). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

@@ -32281,3 +32281,83 @@ and `recover` passes over it to the last accepted command. No shipped screen
 reached this — the pump screen recovers at once — but the guarantee is that a
 rewound plant is the same plant, and the map's commands (F8) will build on
 it.
+
+## 82. Save and load (M77) — a save is the plant file and its record, replayed
+
+**The problem** (`docs/plans/save-and-load.md`): nothing survived closing the
+window. The crude unit started from empty takes 24 minutes of plant time to
+settle; a player who quit lost it.
+
+**The idea** is §81's: the engine is deterministic, so the scenario source
+plus the record of everything else that moved the plant **is** the plant. A
+save is that, as JSON; loading it is a replay.
+
+```json
+{ "format": 1,
+  "engine": "0.1.0",
+  "frontend": { "scene": "res://demo/pump.tscn", "plant": "gaslock", … },
+  "scenario_source": "<the TOML text as loaded>",
+  "tick": 240,
+  "record": [ { "what": "command", "tick": 20, "json": "{…}", "accepted": true },
+              { "what": "command", "tick": 130, "json": "{…}", "accepted": false },
+              { "what": "failed_tick", "tick": 231 } ] }
+```
+
+- **The whole record, not the accepted commands.** The plan's shape,
+  `"commands": [[tick, json]]`, was written before M76 found that a command
+  the engine refused and a tick that failed both move the plant (§81). A save
+  of accepted commands only would load `flashing_rundown.toml` after a
+  refusal, or `vessel_pressure_control.toml` after a recovered failure, as a
+  different plant or as `save_diverged`. `SaveFile`/`SavedEntry` are their
+  own serde types, not derives on `Logged`, so the record's in-memory shape
+  can change without changing format 1. An entry's `tick` is its `at_tick`:
+  it acted before tick `tick + 1`.
+- **The source text, not its path**: a plant file edited after the save must
+  not change what the save means (gated by loading a save whose source was
+  changed by one number).
+- **`frontend`** is the screen's note, any JSON, kept verbatim and never read
+  by the bridge: which scene and plant to reopen, and the pump screen's
+  words for each command, so an undo after a load says "rundown_source to
+  110 °C" rather than the command's JSON. The bridge knows no paths; the
+  menu reads the note to choose the scene.
+- **Loading** (`Bridge::from_save`) reads `format` from the bare JSON first,
+  so another format is `save_format` whatever its shape; then the shape
+  (`bad_save`), then the record's order and that nothing in it is past the
+  save's tick (`bad_save` — `rebuild` relies on order). Then it is
+  `rewind`'s replay (`Bridge::rebuild`, `replay` made a function of the
+  source), so the loaded plant's record rebuilds itself and `recover` reaches
+  back past the save. A replay that does not retrace the save, or a plant
+  file that no longer loads, is `save_diverged`: that is what an engine
+  changed between saving and loading looks like, so the message names the
+  engine that made the save and this one. A different `engine` alone is not a
+  refusal. All or nothing, like `load_scenario`: a refused save leaves the
+  running plant as it was.
+- **Writing** is the scene's: only Godot can write `user://`, and the bridge
+  stays free of file I/O. `screen.gd`'s `write_save` writes beside the file
+  and moves it over, so a failed write never leaves half a save.
+
+**Cost** — loading takes as long as the ticks it replays: 10 minutes of
+`crude_unit_holdup` (6 000 ticks, a 9 kB save) load in 4.5 s, an hour in
+32.5 s (release, below-normal priority) — under the plan's one-minute trigger
+for slice 2, a save holding the engine's state (DEFERRED F7). The pump plants
+load in under 0.1 s.
+
+**Screens.** The pump screen: F5 saves to `user://saves/quick.json`, F9 loads
+it ("loading… replaying N ticks" drawn first; the plant stands still while it
+loads; a refused save leaves it running and says why). `--save-at=<tick>`,
+`--continue` and `--save-file=<path>` do the same in a recorded run: saved at
+120 and continued in a second process, the gas-lock plant prints the same 19
+lines after 120; broken at 230, recovered, saved at 240 and continued, the
+same. The trail of readings the screen drew is not saved. The menu heads its
+list with "Continue" when the quick save exists, naming its plant by the
+screen's own title, and squeezes its rows when the list would pass the
+window's foot.
+
+**Gates** (`crates/godot-ext/tests/bridge.rs`): a save loads as the same
+plant and ticks on the same with one more command; a refused command and a
+failed tick survive it, and undo after a load matches undo on the session
+saved; a save after a rewind holds only what survived; a command sent since
+the last tick is in it; the source in the save is the plant; every bad save
+by its code, the running plant untouched; a note that is not JSON refused;
+`save_json` before a load is `not_loaded`. Mutation pass, 12 mutants, 12
+killed.

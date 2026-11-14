@@ -59,6 +59,10 @@ all: replay.
 
 ### 2.2 No save, no load — `plans/save-and-load.md`
 
+**First cut done by M77 (2026-11-15)**: the pump screen saves (F5) and
+loads (F9), and the menu continues from the quick save; the other screens
+follow (DEFERRED F9).
+
 Nothing can be kept between sessions. A cold start of the crude unit takes
 24 minutes of plant time; a player who quits loses it. Same mechanism as 2.1
 (the plant's file plus the commands sent, replayed), then a real stored

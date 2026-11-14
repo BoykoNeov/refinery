@@ -11518,3 +11518,36 @@ the ticks cost: 0.7 ms a tick on the slowest plant.
 recovery on the other screens (F8; the map's with its own plan's slice 2).
 
 **M76 CLOSED** (2026-11-14; `docs/MILESTONES.md`).
+
+## M77 — save and load: a save is the plant file and its record, replayed; plan `docs/plans/save-and-load.md` slice 1; opened on a decision; CLOSED 2026-11-15
+
+Asked as "what is next" after M76 (2026-11-15): the user took the
+recommendation, plan 4 of the 2026-11-12 review, and the recommended answer
+to each of its questions — saves under `user://` (Godot's folder for the game
+in the user's profile), and the quick save on the **pump screen**, not the
+map the plan named: the map sends no commands, so a save of it would hold
+nothing but a tick count. Nothing survived closing the window; a cold start
+of the crude unit takes 24 minutes of plant time.
+
+**Done** (DESIGN §82): `save_json(frontend)` and `load_save(json)` on
+`Session` and the binding. A save is the scenario source, the tick and M76's
+whole record — every command that reached the engine with its answer, and
+every failed tick — not the plan's accepted commands only, which predate
+M76's two findings and would load a vapour plant, or one recovered after a
+failure, as `save_diverged` or as a different plant. The screen's own note
+rides along verbatim. Codes `bad_save`, `save_format`, `save_diverged` (its
+message names the engine that made the save and this one); a refused save
+leaves the running plant as it was. The pump screen saves on F5 and loads on
+F9, `--save-at=` / `--continue` / `--save-file=` for recorded runs; the menu
+heads its list with a Continue row when the quick save exists, and draws its
+rows closer when that would push the last off the window. 7 new gates; 12
+mutants, 12 killed; every plant byte-identical, 72 of 72 on both fidelities;
+the pump screen's three recorded runs print what they did before.
+
+**Measured**: loading 10 minutes of `crude_unit_holdup` takes 4.5 s, an hour
+32.5 s (release) — under the plan's one-minute trigger for slice 2.
+
+**Open**: slice 2, a save that holds the state itself (asked first; DEFERRED
+F7); saves on the other screens (F9).
+
+**M77 CLOSED** (2026-11-15; `docs/MILESTONES.md`).

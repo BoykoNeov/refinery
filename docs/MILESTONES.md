@@ -12,6 +12,32 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M77 is CLOSED (2026-11-15): save and load — a save is the plant file and its
+record, replayed (`docs/plans/save-and-load.md`, slice 1).** Asked as "what is
+next" after M76; the user took the recommendation (plan 4 of the 2026-11-12
+review) and the recommended answer to each question: saves under `user://`,
+the quick save on the pump screen (the map sends no commands).
+- **The bridge** (DESIGN §82): `save_json(frontend)` writes the scenario
+  source, the tick, the screen's note verbatim and M76's whole record;
+  `load_save` rebuilds it by `rewind`'s replay, all or nothing. Codes
+  `bad_save`, `save_format`, `save_diverged` (naming the engine that made
+  the save and this one). Two forwarding lines in the binding.
+- **One correction to the plan**: it saved accepted commands only, written
+  before M76 found that refused commands and failed ticks move the plant
+  too; a save holds the whole record, its own serde types so format 1
+  outlives the record's in-memory shape.
+- **The pump screen** saves on F5 and loads on F9 (`--save-at=`,
+  `--continue`, `--save-file=` for recorded runs: the same lines after the
+  save in a second process, also after a recovered failure); the menu's
+  Continue row reopens it on the quick save, the list squeezed to fit.
+- 7 new gates, 12 mutants (12 killed); every plant byte-identical, 72 of 72
+  on both fidelities; the pump screen's three recorded runs unchanged.
+  Loading an hour of `crude_unit_holdup` takes 32.5 s (10 minutes, 4.5 s):
+  under the plan's one-minute trigger. **Open**: slice 2, a save holding the
+  state itself (asked first; F7); saves on the other screens (F9).
+
+---
+
 **M76 is CLOSED (2026-11-14): a failed tick is not the end of the session —
 rewind by replay, in the bridge (`docs/plans/failed-tick-recovery.md`, slice
 1).** Asked as "what is next" after M75; the user chose plan 3 of the

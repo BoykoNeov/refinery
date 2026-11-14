@@ -1,4 +1,4 @@
-# Plan: save and load
+# Plan: save and load — slice 1 DONE 2026-11-15 (M77)
 
 Do `failed-tick-recovery.md` slice 1 first: this plan reuses its command log.
 
@@ -8,7 +8,26 @@ Nothing survives closing the window. The crude unit started from empty takes
 24 minutes of plant time to settle (`scenarios/crude_unit_empty.toml`); a
 player who quits loses it.
 
-## Slice 1 — a save is the plant file plus the commands (no engine change)
+## Slice 1 — a save is the plant file plus the commands (no engine change) — DONE 2026-11-15
+
+**Done as M77, with three changes to what follows** (DESIGN §82):
+
+- **The record, not the accepted commands.** The shape below predates M76's
+  two findings: a command the engine refused and a tick that failed both
+  move the plant, so a save holds the whole record — `{"what":"command",
+  "tick", "json", "accepted"}` and `{"what":"failed_tick", "tick"}` — or a
+  vapour plant, or one recovered after a failure, loads wrong.
+- **A `frontend` note, not a `scenario` path.** The bridge knows no paths;
+  `save_json(frontend)` takes the screen's own JSON (scene, plant, its words
+  for each command) and keeps it verbatim. The menu reads it to reopen the
+  screen.
+- **The pump screen, not the map** — the user's choice, taking the
+  recommendation: the map sends no commands, so its save would hold only a
+  tick count. A source that no longer loads is `save_diverged` too.
+
+Measured (release): 10 minutes of `crude_unit_holdup` load in 4.5 s, an hour
+in 32.5 s — under the trigger below. Saves live under `user://` (the user's
+choice, the recommended one).
 
 The engine is deterministic, so *the scenario source and the log of accepted
 commands with their ticks* **is** the state. A save file is that, as JSON:
@@ -25,7 +44,7 @@ commands with their ticks* **is** the state. A save file is that, as JSON:
 Keep the source text in the file, not only its path: a plant file edited
 after the save must not change what the save means.
 
-- [ ] `Session::save_json() -> String` and
+- [x] `Session::save_json() -> String` and
       `Session::load_save(json: &str) -> String` in
       `crates/godot-ext/src/bridge.rs`. Loading builds the engine from
       `scenario_source` and replays to `tick` exactly as `rewind` does.
@@ -34,7 +53,7 @@ after the save must not change what the save means.
       engine now refuses or a tick that now fails (`save_diverged` — this is
       what an engine change between saving and loading looks like; say so in
       the message and name the tick).
-- [ ] Tests in `crates/godot-ext/tests/bridge.rs`, written first:
+- [x] Tests in `crates/godot-ext/tests/bridge.rs`, written first:
   1. round trip: run with commands, `save_json`, load it into a fresh
      session, the two `snapshot_json` strings are identical, and both stay
      identical for 500 more ticks with one more command sent to both.
@@ -42,11 +61,11 @@ after the save must not change what the save means.
   3. each refusal above, by its code.
   4. a save with the scenario's source altered by one number loads as the
      altered plant (the file is the truth, not the path).
-- [ ] `binding.rs`: `save_json`, `load_save`. The scene writes the string to
+- [x] `binding.rs`: `save_json`, `load_save`. The scene writes the string to
       `user://saves/<name>.json` with `FileAccess` (only Godot can write
       `user://`; the bridge stays free of file I/O, as it is for loading).
       Godot-feature clippy.
-- [ ] `demo/map.gd`: F5 saves to `user://saves/quick.json`, F9 loads it and
+- [x] (the pump screen instead — see above) `demo/map.gd`: F5 saves to `user://saves/quick.json`, F9 loads it and
       shows "loading… replaying N ticks". The menu gets one row, "Continue
       (quick save)", shown only when the file exists.
 
