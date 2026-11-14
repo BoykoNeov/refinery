@@ -48,6 +48,15 @@
 #               the bottoms the base's, the reflux as set. T/G hold the
 #               reboiler higher or lower, Y frees it to hold the base's level
 #               itself. A drum or base run dry or full is shown, not refused.
+#   overfill    scenarios/crude_unit_overfill.toml — that holding plant with
+#               a condenser that can run out, an operator's drain on its drum
+#               and a relief valve on its top piped to a flare (M75, §80). C
+#               cuts the condenser's cooling water (the case the valve is
+#               sized for) and restores it; X puts the column on total reflux
+#               and takes it off; V shuts the drum's drain to slop or opens
+#               it. Past its condenser the column's pressure rises; at 3.52
+#               bar the relief lifts and vents to the flare; at 4.05 bar it is
+#               held with an alarm.
 #
 # Same rule as every screen: this script computes nothing physical. Every
 # number it draws is a snapshot field — the stage temperatures and vapour, the
@@ -58,7 +67,7 @@
 # to MW (CLAUDE.md rule 4).
 #
 # Interactive:  godot --path . res://demo/column.tscn
-#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 switch plants,
+#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 switch plants,
 #               Esc goes to the menu, F11 full screen)
 # Recorded:     godot --headless --path . res://demo/column.tscn --quit-after 20000 -- --auto [--plant=hot]
 #               ...runs that plant's scripted timeline (TIMELINES) and prints a
@@ -309,6 +318,45 @@ const PLANTS := {
 		"reboiler_mw": [0.0, 215.0],
 		"range_ref": "§79.8, §79.13",
 	},
+	"overfill":
+	{
+		"scenario": "res://scenarios/crude_unit_overfill.toml",
+		"title": "The holding plant overfilled: its condenser can run out, its relief vents to the flare",
+		"furnace": "furnace",
+		"feed_pipe": "transfer_line",
+		"draws":
+		[
+			["naphtha_draw", "naphtha"],
+			["kerosene_draw", "kerosene"],
+			["diesel_draw", "diesel"],
+			["gas_oil_draw", "gas oil"],
+			["residue_draw", "residue"],
+		],
+		# Measured on the screen (M75.4, §80.7): 1.2–1.3 ms a tick at rest,
+		# 3–11 ms while the pressure moves, 28.7 ms the first 30 s after the
+		# cooling is cut (the pressure solve's trials) — two ticks a frame keep
+		# that worst frame near 60 ms, the rest under 25.
+		"ticks_per_frame": 2,
+		# The reboiler on keys (T/G, Y): it starts held, the distillate and
+		# the bottoms on the drum's and base's levels (scheme B, §79.1); freed,
+		# the reboiler holds the base's level itself (A).
+		"reboiler": true,
+		# Its condenser a limit, its drain and its relief (M75): C, X and V.
+		"overhead": true,
+		"furnace_step_mw": 5.0,
+		"furnace_mw": [0.0, 40.0],
+		"reflux": [0.5, 15.0],
+		"loop_flow": [0.0, 2.0],
+		"loop_return_k": [-60.0, 60.0],
+		# The keys' range, the holding plant's box (M74.4, §79.8), measured
+		# again with the pressure moving (M75.4, §80.7): its 48 corners each
+		# with the cooling cut or total reflux, and 48 half-hour walks of a
+		# random key a minute — cooling, total reflux and the drain among them —
+		# every one ran once the pressure solve stepped back from a trial the
+		# column's step could not settle.
+		"reboiler_mw": [0.0, 215.0],
+		"range_ref": "§79.8, §80.7",
+	},
 }
 
 ## Scripted timelines for the recorded runs, in ticks. Each is replayed with the
@@ -432,11 +480,28 @@ const AUTO_HOLDUP := {
 	9000: ["reflux_0.5"],
 	12000: ["quit"],
 }
+## overfill (M75.4, §80.7), the holding plant with a condenser that can run
+## out and a relief to the flare: the drum's drain shut at 600 changes
+## nothing while the drum holds its level; the cooling cut at 1 200 sends the
+## pressure up from 1.8 bar, the relief lifting about a minute on and venting
+## to the flare, the pressure held inside the valve's band; restored at 4 200,
+## the condenser takes it back to 1.8 bar and the relief shuts; total reflux
+## at 6 000 overloads the condenser more slowly — the relief lifts about
+## seven and a half minutes on — and taken off at 12 000, the pressure falls
+## back.
+const AUTO_OVERFILL := {
+	600: ["drain_shut"],
+	1200: ["cooling_cut"],
+	4200: ["cooling_back"],
+	6000: ["total_reflux_on"],
+	12000: ["total_reflux_off"],
+	15000: ["quit"],
+}
 ## The reboiler key pressed every `[2]` ticks from `[0]` to `[1]` on a timeline.
 const WALKS := {"cold": [510, 2390, 10]}
 const TIMELINES := {
 	"crude": AUTO_CRUDE, "hot": AUTO_HOT, "overheated": AUTO_OVERHEATED, "stripped": AUTO_STRIPPED, "cold": AUTO_COLD,
-	"loops": AUTO_LOOPS, "trays": AUTO_TRAYS, "holdup": AUTO_HOLDUP
+	"loops": AUTO_LOOPS, "trays": AUTO_TRAYS, "holdup": AUTO_HOLDUP, "overfill": AUTO_OVERFILL
 }
 const AUTO_SHOT_TICKS := {
 	"crude": [600, 1500, 2400, 3000],
@@ -447,6 +512,7 @@ const AUTO_SHOT_TICKS := {
 	"loops": [1500, 2400, 3300, 3900],
 	"trays": [1500, 2400, 3300, 3900, 4500, 4800],
 	"holdup": [1200, 3900, 6600, 9600, 11400],
+	"overfill": [1800, 2400, 4800, 9600, 11400, 13800],
 }
 const PRINT_EVERY := 300
 
@@ -514,7 +580,7 @@ func _ready() -> void:
 	plant_key = Screen.chosen_plant(get_tree(), plant_key)
 	Screen.fit(get_window())
 	if not PLANTS.has(plant_key):
-		_halt("no plant '%s' (crude | hot | overheated | stripped | cold | loops | trays | holdup)" % plant_key)
+		_halt("no plant '%s' (crude | hot | overheated | stripped | cold | loops | trays | holdup | overfill)" % plant_key)
 		return
 	_load(plant_key)
 
@@ -658,6 +724,8 @@ func _input(event: InputEvent) -> void:
 			_load("trays")
 		KEY_8:
 			_load("holdup")
+		KEY_9:
+			_load("overfill")
 		KEY_ESCAPE:
 			Screen.to_menu(get_tree())
 			return
@@ -693,6 +761,12 @@ func _input(event: InputEvent) -> void:
 			_do("reboiler_down")
 		KEY_Y:
 			_do("reboiler_free")
+		KEY_C:
+			_do("cooling_back" if _coolant_lost() else "cooling_cut")
+		KEY_X:
+			_do("total_reflux_off" if _total_reflux() else "total_reflux_on")
+		KEY_V:
+			_do("drain_open" if _drain_shut() else "drain_shut")
 	queue_redraw()
 
 
@@ -817,6 +891,20 @@ func _do(action: String) -> void:
 			if _holds_liquid():
 				freed = "free the reboiler: it holds the base's level, the bottoms at its share of the feed"
 			_send(freed, {"cmd": "set_reboiler_duty", "node": column_id, "duty": null})
+		# The overhead's keys (M75.4): on a plant whose condenser is a limit;
+		# elsewhere the engine's own refusal says why.
+		"cooling_cut":
+			_send("cut the condenser's cooling water: it condenses nothing", {"cmd": "set_condenser_cooling", "node": column_id, "on": false})
+		"cooling_back":
+			_send("restore the condenser's cooling water", {"cmd": "set_condenser_cooling", "node": column_id, "on": true})
+		"total_reflux_on":
+			_send("total reflux: the distillate shut, all the drum's liquid back to the column", {"cmd": "set_total_reflux", "node": column_id, "on": true})
+		"total_reflux_off":
+			_send("off total reflux: the products open again", {"cmd": "set_total_reflux", "node": column_id, "on": false})
+		"drain_shut":
+			_send("shut the drum's drain to slop: past full it backs up into the condenser", {"cmd": "set_slop_drain", "node": column_id, "open": false})
+		"drain_open":
+			_send("open the drum's drain to slop", {"cmd": "set_slop_drain", "node": column_id, "open": true})
 
 
 ## On a plant whose reboiler is on a key, while it is held: the presses past
@@ -1418,6 +1506,41 @@ func _holdup() -> Dictionary:
 	return _operation().get("holdup", {})
 
 
+## The column's condenser as a limit (M75), as its kind declares it — empty
+## on a column without one.
+func _condenser_declared() -> Dictionary:
+	if not _holds_liquid():
+		return {}
+	var declared = _cascade()["holdup"].get("condenser")
+	return declared if declared is Dictionary else {}
+
+
+## The condenser as it ran this tick (M75.1): its pressure, capacity and
+## flags — empty before the first tick and on a column without one.
+func _condenser_ran() -> Dictionary:
+	var ran = _holdup().get("condenser")
+	return ran if ran is Dictionary else {}
+
+
+## The relief valve as it ran this tick (M75.3): its opening, flow and
+## temperature — empty where there is none, and on the settling first tick.
+func _relief_ran() -> Dictionary:
+	var ran = _operation().get("relief")
+	return ran if ran is Dictionary else {}
+
+
+func _coolant_lost() -> bool:
+	return bool(_condenser_declared().get("coolant_lost", false))
+
+
+func _total_reflux() -> bool:
+	return _holds_liquid() and bool(_cascade()["holdup"].get("total_reflux", false))
+
+
+func _drain_shut() -> bool:
+	return _holds_liquid() and bool(_cascade()["holdup"].get("slop_drain_shut", false))
+
+
 ## The liquid the column holds [kg]: its trays', its base's and its drum's.
 ## Zero before the first tick fills it.
 func _held_kg() -> float:
@@ -1574,6 +1697,14 @@ func _readout(tick: int) -> String:
 			float(h["drum_level"]) * 100.0, str(h["drum_limit"]), float(h["base_level"]) * 100.0, str(h["base_limit"]),
 			_loop_max_words(h), _held_kg() / 1000.0
 		]
+		var ran := _condenser_ran()
+		if not ran.is_empty():
+			line += "  top=%.4f bar  capacity=%.2f MW%s  relief %.1f%% %.2f kg/s%s%s%s%s" % [
+				float(ran["pressure_pa"]) / 1.0e5, float(ran["capacity_w"]) / 1.0e6, " COOLING LOST" if _coolant_lost() else "",
+				float(_relief_ran().get("opening", 0.0)) * 100.0, float(_relief_ran().get("flow_kg_s", 0.0)),
+				" AT CEILING" if bool(ran.get("at_ceiling", false)) else "", " total reflux" if _total_reflux() else "",
+				" drain shut" if _drain_shut() else "", " backed up %.0f%%" % (float(ran.get("flooded_share", 0.0)) * 100.0) if float(ran.get("flooded_share", 0.0)) > 0.0 else ""
+			]
 	elif PLANTS[plant_key].has("reboiler"):
 		if not _held():
 			line += "  reboiler free"
@@ -1659,6 +1790,7 @@ func _draw() -> void:
 	)
 
 	_draw_furnace()
+	_draw_overhead()
 	_draw_column()
 	_draw_trays()
 	_draw_products()
@@ -1669,7 +1801,9 @@ func _draw() -> void:
 		get_viewport_rect().size.x - 60, 15, 2, BAD if message_bad else GOOD
 	)
 	var keys := "Up/Down furnace   W/S reflux   E/D pumparounds   Space pause   [ ] speed"
-	if _holds_liquid():
+	if PLANTS[plant_key].has("overhead"):
+		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   T/G reboiler   Y free it   C cooling   X total reflux   V drain   Space pause   [ ] speed"
+	elif _holds_liquid():
 		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   T/G reboiler   Y free it   Space pause   [ ] speed"
 	elif PLANTS[plant_key].has("reboiler"):
 		keys = "Up/Down furnace   R/F steam   E/D pumparounds   T/G reboiler   Y free it   Space pause   [ ] speed"
@@ -1682,7 +1816,7 @@ func _draw() -> void:
 	_text(Vector2(30, 600), keys, DIM, 16, legend_width)
 	_text(
 		Vector2(30, 624),
-		"1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup   Esc menu",
+		"1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup   9 overfill   Esc menu",
 		DIM, 16, legend_width
 	)
 	if halted != "":
@@ -1690,6 +1824,70 @@ func _draw() -> void:
 			ThemeDB.fallback_font, Vector2(30, 90), "HALTED — %s" % halted, HORIZONTAL_ALIGNMENT_LEFT,
 			get_viewport_rect().size.x - 60, 15, 3, BAD
 		)
+
+
+## The column's overhead where its condenser is a limit (M75, §80): a relief
+## valve on its top, red while it is open, with its line to a flare whose
+## flame is sized by what it vents. Its numbers are the panel's
+## (`_draw_overhead_panel`); nothing drawn on a column without one.
+func _draw_overhead() -> void:
+	var ran := _condenser_ran()
+	if _condenser_declared().is_empty() or ran.is_empty():
+		return
+	var relief := _relief_ran()
+	var venting := float(relief.get("flow_kg_s", 0.0))
+	# The valve on the column's top, its line left to the flare.
+	var valve := COLUMN_RECT.position + Vector2(14, -14)
+	var stack := Vector2(290, 150)
+	draw_line(COLUMN_RECT.position + Vector2(14, 0), valve, PIPE, 3.0)
+	var open := float(relief.get("opening", 0.0))
+	draw_colored_polygon(PackedVector2Array([valve + Vector2(-7, -8), valve + Vector2(7, -8), valve + Vector2(0, 2)]), BAD if open > 0.0 else SHELL)
+	draw_polyline(PackedVector2Array([valve + Vector2(0, -8), valve + Vector2(0, -20), Vector2(stack.x, valve.y - 20), stack]), BAD if venting > 0.0 else PIPE, 3.0)
+	draw_line(stack, stack + Vector2(0, 60), SHELL, 5.0)
+	if venting > 0.0:
+		var size := 6.0 + 26.0 * clampf(venting / 80.0, 0.0, 1.0)
+		draw_colored_polygon(PackedVector2Array([stack + Vector2(-size * 0.4, 0), stack + Vector2(size * 0.4, 0), stack + Vector2(0, -size * 1.6)]), FLAME)
+	_text(stack + Vector2(-26, 78), "flare", DIM, 12)
+
+
+## The overhead's lines on the panel (M75, §80), in place of the furnace's
+## (the furnace's numbers stand beside it on the left): the pressure against
+## the set and its alarm, what the condenser can take, the relief, and the
+## operator's three handles. Returns the next line's y.
+func _draw_overhead_panel(y: float) -> float:
+	var ran := _condenser_ran()
+	_text(Vector2(PANEL_X, y), "OVERHEAD", DIM)
+	y += 24
+	if ran.is_empty():
+		return y
+	var relief := _relief_ran()
+	var venting := float(relief.get("flow_kg_s", 0.0))
+	var state := ""
+	var color := INK
+	if bool(ran.get("at_ceiling", false)):
+		state = "  HELD: ALARM"
+		color = BAD
+	elif bool(ran.get("at_design", false)):
+		state = "  RELIEF LIFTING"
+		color = BAD
+	elif bool(ran.get("at_capacity", false)):
+		state = "  PRESSURE HIGH"
+		color = WARN
+	_text(Vector2(PANEL_X, y), "top %.2f bar (set %.2f)%s" % [float(ran["pressure_pa"]) / 1.0e5, float(ran["set_pressure_pa"]) / 1.0e5, state], color)
+	y += 20
+	var lost := _coolant_lost()
+	_text(Vector2(PANEL_X, y), "condenser can take %.1f MW%s" % [float(ran["capacity_w"]) / 1.0e6, ": COOLING LOST" if lost else ""], BAD if lost else INK, 14)
+	y += 18
+	_text(Vector2(PANEL_X, y), "relief %.0f %% open, %.1f kg/s to the flare" % [float(relief.get("opening", 0.0)) * 100.0, venting], BAD if venting > 0.0 else INK, 14)
+	y += 18
+	var flooded := float(ran.get("flooded_share", 0.0))
+	_text(
+		Vector2(PANEL_X, y),
+		"drain %s   total reflux %s%s" % ["SHUT" if _drain_shut() else "open", "ON" if _total_reflux() else "off", "   condenser %.0f %% backed up" % (flooded * 100.0) if flooded > 0.0 else ""],
+		WARN if _drain_shut() or _total_reflux() or flooded > 0.0 else INK,
+		14
+	)
+	return y
 
 
 ## The furnace: flames sized by its duty, the coil coloured toward its tube limit.
@@ -2062,13 +2260,16 @@ func _draw_panel() -> void:
 			y += 18
 
 	y += 18
-	_text(Vector2(PANEL_X, y), "FURNACE", DIM)
-	y += 24
-	_text(Vector2(PANEL_X, y), "fired          %6.2f MW" % (_duty_w() / 1.0e6), FLAME if _duty_w() > 0.0 else INK)
-	y += 22
-	_text(Vector2(PANEL_X, y), "up the stack   %6.2f MW" % (float(_node(furnace_id).get("flue_loss_w", 0.0)) / 1.0e6), INK)
-	y += 22
-	_text(Vector2(PANEL_X, y), "coil           %s" % _c(_coil_k()), INK)
+	if PLANTS[plant_key].has("overhead"):
+		y = _draw_overhead_panel(y)
+	else:
+		_text(Vector2(PANEL_X, y), "FURNACE", DIM)
+		y += 24
+		_text(Vector2(PANEL_X, y), "fired          %6.2f MW" % (_duty_w() / 1.0e6), FLAME if _duty_w() > 0.0 else INK)
+		y += 22
+		_text(Vector2(PANEL_X, y), "up the stack   %6.2f MW" % (float(_node(furnace_id).get("flue_loss_w", 0.0)) / 1.0e6), INK)
+		y += 22
+		_text(Vector2(PANEL_X, y), "coil           %s" % _c(_coil_k()), INK)
 
 	y += 40
 	_text(Vector2(PANEL_X, y), "SAFE RANGE OF THE KEYS", DIM)

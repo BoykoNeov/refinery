@@ -1102,3 +1102,117 @@ fn slow_the_holdup_reboiler_held_at_nothing_runs_at_its_worst_corner() {
         "held back at 86 MW, a stage still not boiling: {back:?}"
     );
 }
+
+impl Screen {
+    /// The overfill plant (M75.4): the holding plant with its condenser a
+    /// limit, its drain and its relief to the flare — the same names.
+    fn overfill() -> Self {
+        Screen::load(
+            "crude_unit_overfill.toml",
+            "furnace",
+            "transfer_line",
+            &[
+                "naphtha_draw",
+                "kerosene_draw",
+                "diesel_draw",
+                "gas_oil_draw",
+                "residue_draw",
+            ],
+        )
+    }
+
+    /// The condenser's reading this tick (M75.1).
+    fn condenser(&self) -> Value {
+        self.holdup_reading()["condenser"].clone()
+    }
+
+    /// The relief's vent this tick [kg/s] (M75.3).
+    fn venting(&self) -> f64 {
+        self.column_node()["column_operation"]["relief"]["flow_kg_s"]
+            .as_f64()
+            .unwrap()
+    }
+}
+
+/// **The overfill plant** (`AUTO_OVERFILL`, M75.4, DESIGN §80.7): the drain
+/// shut at 600 changes nothing while the drum holds its level; the cooling
+/// cut at 1 200 sends the pressure up, the relief lifting about a minute on
+/// and holding it inside its band, never at the ceiling, the flare taking
+/// the vent; restored at 4 200, the column is back at its set 1.8 bar and the
+/// relief shut by 6 000; total reflux at 6 000 lifts the relief about
+/// seven and a half minutes on (10 515 measured — the column the cooling
+/// story left behind; from rest it lifts at 349 s); taken off at 12 000, the
+/// pressure falls back below the relief's set.
+#[test]
+fn slow_the_overfill_plant_timeline() {
+    let mut screen = Screen::overfill();
+    let column = screen.column;
+    let pressure = |screen: &Screen| screen.condenser()["pressure_pa"].as_f64().unwrap();
+    let flag = |screen: &Screen, key: &str| screen.condenser()[key].as_bool().unwrap_or(false);
+    screen.run_to(600);
+    assert_eq!(pressure(&screen), 1.8e5);
+    screen.send(&format!(
+        r#"{{"cmd":"set_slop_drain","node":{column},"open":false}}"#
+    ));
+    screen.run_to(1200);
+    assert_eq!(pressure(&screen), 1.8e5, "the shut drain changes nothing");
+    assert_eq!(screen.holdup_reading()["drain_shut"], true);
+    assert_eq!(screen.holdup_reading()["drum_limit"], "normal");
+
+    screen.send(&format!(
+        r#"{{"cmd":"set_condenser_cooling","node":{column},"on":false}}"#
+    ));
+    let (mut lifted, mut peak, mut vent_max) = (None, 0.0_f64, 0.0_f64);
+    for tick in 1201..=4200 {
+        screen.run_to(tick);
+        assert!(!flag(&screen, "at_ceiling"), "tick {tick}");
+        if flag(&screen, "at_design") && lifted.is_none() {
+            lifted = Some(tick);
+        }
+        peak = peak.max(pressure(&screen));
+        vent_max = vent_max.max(screen.venting());
+    }
+    println!("OVERFILL cooling: lifted {lifted:?}, peak {peak}, vent {vent_max}");
+    let lifted = lifted.expect("the relief lifted");
+    assert!((1700..1900).contains(&lifted), "{lifted}");
+    assert!(peak > 3.52e5 && peak < 3.77e5, "{peak}");
+    assert!(vent_max > 50.0, "{vent_max}");
+
+    screen.send(&format!(
+        r#"{{"cmd":"set_condenser_cooling","node":{column},"on":true}}"#
+    ));
+    screen.run_to(6000);
+    assert_eq!(pressure(&screen), 1.8e5, "back at its set");
+    assert_eq!(screen.venting(), 0.0);
+
+    screen.send(&format!(
+        r#"{{"cmd":"set_total_reflux","node":{column},"on":true}}"#
+    ));
+    let mut lifted = None;
+    for tick in 6001..=12000 {
+        screen.run_to(tick);
+        if flag(&screen, "at_design") && lifted.is_none() {
+            lifted = Some(tick);
+        }
+    }
+    println!(
+        "OVERFILL total reflux: lifted {lifted:?}, at 12000 {} Pa, vent {}",
+        pressure(&screen),
+        screen.venting()
+    );
+    let lifted = lifted.expect("the relief lifted on total reflux");
+    assert!((10000..11000).contains(&lifted), "{lifted}");
+    assert!(screen.venting() > 0.0);
+
+    screen.send(&format!(
+        r#"{{"cmd":"set_total_reflux","node":{column},"on":false}}"#
+    ));
+    screen.run_to(15000);
+    println!(
+        "OVERFILL after: {} Pa, vent {}",
+        pressure(&screen),
+        screen.venting()
+    );
+    assert!(pressure(&screen) < 3.52e5, "{}", pressure(&screen));
+    assert_eq!(screen.venting(), 0.0);
+}
