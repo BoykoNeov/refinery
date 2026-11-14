@@ -1,4 +1,4 @@
-# Plan: a failed tick is not the end of the session
+# Plan: a failed tick is not the end of the session — slice 1 DONE 2026-11-14 (M76)
 
 ## The problem, measured
 
@@ -25,31 +25,53 @@ state at any past tick can be rebuilt from **the file and a log of the
 commands that were accepted, each with the tick it was sent at**. No engine
 change is needed for a first version.
 
-## Slice 1 — rewind by replay, in the bridge (no engine change, no decision)
+## Slice 1 — rewind by replay, in the bridge (no engine change, no decision) — DONE 2026-11-14
+
+**What changed from the text below while doing it** (DESIGN §81):
+
+- **`recover` goes back to just before the last accepted command**, however
+  many good ticks ran since — the user's choice (2026-11-14) when asked about
+  a command whose harm shows ticks later (1 GW into the knockout drum fails
+  four ticks on), which "back one tick, undo what was sent since" leaves in
+  place to fail again. Called again it undoes the one before; with none left,
+  `nothing_to_undo`.
+- **A refused command IS recorded and replayed.** `Engine::apply` notes that a
+  command arrived before judging it, which changes the next tick on a vapour
+  plant; leaving it out rebuilt a different plant (test 4, seen to fail).
+  Only what the bridge refuses (bad JSON, unknown id) is left out.
+- The record and the replay live in `Bridge` (Rust `Result` API);
+  `Session` wraps them as JSON. New codes `bad_rewind`, `nothing_to_undo`,
+  `replay_diverged`.
+- **Screens: the pump screen, not the map.** The map sends no commands yet,
+  so it has nothing to undo; `plant-map-screen.md` slice 2 wires it. The pump
+  screen's gas-lock plant fails after 73 presses of D (3.15 K); `--break-at=`
+  on an `--auto` run sends that value to see it. No "rewinding…" line: a
+  rewind measured 0.7 ms a tick on the slowest plant.
+
 
 All in `crates/godot-ext/src/bridge.rs` (pure Rust, tested by `cargo test`)
 plus one forwarding line each in `binding.rs`.
 
-- [ ] `Session` keeps: the scenario source text it loaded, and
+- [x] `Session` keeps: the scenario source text it loaded, and
       `Vec<(u64 /*tick index when applied*/, String /*command JSON*/)>` of
       every command the engine **accepted** (a refused command is not
       logged). Cleared on load.
-- [ ] `Session::rewind(to_tick: i64) -> String` (JSON `null` or
+- [x] `Session::rewind(to_tick: i64) -> String` (JSON `null` or
       `{code,message}` like every other call): rebuild the engine from the
       kept source; tick it to `to_tick`, applying each logged command when
       the tick index equals the tick it was logged at; drop log entries
       logged at `to_tick` or later. Refuse `to_tick` greater than the
       current tick index or negative with a new code `bad_rewind`.
-- [ ] `Session::last_good_tick() -> i64`: the tick index after the last
+- [x] `Session::last_good_tick() -> i64`: the tick index after the last
       successful tick (it is just the engine's tick index while nothing has
       failed; keep it in a field so it survives a failed tick).
-- [ ] `Session::recover() -> String`: `rewind(last_good_tick)` minus the
+- [x] `Session::recover() -> String`: `rewind(last_good_tick)` minus the
       commands logged since the tick before it, i.e. rewind to the last good
       tick and **drop the commands sent after the last successful tick**
       (they are what broke it). Returns JSON
       `{"rewound_to": N, "dropped": ["<command json>", …]}` so the screen can
       say what it undid.
-- [ ] Tests in `crates/godot-ext/tests/bridge.rs` (same style as its
+- [x] Tests in `crates/godot-ext/tests/bridge.rs` (same style as its
       neighbours), each written first and seen to fail:
   1. replay is exact: run plant A 300 ticks with three commands along the
      way, take `snapshot_json`; `rewind(300)` on the same session gives the
@@ -69,11 +91,11 @@ plus one forwarding line each in `binding.rs`.
   4. a refused command is not logged (send a valve command to a tank;
      `rewind` after it replays identically).
   5. `rewind` before `load` → `not_loaded`.
-- [ ] Mutation pass per CLAUDE.md on the new bridge code (targeted:
+- [x] Mutation pass per CLAUDE.md on the new bridge code (targeted:
       `cargo test -p refinery-godot-ext --test suite bridge::`).
-- [ ] `binding.rs`: `rewind`, `recover`, `last_good_tick` — one line each.
+- [x] `binding.rs`: `rewind`, `recover`, `last_good_tick` — one line each.
       Run the godot-feature clippy (CLAUDE.md) and record it.
-- [ ] One screen first: `demo/map.gd`. On a failed tick, instead of
+- [x] (the pump screen instead — see above) One screen first: `demo/map.gd`. On a failed tick, instead of
       `_halt`, call `sim.recover()`, show
       "the plant could not be solved — put back to t = … ; undone: …" with
       the engine's message under it, and carry on. Then the pump screen.

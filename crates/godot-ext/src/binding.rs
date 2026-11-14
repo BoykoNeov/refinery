@@ -151,4 +151,25 @@ impl RefinerySim {
     fn edge_names_json(&self) -> GString {
         GString::from(&self.session.edge_names_json())
     }
+
+    /// Put the plant back as tick `to_tick` left it, by replaying the run
+    /// (M76). `null`, or `{code, message}`. Takes as long as the ticks took.
+    #[func]
+    fn rewind(&mut self, to_tick: i64) -> GString {
+        GString::from(&self.session.rewind(to_tick))
+    }
+
+    /// Undo the last accepted command, back to just before it was sent (M76):
+    /// `{rewound_to, dropped}`, or `{code, message}` — `nothing_to_undo` when
+    /// none is left.
+    #[func]
+    fn recover(&mut self) -> GString {
+        GString::from(&self.session.recover())
+    }
+
+    /// The tick index after the last tick that succeeded; `-1` if not loaded.
+    #[func]
+    fn last_good_tick(&self) -> i64 {
+        self.session.last_good_tick()
+    }
 }

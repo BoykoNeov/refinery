@@ -103,6 +103,22 @@ pub enum BridgeError {
     #[error("{0}")]
     DuplicateName(String),
 
+    /// A rewind to a tick the run has not reached, or before its start.
+    #[error("{0}")]
+    BadRewind(String),
+
+    /// `recover` with no command to undo: nothing the player sent is left in
+    /// the record, so going back cannot change what the plant does.
+    #[error("{0}")]
+    NothingToUndo(String),
+
+    /// A replay that did not retrace the run it replays: a command refused
+    /// that was accepted (or the reverse), or a tick that failed. The engine is
+    /// deterministic, so this is a bug, never a player's doing; the session is
+    /// left as it was.
+    #[error("{0}")]
+    ReplayDiverged(String),
+
     #[error(transparent)]
     Sim(#[from] SimError),
 }
@@ -130,6 +146,9 @@ impl From<&BridgeError> for ErrorReport {
             BridgeError::UnknownId(_) => "unknown_id",
             BridgeError::UnknownName(_) => "unknown_name",
             BridgeError::DuplicateName(_) => "duplicate_name",
+            BridgeError::BadRewind(_) => "bad_rewind",
+            BridgeError::NothingToUndo(_) => "nothing_to_undo",
+            BridgeError::ReplayDiverged(_) => "replay_diverged",
             BridgeError::Sim(sim) => match sim {
                 SimError::SolverDiverged { .. } => "solver_diverged",
                 SimError::NonFiniteState { .. } => "non_finite_state",
@@ -221,6 +240,41 @@ pub struct Bridge {
     /// independently of naming.
     node_ids: Vec<u32>,
     edge_ids: Vec<u32>,
+    /// The scenario TOML this plant was built from, kept to build it again:
+    /// a rewind is this file plus [`Bridge::record`] replayed (M76).
+    source: String,
+    /// Every command that reached the engine, in the order sent, its tick
+    /// index never decreasing (a rewind truncates it). See [`Sent`].
+    record: Vec<Sent>,
+}
+
+/// One command that reached the engine (M76, `docs/plans/failed-tick-
+/// recovery.md`).
+///
+/// **A refused command is recorded too.** `Engine::apply` notes that a command
+/// arrived before it judges the command, and on a plant whose lines carry
+/// vapour that note changes how the next tick starts (M69.2) — so a replay
+/// that left the refusal out would rebuild a different plant
+/// (`a_refused_command_is_replayed_too`). A command the BRIDGE refused (bad
+/// JSON, an unknown id) never reached the engine and is not recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Sent {
+    /// The tick index when it was sent: it acts before tick `at_tick + 1`.
+    at_tick: u64,
+    /// The command's JSON, exactly as the frontend sent it.
+    json: String,
+    /// Whether the engine accepted it. A replay must get the same answer.
+    accepted: bool,
+}
+
+/// What [`Bridge::recover`] did, for the screen to say.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Recovery {
+    /// The tick index the plant now stands at: the one the undone command was
+    /// sent at.
+    pub rewound_to: u64,
+    /// The accepted commands undone, each as the JSON it was sent as.
+    pub dropped: Vec<String>,
 }
 
 impl Bridge {
@@ -272,6 +326,8 @@ impl Bridge {
             edges,
             node_ids,
             edge_ids,
+            source: toml_src.to_string(),
+            record: Vec::new(),
         })
     }
 
@@ -302,7 +358,130 @@ impl Bridge {
     ///
     /// Nothing reaches the engine until both steps pass, so an invalid
     /// command cannot leave the plant half-modified.
+    ///
+    /// A command that reached the engine is recorded, accepted or not, for a
+    /// later [`Bridge::rewind`] — see [`Sent`] for why a refusal is kept.
     pub fn apply_command_json(&mut self, json: &str) -> Result<(), BridgeError> {
+        let at_tick = self.tick_index();
+        let result = self.forward_command_json(json);
+        if matches!(result, Ok(()) | Err(BridgeError::Sim(_))) {
+            self.record.push(Sent {
+                at_tick,
+                json: json.to_string(),
+                accepted: result.is_ok(),
+            });
+        }
+        result
+    }
+
+    /// The tick index after the last tick that succeeded.
+    ///
+    /// It is simply the tick index: `Engine::tick` advances its counter as its
+    /// very last step, after everything that can fail, so a failed tick leaves
+    /// it where the last good one put it — while the rest of the plant may
+    /// have moved (the trips, latches and loops run before the solve).
+    pub fn last_good_tick(&self) -> u64 {
+        self.tick_index()
+    }
+
+    /// Put the plant back as tick `to_tick` left it, before any command sent
+    /// at that tick index: rebuilt from its scenario and every recorded
+    /// command sent before `to_tick`, each at its own tick, in its own order.
+    /// The commands from `to_tick` on are forgotten.
+    ///
+    /// Takes as long as the ticks took (the replay runs them all again).
+    /// All or nothing: on any `Err` the plant is left exactly as it was.
+    pub fn rewind(&mut self, to_tick: i64) -> Result<(), BridgeError> {
+        let now = self.tick_index();
+        let to_tick = u64::try_from(to_tick)
+            .ok()
+            .filter(|to| *to <= now)
+            .ok_or_else(|| {
+                BridgeError::BadRewind(format!(
+                    "cannot rewind to tick {to_tick}: this run is at tick {now}, and a \
+                     rewind goes back to a tick between 0 and that"
+                ))
+            })?;
+        let kept = self.record.partition_point(|sent| sent.at_tick < to_tick);
+        *self = self.replay(to_tick, &self.record[..kept])?;
+        Ok(())
+    }
+
+    /// Undo the last command the engine accepted: put the plant back as it
+    /// stood just before that command was sent, with every command before it
+    /// replayed — however many good ticks ran since, so a command whose harm
+    /// shows only ticks later is undone too (the user's choice, 2026-11-14).
+    /// Refused commands after it go with it.
+    ///
+    /// Called again, it undoes the accepted command before that one. With
+    /// none left it is refused as `nothing_to_undo`: the plant itself cannot
+    /// be solved, and going back would only fail again.
+    pub fn recover(&mut self) -> Result<Recovery, BridgeError> {
+        let last = self
+            .record
+            .iter()
+            .rposition(|sent| sent.accepted)
+            .ok_or_else(|| {
+                BridgeError::NothingToUndo(
+                    "no command sent to this plant is left to undo, so going back \
+                     cannot change what it does"
+                        .to_string(),
+                )
+            })?;
+        let undone = &self.record[last];
+        let recovery = Recovery {
+            rewound_to: undone.at_tick,
+            dropped: vec![undone.json.clone()],
+        };
+        *self = self.replay(undone.at_tick, &self.record[..last])?;
+        Ok(recovery)
+    }
+
+    /// A new bridge on this one's scenario, ticked to `to_tick` with `sent`
+    /// replayed: each command before tick `at_tick + 1`, then any left (sent
+    /// at `to_tick` itself) after the last tick. `sent` is a prefix of the
+    /// record, so it is in tick order.
+    fn replay(&self, to_tick: u64, sent: &[Sent]) -> Result<Bridge, BridgeError> {
+        let mut fresh = Bridge::load(&self.source)?;
+        let mut next = sent.iter().peekable();
+        for tick in 0..to_tick {
+            while let Some(sent) = next.next_if(|sent| sent.at_tick == tick) {
+                fresh.replay_one(sent)?;
+            }
+            fresh.tick().map_err(|err| {
+                BridgeError::ReplayDiverged(format!(
+                    "replaying to tick {to_tick}, tick {} failed, which it did not \
+                     the first time: {err}",
+                    tick + 1
+                ))
+            })?;
+        }
+        for sent in next {
+            fresh.replay_one(sent)?;
+        }
+        Ok(fresh)
+    }
+
+    /// Send one recorded command again; the engine must answer as it did.
+    fn replay_one(&mut self, sent: &Sent) -> Result<(), BridgeError> {
+        let result = self.apply_command_json(&sent.json);
+        if result.is_ok() == sent.accepted {
+            Ok(())
+        } else {
+            Err(BridgeError::ReplayDiverged(format!(
+                "replaying {} at tick {}: the engine {} it the first time and {} it \
+                 now",
+                sent.json,
+                sent.at_tick,
+                if sent.accepted { "accepted" } else { "refused" },
+                if sent.accepted { "refused" } else { "accepted" },
+            )))
+        }
+    }
+
+    /// Parse, validate and apply one command; [`Bridge::apply_command_json`]
+    /// is this plus the record.
+    fn forward_command_json(&mut self, json: &str) -> Result<(), BridgeError> {
         let cmd: Command =
             serde_json::from_str(json).map_err(|err| BridgeError::BadJson(err.to_string()))?;
 
@@ -522,6 +701,44 @@ impl Session {
     /// Every edge name as a JSON array, or `null` when nothing is loaded.
     pub fn edge_names_json(&self) -> String {
         names_json(self.bridge.as_ref().map(Bridge::edge_names))
+    }
+
+    /// Put the plant back as tick `to_tick` left it, forgetting the commands
+    /// sent from then on — see [`Bridge::rewind`]. `null`, or `{code, message}`
+    /// with `bad_rewind` for a tick outside the run (the plant untouched).
+    pub fn rewind(&mut self, to_tick: i64) -> String {
+        outcome_json(match self.bridge.as_mut() {
+            Some(bridge) => bridge.rewind(to_tick),
+            None => Err(BridgeError::NotLoaded),
+        })
+    }
+
+    /// Undo the last accepted command, for a screen whose tick just failed —
+    /// see [`Bridge::recover`]. `{"rewound_to": N, "dropped": [json, …]}`, or
+    /// `{code, message}` (`nothing_to_undo` when no command is left; the plant
+    /// untouched). A scene tells the two apart by `has("code")`.
+    pub fn recover(&mut self) -> String {
+        let recovery = match self.bridge.as_mut() {
+            Some(bridge) => bridge.recover(),
+            None => Err(BridgeError::NotLoaded),
+        };
+        match recovery {
+            // A number and strings; serde has nothing to fail on. The fallback
+            // is `outcome_json`'s, so this cannot panic inside a frame.
+            Ok(recovery) => serde_json::to_string(&recovery).unwrap_or_else(|_| {
+                r#"{"code":"bridge_error","message":"unserializable"}"#.to_string()
+            }),
+            Err(err) => outcome_json(Err(err)),
+        }
+    }
+
+    /// The tick index after the last tick that succeeded — a failed tick does
+    /// not move it — or [`MISSING_ID`] when nothing is loaded.
+    pub fn last_good_tick(&self) -> i64 {
+        match self.bridge.as_ref() {
+            Some(bridge) => bridge.last_good_tick() as i64,
+            None => MISSING_ID,
+        }
     }
 }
 

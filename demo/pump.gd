@@ -47,6 +47,11 @@
 #               lines are the observation in ROADMAP.md's M51 section.
 # Screenshots:  add --shots=<dir> to a WINDOWED --auto run (headless renders
 #               nothing) to save a PNG at each scripted tick in AUTO_SHOT_TICKS.
+# Recovery:     add --break-at=<tick> to an --auto run: at that tick the supply is
+#               set to -270 °C, where 73 presses of D take the gas-lock plant, and
+#               the next tick cannot be solved. The screen undoes the command and
+#               carries on (M76, docs/plans/failed-tick-recovery.md):
+#               ... --auto --plant=gaslock --break-at=230
 extends Node2D
 
 const Screen := preload("res://demo/screen.gd")
@@ -197,6 +202,11 @@ var seen_lamp := ""
 ## A command has moved the supply or the destination from the file's values;
 ## from then on the recorded lines carry them (M52).
 var moved_conditions := false
+## What each accepted command was, in words, by the JSON it was sent as — so a
+## recovery can say what it undid (M76).
+var sent_what: Dictionary = {}
+## A recorded run's tick to break the plant at (--break-at), or -1.
+var break_at := -1
 
 
 func _ready() -> void:
@@ -207,6 +217,8 @@ func _ready() -> void:
 			plant_key = arg.trim_prefix("--plant=")
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
+		elif arg.begins_with("--break-at="):
+			break_at = int(arg.trim_prefix("--break-at="))
 	plant_key = Screen.chosen_plant(get_tree(), plant_key)
 	Screen.fit(get_window())
 	if not PLANTS.has(plant_key):
@@ -223,6 +235,7 @@ func _load(key: String) -> void:
 	trail = {}
 	seen_lamp = ""
 	moved_conditions = false
+	sent_what = {}
 	var plant: Dictionary = PLANTS[key]
 
 	var err = JSON.parse_string(sim.load_scenario(plant["scenario"]))
@@ -259,7 +272,7 @@ func _physics_process(_delta: float) -> void:
 func _step() -> bool:
 	var err = JSON.parse_string(sim.tick())
 	if err != null:
-		_halt("tick %d: %s" % [sim.tick_index(), err["message"]])
+		_recover(err)
 		return false
 	snapshot = JSON.parse_string(sim.snapshot_json())
 	var tick := sim.tick_index()
@@ -278,6 +291,8 @@ func _step() -> bool:
 				get_tree().quit()
 				return false
 			_do(action)
+	if tick == break_at:
+		_do("supply_c_-270")
 	if shots_dir != "" and tick in AUTO_SHOT_TICKS[plant_key]:
 		_shoot(tick)
 		return false
@@ -450,6 +465,7 @@ func _send(what: String, command: Dictionary) -> bool:
 	var text := JSON.stringify(command)
 	var err = JSON.parse_string(sim.apply_command(text))
 	if err == null:
+		sent_what[text] = what
 		_say(what, false)
 		if auto_run:
 			print("pump: t=%d  %s  %s" % [sim.tick_index(), what, text])
@@ -461,6 +477,31 @@ func _send(what: String, command: Dictionary) -> bool:
 	if auto_run:
 		print("pump: t=%d  %s  REFUSED: %s" % [sim.tick_index(), what, err["message"]])
 	return false
+
+
+## A tick could not be solved. The plant is put back as it stood just before
+## the last command the engine accepted, and that command is undone — however
+## many good ticks ran since (M76). With no command left to undo the plant
+## itself cannot be solved, and the screen stops as it did before M76.
+func _recover(err: Dictionary) -> void:
+	var failed_after := float(snapshot.get("sim_time", 0.0))
+	var failed_tick := sim.tick_index() + 1
+	var answer = JSON.parse_string(sim.recover())
+	if answer.has("code"):
+		_halt("tick %d: %s" % [failed_tick, err["message"]])
+		return
+	snapshot = JSON.parse_string(sim.snapshot_json())
+	var undone := []
+	for text in answer["dropped"]:
+		undone.append(sent_what.get(text, text))
+	_say(
+		"the plant could not be solved after t = %.1f s — put back to t = %.1f s, undone: %s
+%s"
+			% [failed_after, float(snapshot["sim_time"]), ", ".join(undone), err["message"]],
+		true
+	)
+	print("pump: RECOVERED — tick %d failed; put back to tick %d, undone: %s; %s" % [failed_tick, int(answer["rewound_to"]), ", ".join(undone), err["message"]])
+	queue_redraw()
 
 
 func _say(text: String, bad: bool) -> void:

@@ -4591,6 +4591,10 @@ The only gate no mutation fires is `a_tanks_pressure_carries_no_density_to_gate
 _one` — which is the point of it: it documents an impossibility rather than
 guarding a behaviour.
 
+**M76: a failed tick is survivable.** `Session` keeps the scenario source and
+every command that reached the engine, and offers `rewind(to_tick)`,
+`recover()` (undo the last accepted command) and `last_good_tick()` — see §81.
+
 ## 9. Error handling & diagnostics
 
 `SimError` (thiserror): `SolverDiverged`, `NonFiniteState{location}`,
@@ -32187,3 +32191,77 @@ ms the first 30 s after the cooling is cut (the pressure solve's trials).
 bottom trays, Kister §13.2) — still to slop either way; the drum's back-up
 is reachable only by a history the keys rarely make (M75.2's tests
 re-plant it); the vapour readings' 23 % gap above.
+
+## 81. A failed tick is not the end of the session (M76) — rewind by replay, in the bridge
+
+**The problem** (`docs/plans/failed-tick-recovery.md`, measured 2026-11-12):
+`Engine::tick` returns `Err` when the plant cannot be solved, and every screen
+then stopped for good. Calling `tick()` again never helped (0 of 108 storm
+failures recovered), and a failed tick is not all-or-nothing — the trips,
+latches and loops run before the solve, so 15 of 108 changed the snapshot
+while failing. A frontend can neither retry nor trust the state it holds.
+
+**The idea.** The engine is deterministic (rule 3), so the plant at any past
+tick is its scenario file plus the commands sent to it, each sent again at its
+own tick. No engine change: `Bridge` keeps the TOML source it loaded and a
+record of every command that reached the engine (`Sent { at_tick, json,
+accepted }`), cleared by a new load.
+
+- **`rewind(to_tick)`**: the plant as tick `to_tick` left it, before any
+  command sent at that tick index — a new `Bridge` from the source, ticked to
+  `to_tick` with the record before it replayed, each command before tick
+  `at_tick + 1` in its sent order. The record from `to_tick` on is
+  forgotten. Refused (`bad_rewind`) below 0 or past the current tick. All or
+  nothing: the new bridge replaces the old only if every replayed tick and
+  command went as before; otherwise `replay_diverged` (a determinism bug,
+  never a player's doing) and the plant is untouched.
+- **`recover()`** (the user's decision, 2026-11-14): undo the **last command
+  the engine accepted**, going back to just before it was sent, however many
+  good ticks ran since — so a command whose harm shows ticks later (1 GW into
+  the knockout drum fails four ticks on) is undone too, rather than the plan's
+  first reading (back one tick, undo what was sent since), which would fail
+  again at once. Called again, it undoes the accepted command before that.
+  With none left, `nothing_to_undo`: the plant itself cannot be solved. Gives
+  `{"rewound_to": N, "dropped": [json]}`.
+- **`last_good_tick()`** is the tick index: `Engine::tick` advances its
+  counter as its last statement, after everything that can fail.
+
+**A refused command is recorded and replayed too — a finding.** The plan said
+a refused command is not logged. But `Engine::apply` sets `commanded` (M69.2,
+"the next tick is not predicted") *before* it judges the command, and on a
+plant whose lines carry vapour that changes how the next tick starts: on
+`flashing_rundown.toml` a valve command sent to the tank, refused, moves the
+snapshot 50 ticks later in the last digits. A replay that left it out rebuilt
+a different plant (`a_refused_command_is_replayed_too`, seen to fail with
+accepted-only logging). So the record holds every command that **reached the
+engine**, with its answer, and a replay requires the same answer. A command
+the bridge refuses (bad JSON, unknown id) never reaches the engine and is not
+recorded. Changing `Engine::apply` to set the flag after its checks was not
+done: the plan forbids engine changes here, and it would move behaviour.
+
+**Cost** — a rewind takes as long as the ticks it replays: 600 ticks of
+`crude_unit_holdup` (the slowest plant) ran in 0.42 s and rewound in 0.42 s
+(test profile, below-normal priority), so 10 minutes of plant time (6 000
+ticks) is about 4 s, not the plan's 30–50 s estimate. Slice 2 (checkpoints)
+stays the user's decision (DEFERRED F7).
+
+**Screens.** The pump screen calls `recover()` on a failed tick and says what
+happened on its message line: when it failed, the time it went back to, the
+command undone in the screen's own words, and the engine's message. Reachable
+from the keys: 73 presses of D take the gas-lock plant's supply to −270 °C
+(3.15 K) and the next tick fails. `--break-at=<tick>` on an `--auto` run sends
+that value at the tick, to see it run. The map screen sends no commands yet,
+so it has nothing to undo; its own plan's slice 2 wires it. The other screens
+still halt (DEFERRED F8).
+
+**Gates** (`crates/godot-ext/tests/bridge.rs`): replay to now is the same
+plant and ticks on the same; a rewind forgets from its tick on (a command
+exactly at it included), keeps order within a tick, and `rewind(0)` is the
+plant as loaded; out-of-range rewinds refused; the refused command replayed;
+recovery of an immediate failure (twice, then `nothing_to_undo`), of a delayed
+one, and of only the last of several commands at one tick; a load starts a new
+record; every new call answers before a load. Mutation pass, 13 mutants: 11
+killed; the 2 survivors cannot change what a frontend sees — recording
+bridge-refused commands as well (replayed, they are refused alike) and
+dropping the replay's same-answer check (a deterministic engine always gives
+it).

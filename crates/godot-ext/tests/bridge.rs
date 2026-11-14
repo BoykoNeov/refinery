@@ -1306,6 +1306,9 @@ fn error_codes_are_stable() {
         (BridgeError::UnknownId("x".into()), "unknown_id"),
         (BridgeError::UnknownName("x".into()), "unknown_name"),
         (BridgeError::DuplicateName("x".into()), "duplicate_name"),
+        (BridgeError::BadRewind("x".into()), "bad_rewind"),
+        (BridgeError::NothingToUndo("x".into()), "nothing_to_undo"),
+        (BridgeError::ReplayDiverged("x".into()), "replay_diverged"),
         (
             BridgeError::Sim(SimError::SolverDiverged {
                 iterations: 7,
@@ -1403,6 +1406,9 @@ fn every_session_call_answers_before_a_scenario_is_loaded() {
         Some("not_loaded"),
         "a command must not be judged before there is a plant to judge it against"
     );
+    assert_eq!(outcome_code(&sim.rewind(0)).as_deref(), Some("not_loaded"));
+    assert_eq!(outcome_code(&sim.recover()).as_deref(), Some("not_loaded"));
+    assert_eq!(sim.last_good_tick(), MISSING_ID);
 
     // And loading turns all of that on.
     assert_eq!(outcome_code(&sim.load_scenario(&scenario_src(LEAKY))), None);
@@ -1681,5 +1687,349 @@ fn a_refusal_names_its_equipment_not_its_id() {
     assert!(
         held.contains("moved by hand") && !held.contains("reopened"),
         "F6: a trip-held valve's refusal says what any move needs: {held}"
+    );
+}
+
+// ----------------------------------------------------------- Rewind (M76)
+
+// A failed tick is not the end of the session (docs/plans/failed-tick-
+// recovery.md, slice 1). The engine is deterministic, so the plant at any past
+// tick is the plant file plus every command that reached the engine, each sent
+// again at the tick it was first sent at. These gate that the session keeps
+// that record and replays it exactly.
+
+fn valve_json(node: i64, opening: f64) -> String {
+    format!(r#"{{"cmd":"set_valve_opening","node":{node},"opening":{opening}}}"#)
+}
+
+/// A fresh session on `src`, ticked to `ticks`, sending each `(tick, json)`
+/// when the tick index equals its tick — in list order, so two at one tick go
+/// in the order given. A command at `ticks` itself is sent after the last
+/// tick. Every tick must succeed; the commands' outcomes are not judged here.
+fn run_with(src: &str, commands: &[(i64, String)], ticks: i64) -> Session {
+    let mut sim = Session::new();
+    assert_eq!(sim.load_scenario(src), "null");
+    let mut next = commands.iter().peekable();
+    loop {
+        while let Some((_, json)) = next.next_if(|(at, _)| *at == sim.tick_index()) {
+            sim.apply_command_json(json);
+        }
+        if sim.tick_index() == ticks {
+            return sim;
+        }
+        assert_eq!(sim.tick(), "null", "tick {} failed", sim.tick_index() + 1);
+    }
+}
+
+/// The valve commands the replay tests send on the leaking line: one before
+/// the first tick, two at one tick whose ORDER decides the valve, one exactly
+/// at the tick `rewind(150)` goes back to, and one after it.
+fn leaky_commands(valve: i64) -> Vec<(i64, String)> {
+    vec![
+        (0, valve_json(valve, 0.3)),
+        (100, valve_json(valve, 0.9)),
+        (100, valve_json(valve, 0.5)),
+        (150, valve_json(valve, 0.1)),
+        (200, valve_json(valve, 0.8)),
+    ]
+}
+
+/// Replay is exact: rewinding to the tick a session stands at gives the same
+/// plant to the bit, and so does a fresh session fed the same commands — and
+/// the rewound plant goes on to tick the same as one never rewound.
+#[test]
+fn a_rewind_to_now_rebuilds_the_same_plant() {
+    let src = scenario_src(LEAKY);
+    let valve = loaded(&src).node_id("discharge_valve");
+    let commands = leaky_commands(valve);
+
+    let mut sim = run_with(&src, &commands, 300);
+    let before = sim.snapshot_json();
+    assert_eq!(sim.rewind(300), "null");
+    assert_eq!(sim.tick_index(), 300);
+    assert_eq!(
+        sim.snapshot_json(),
+        before,
+        "rewind(300) at 300 moved the plant"
+    );
+    assert_eq!(run_with(&src, &commands, 300).snapshot_json(), before);
+
+    for _ in 0..50 {
+        assert_eq!(sim.tick(), "null");
+    }
+    assert_eq!(
+        sim.snapshot_json(),
+        run_with(&src, &commands, 350).snapshot_json(),
+        "the rewound plant ticks on differently from one never rewound"
+    );
+}
+
+/// `rewind(150)` is the plant as tick 150 left it, before anything sent at
+/// 150: the command at 150 and the one at 200 are gone, so ticking on to 300
+/// gives a run that never sent them. Order within a tick is kept.
+#[test]
+fn a_rewind_forgets_the_commands_from_its_tick_on() {
+    let src = scenario_src(LEAKY);
+    let valve = loaded(&src).node_id("discharge_valve");
+    let commands = leaky_commands(valve);
+    let kept: Vec<(i64, String)> = commands
+        .iter()
+        .filter(|(at, _)| *at < 150)
+        .cloned()
+        .collect();
+
+    let mut sim = run_with(&src, &commands, 300);
+    assert_eq!(sim.rewind(150), "null");
+    assert_eq!(sim.tick_index(), 150);
+    assert_eq!(
+        sim.snapshot_json(),
+        run_with(&src, &kept, 150).snapshot_json()
+    );
+    for _ in 0..150 {
+        assert_eq!(sim.tick(), "null");
+    }
+    let never_sent = run_with(&src, &kept, 300).snapshot_json();
+    assert_eq!(sim.snapshot_json(), never_sent);
+
+    // The fixture can tell: the two commands at tick 100 the other way round
+    // leave a different plant, so the equality above checked their order.
+    let mut swapped = kept.clone();
+    swapped.swap(1, 2);
+    assert_ne!(run_with(&src, &swapped, 300).snapshot_json(), never_sent);
+
+    // Back to the start: the plant as loaded, even the command at tick 0 gone.
+    assert_eq!(sim.rewind(0), "null");
+    assert_eq!(sim.tick_index(), 0);
+    assert_eq!(sim.snapshot_json(), loaded(&src).snapshot_json());
+}
+
+/// A rewind into the future, or before the start, is refused and moves
+/// nothing.
+#[test]
+fn a_rewind_outside_the_run_is_refused() {
+    let src = scenario_src(LEAKY);
+    let mut sim = run_with(&src, &[], 40);
+    let before = sim.snapshot_json();
+    for to in [-1, 41, i64::MAX] {
+        assert_eq!(outcome_code(&sim.rewind(to)).as_deref(), Some("bad_rewind"));
+        assert_eq!(sim.tick_index(), 40);
+        assert_eq!(sim.snapshot_json(), before);
+    }
+}
+
+/// A command the engine refused still reached it, and is still in the
+/// record: the engine notes that a command arrived before it judges it, and
+/// on a plant whose lines carry vapour that note changes the next tick's
+/// start (`Engine::apply`, M69.2). A replay that left the refused command out
+/// would rebuild a different plant.
+#[test]
+fn a_refused_command_is_replayed_too() {
+    let src = scenario_src("flashing_rundown.toml");
+    let tank = loaded(&src).node_id("rundown_tank");
+    let refused = valve_json(tank, 0.5);
+
+    let mut sim = loaded(&src);
+    for _ in 0..30 {
+        assert_eq!(sim.tick(), "null");
+    }
+    assert_eq!(
+        outcome_code(&sim.apply_command_json(&refused)).as_deref(),
+        Some("invalid_command"),
+        "the fixture needs a command the engine itself refuses"
+    );
+    for _ in 0..50 {
+        assert_eq!(sim.tick(), "null");
+    }
+    let before = sim.snapshot_json();
+    assert_ne!(
+        before,
+        run_with(&src, &[], 80).snapshot_json(),
+        "the fixture needs a plant where the refused command leaves a trace"
+    );
+    assert_eq!(sim.rewind(80), "null");
+    assert_eq!(sim.snapshot_json(), before);
+
+    // A command the BRIDGE refused (bad JSON, an unknown id) never reached the
+    // engine and is not recorded. Recording it would change nothing a frontend
+    // can see — replayed, it is refused the same way — so this only pins that
+    // such a command does not spoil a rewind.
+    assert_eq!(
+        outcome_code(&sim.apply_command_json("not json")).as_deref(),
+        Some("bad_json")
+    );
+    assert_eq!(sim.tick(), "null");
+    assert_eq!(sim.rewind(81), "null");
+}
+
+fn recovery(json: &str) -> (i64, Vec<String>) {
+    let value: Value = serde_json::from_str(json).expect("recover answers JSON");
+    assert!(value.get("code").is_none(), "recover refused: {json}");
+    let dropped = value["dropped"]
+        .as_array()
+        .expect("dropped is a list")
+        .iter()
+        .map(|c| {
+            c.as_str()
+                .expect("each dropped command is its JSON text")
+                .to_string()
+        })
+        .collect();
+    (
+        value["rewound_to"].as_i64().expect("rewound_to is a tick"),
+        dropped,
+    )
+}
+
+/// A command that breaks the very next tick: the tick fails, `recover` puts
+/// the plant back as it was just before the command, says which command it
+/// undid, and the plant runs on. A second `recover` undoes the command before
+/// that one; with none left it is refused and moves nothing.
+#[test]
+fn recover_undoes_the_command_that_broke_the_next_tick() {
+    let src = scenario_src("vessel_pressure_control.toml");
+    let mut sim = loaded(&src);
+    let header = sim.node_id("header");
+    let flare = sim.node_id("flare");
+    let harmless =
+        format!(r#"{{"cmd":"set_reservoir_pressure","node":{header},"pressure":2900000.0}}"#);
+    let breaking = format!(r#"{{"cmd":"set_reservoir_pressure","node":{flare},"pressure":1e300}}"#);
+
+    for _ in 0..50 {
+        assert_eq!(sim.tick(), "null");
+    }
+    assert_eq!(sim.apply_command_json(&harmless), "null");
+    for _ in 0..50 {
+        assert_eq!(sim.tick(), "null");
+    }
+    let good = sim.snapshot_json();
+    assert_eq!(
+        sim.apply_command_json(&breaking),
+        "null",
+        "accepted: no ceiling"
+    );
+    assert!(
+        outcome_code(&sim.tick()).is_some(),
+        "the next tick must fail"
+    );
+    assert_eq!(sim.last_good_tick(), 100);
+
+    let (to, dropped) = recovery(&sim.recover());
+    assert_eq!(to, 100);
+    assert_eq!(dropped, vec![breaking]);
+    assert_eq!(sim.tick_index(), 100);
+    assert_eq!(sim.snapshot_json(), good, "not the plant as it was");
+    for _ in 0..500 {
+        assert_eq!(sim.tick(), "null");
+    }
+
+    let (to, dropped) = recovery(&sim.recover());
+    assert_eq!((to, dropped), (50, vec![harmless]));
+    assert_eq!(sim.snapshot_json(), run_with(&src, &[], 50).snapshot_json());
+
+    let before = sim.snapshot_json();
+    assert_eq!(
+        outcome_code(&sim.recover()).as_deref(),
+        Some("nothing_to_undo")
+    );
+    assert_eq!(sim.tick_index(), 50);
+    assert_eq!(sim.snapshot_json(), before);
+}
+
+/// A command whose harm shows only some ticks later: 1 GW into the knockout
+/// drum, which runs four good ticks and then fails (found by sending each
+/// extreme value to each small plant; the command storm's freezing feed fails
+/// at once when sent alone). `recover` goes back past the good ticks between,
+/// to just before the command — the user's choice of 2026-11-14, so a delayed
+/// failure does not fail again at once.
+#[test]
+fn recover_goes_back_past_a_delayed_failure() {
+    let src = scenario_src("knockout_drum.toml");
+    let mut sim = loaded(&src);
+    let drum = sim.node_id("drum");
+    let heating = format!(r#"{{"cmd":"set_heat_input","node":{drum},"power":1e9}}"#);
+    for _ in 0..20 {
+        assert_eq!(sim.tick(), "null");
+    }
+    let good = sim.snapshot_json();
+    assert_eq!(sim.apply_command_json(&heating), "null");
+    let mut failed = None;
+    for _ in 0..400 {
+        if outcome_code(&sim.tick()).is_some() {
+            failed = Some(sim.tick_index());
+            break;
+        }
+    }
+    let last_good = failed.expect("1 GW must break the drum");
+    assert!(
+        last_good > 20,
+        "the fixture needs a DELAYED failure, got {last_good}"
+    );
+    assert_eq!(sim.last_good_tick(), last_good);
+
+    let (to, dropped) = recovery(&sim.recover());
+    assert_eq!((to, dropped), (20, vec![heating]));
+    assert_eq!(sim.snapshot_json(), good);
+    for _ in 0..500 {
+        assert_eq!(sim.tick(), "null");
+    }
+}
+
+/// A newly loaded plant starts a new record: nothing from the plant before
+/// it is undone or replayed.
+#[test]
+fn a_load_starts_a_new_record() {
+    let mut sim = run_with(&scenario_src(LEAKY), &[], 0);
+    let valve = sim.node_id("discharge_valve");
+    assert_eq!(sim.apply_command_json(&valve_json(valve, 0.4)), "null");
+    assert_eq!(
+        sim.load_scenario(&scenario_src("tank_pump_valve.toml")),
+        "null"
+    );
+    assert_eq!(
+        outcome_code(&sim.recover()).as_deref(),
+        Some("nothing_to_undo")
+    );
+    assert_eq!(sim.tick(), "null");
+    assert_eq!(sim.rewind(1), "null");
+    assert_eq!(sim.last_good_tick(), 1);
+}
+
+fn loaded(src: &str) -> Session {
+    let mut sim = Session::new();
+    assert_eq!(sim.load_scenario(src), "null");
+    sim
+}
+
+/// `recover` undoes ONE command, the last the engine accepted: one sent
+/// before it at the same tick stays, and a refused one after it is not what
+/// gets undone.
+#[test]
+fn recover_undoes_only_the_last_accepted_command() {
+    let src = scenario_src(LEAKY);
+    let mut sim = run_with(&src, &[], 10);
+    let valve = sim.node_id("discharge_valve");
+    let tank = sim.node_id("receiving_tank");
+    let first = valve_json(valve, 0.3);
+    let second = valve_json(valve, 0.6);
+    assert_eq!(sim.apply_command_json(&first), "null");
+    assert_eq!(sim.apply_command_json(&second), "null");
+    assert_eq!(
+        outcome_code(&sim.apply_command_json(&valve_json(tank, 0.5))).as_deref(),
+        Some("invalid_command")
+    );
+
+    let (to, dropped) = recovery(&sim.recover());
+    assert_eq!((to, dropped), (10, vec![second]));
+    let kept = vec![(10, first)];
+    assert_eq!(
+        sim.snapshot_json(),
+        run_with(&src, &kept, 10).snapshot_json()
+    );
+    for _ in 0..20 {
+        assert_eq!(sim.tick(), "null");
+    }
+    assert_eq!(
+        sim.snapshot_json(),
+        run_with(&src, &kept, 30).snapshot_json()
     );
 }
