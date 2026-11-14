@@ -22,11 +22,16 @@
 #   Ludwig Vol. 1B Fig. 9.7A states it); past full lift the column is held at
 #   121 % of it, 4.05 bar, with an alarm. Opens gradually, never pops (C32).
 #   SIZED BY THE BOOK RULE (Kister §9.3: loss of coolant governs, the whole
-#   incoming vapour): Kv 5 000, the first probe's size for all the top vapour
-#   of normal running, vented at full lift at relieving conditions (§80.4,
-#   the user's decision 2026-11-14: the larger of the two bases put to them;
-#   on the running top's vapour the same rule reads ~4 000, §80.5). About
-#   seven API "T" orifices. Its line's back pressure is not built (C34).
+#   incoming vapour), Kv 5 000 — the M75.3.0 probe's figure (§80.4), the
+#   larger of the two put to the user (their decision, 2026-11-14). WHERE IT
+#   COMES FROM, stated plainly: the probe took the top's vapour as ~1 208
+#   mol/s (137 kg/s) at its sizing tick's ~505 K; the same rule on the vapour
+#   the tests read at rest (982 mol/s, 437 K) gives ~4 000 (§80.5). The hotter
+#   temperature accounts for only ~4 000 → ~4 300; most of the gap is the
+#   larger vapour reading, which is not yet explained (§80.7). Either size
+#   holds the coolant lost below full lift: 3.65 bar at most here, 3.67 on
+#   ~4 000. About seven API "T" orifices. Its line's back pressure is not
+#   built (C34).
 #
 # The column screen's key 9 plays it, with the drain on a key.
 
@@ -206,7 +211,7 @@ duty_mw = 0.0
 
 # The column's safety valve, on its top before the condenser (Kister §9.5):
 # set at the column's design pressure, full lift 10 % of it gauge above
-# (API RP-520), Kv 5 000 by the book rule at relieving conditions (above).
+# (API RP-520), Kv 5 000 by the book rule (the M75.3.0 probe's figure, above).
 [nodes.column_psv]
 type = "relief_valve"
 kv = 5000.0

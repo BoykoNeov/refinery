@@ -2,8 +2,8 @@
 //! docs/DESIGN.md §80.7): the holdup plant with its steel, the M75.1
 //! condenser limit, the M75.2 drain and the M75.3 relief valve on the map —
 //! exactly the plant M75's inline tests build (`column_relief::with_relief`),
-//! its valve the book's at relieving conditions, Kv 5 000 (the user's
-//! decision, 2026-11-14). These gates keep the file and the fixtures from
+//! its valve Kv 5 000, the M75.3.0 probe's book-rule figure (the user's
+//! decision, 2026-11-14; where it comes from, DESIGN §80.7). These gates keep the file and the fixtures from
 //! drifting apart, so every M75 test speaks for the shipped plant.
 
 use std::collections::BTreeMap;
@@ -21,8 +21,8 @@ const OVERFILL_PLANT: &str = include_str!("../../../scenarios/crude_unit_overfil
 /// A crude unit whose column holds no liquid.
 const CRUDE_UNIT: &str = include_str!("../../../scenarios/crude_unit.toml");
 
-/// The relief valve the plant declares: the book rule at relieving
-/// conditions (DESIGN §80.4, §80.7).
+/// The relief valve the plant declares: the M75.3.0 probe's book-rule
+/// figure (DESIGN §80.4, §80.7).
 const KV: f64 = 5000.0;
 
 /// Every node's and pipe's readings by name, its id and ends taken off (the
