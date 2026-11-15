@@ -21,17 +21,36 @@ Known weak spots, seen in screenshots:
   (`reactor` beds, compressors appear this way).
 - Pipes into one node all end at its centre.
 
-## Slice 1 — hover and inspect (no decision)
+## Slice 1 — hover and inspect (no decision) — DONE 2026-11-15 (M78)
 
-- [ ] Mouse over a node or a pipe: outline it and show a panel at the right
+- [x] Mouse over a node or a pipe: outline it and show a panel at the right
       edge (x ≥ 870, the page is 1152 wide) with its name, kind and every
       scalar field the snapshot gives it — pressure in bar, temperature in
       °C, flows in kg/s, duties in MW. Walk the node's dictionary
       generically (skip arrays longer than 6 and nested compositions; show
       a composition as the three largest cuts by name from `snapshot.slate`).
-- [ ] Shrink `AREA` to leave the panel its width. Re-run `--auto` and four
+- [x] Shrink `AREA` to leave the panel its width. Re-run `--auto` and four
       screenshots (`--plant=crude_unit_loops`, `hydrocracker_hydrogen_quench`,
       `tank_level_fill_control`, `fcc_plant`) and LOOK at them.
+
+**As built** (`demo/map.gd`):
+- A unit is converted only where it is known: a name ending `_pa`, `_k`,
+  `_w`, `_kg_s`, `_s`, `_m`, or a bare name whose Rust type was checked
+  (`pressure`, `duty`, `t_set`, `tau`, …, the lists at the top of the file).
+  Any other field is shown as it came — a wrong unit is worse than none.
+- Nested fields are indented under a heading, not dotted names; nesting
+  deeper than four names is left out (a column's holdup keeps its whole
+  working state under `kind`).
+- **Added**: the mouse wheel scrolls the panel. The overfilling column
+  reports ~200 lines; without scrolling most were unreachable.
+- **Added**: `--hover=<name>` and `--scroll=<lines>` for recorded
+  screenshots. They send the item's drawn position through the same hit
+  test the mouse uses. `--auto` also builds every node's and pipe's panel on
+  all 72 plants (its printed lines are unchanged).
+- **`AREA` 1012 → 735 px wide**: 640 first, and the hydrocracker's
+  names collided. To win the width back, a crowded right-most column now
+  steps its every second node LEFT (it stepped right, into the panel). The
+  panel draws from x = 870, its text from 880.
 
 ## Slice 2 — hands (no decision)
 

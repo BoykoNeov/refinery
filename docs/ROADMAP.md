@@ -11551,3 +11551,36 @@ the pump screen's three recorded runs print what they did before.
 F7); saves on the other screens (F9).
 
 **M77 CLOSED** (2026-11-15; `docs/MILESTONES.md`).
+
+## M78 — the plant map inspects: the mouse over a node or a pipe lists every number it reports; plan `docs/plans/plant-map-screen.md` slice 1; CLOSED 2026-11-15
+
+Asked as "what is next" after M77 (2026-11-15). The user took the
+recommendation: plan 5 of the 2026-11-12 review, slice 1, which needs no
+decision. The map drew any plant but could not say anything about a single
+piece of it beyond the one or two numbers under its name.
+
+**Done** (`demo/map.gd` only; no Rust changed): pointing at a node or a pipe
+outlines it, and a panel at the right lists its name, its kind and every
+scalar the snapshot gives it. The snapshot is walked generically, so a field
+the engine adds appears without the map changing. Units are converted only
+where the field's name or its checked Rust type says what they are (bar, °C,
+MW, kg/s, %, s, m). Nested groups are indented headings, a composition is
+its three largest cuts by name, lists over six items and nesting deeper than
+four names are left out, and the wheel scrolls what does not fit.
+Drawing and the mouse share one pipe path, so a recycle line that runs
+underneath is found where it is seen. `--hover=` and `--scroll=` give
+recorded screenshots the same hit test. `--auto` builds every node's and
+pipe's panel on all 72 plants: its printed lines are unchanged (72 plants, 0
+stopped), with no script errors.
+
+**Layout**: `AREA` 1012 → 735 px wide. A first try at 640 made the
+hydrocracker's names collide; a crowded right-most column now steps left,
+away from the panel.
+
+**Open**: slice 2 (hands: click a valve, a pump, a furnace, a pipe; recovery
+from a failed tick, DEFERRED F8), slice 3 (a layout a person can fix).
+Units the map leaves raw (`cooler_capacity`, `start_duty`, the holdup's
+working state) would read better with a unit; each needs its Rust type
+checked first.
+
+**M78 CLOSED** (2026-11-15; `docs/MILESTONES.md`).

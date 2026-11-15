@@ -12,6 +12,29 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M78 is CLOSED (2026-11-15): the plant map inspects — the mouse over a node
+or a pipe lists every number the plant reports for it
+(`docs/plans/plant-map-screen.md`, slice 1).** Asked as "what is next" after
+M77; the user took the recommendation (plan 5, slice 1, no decision needed).
+- **`demo/map.gd` only**, no Rust. The panel walks the snapshot generically
+  (a new engine field appears unasked). Units are converted only where the
+  name or the checked Rust type gives them; anything else is shown as it
+  came. Nested groups are indented headings, a composition is its three
+  largest cuts, and the mouse wheel scrolls (the overfilling column has
+  ~200 lines).
+- One pipe path for drawing and the mouse, so recycle lines are found where
+  they are drawn. `--hover=<name>` / `--scroll=<lines>` for recorded
+  screenshots, through the same hit test.
+- `AREA` 1012 → 735 px; a crowded right-most column steps left, away from the
+  panel (640 px collided the hydrocracker's names).
+- `--auto` builds every panel on all 72 plants: same lines as before, 0
+  stopped, no script errors. Screenshots looked at: `crude_unit_loops`,
+  `hydrocracker_hydrogen_quench`, `tank_level_fill_control` (a pipe),
+  `fcc_plant`, `crude_unit_overfill` scrolled. **Open**: slice 2 (hands;
+  F8), slice 3 (hand layout).
+
+---
+
 **M77 is CLOSED (2026-11-15): save and load — a save is the plant file and its
 record, replayed (`docs/plans/save-and-load.md`, slice 1).** Asked as "what is
 next" after M76; the user took the recommendation (plan 4 of the 2026-11-12

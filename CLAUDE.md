@@ -147,7 +147,8 @@ cargo clippy -p refinery-godot-ext --features godot --all-targets -- -D warnings
 godot --headless --path . --editor --quit    # once, after cloning
 godot --path .                               # the menu: every screen and plant (Esc in a screen returns to it, F11 full screen)
 godot --headless --path . res://demo/plant.tscn -- --auto   # the M6.2 demo; ends at t=350
-godot --path . res://demo/map.tscn           # the plant map: any shipped plant drawn from its snapshot (watches only)
+godot --path . res://demo/map.tscn           # the plant map: any shipped plant drawn from its snapshot (watches; the mouse inspects, M78)
+#   screenshot: --quit-after 4000 -- --plant=<stem> --shot=W:/temp/claude/<task>/x.png [--hover=<node or pipe> --scroll=<lines>]
 godot --headless --path . res://demo/map.tscn -- --auto     # every plant loaded, laid out, run 200 ticks; nonzero if one stops
 godot --path . res://demo/furnace.tscn       # the M39 furnace screen (keys on screen)
 godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [--plant=burnout]
@@ -198,7 +199,7 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 ## Current milestone
 
 Work only on the current milestone unless asked. **Current: none open** — the user picks the next (C30's base side is still open; `docs/plans/` lists the review's plans).
-**Latest closed: M77 (2026-11-15)**: save and load (plan `save-and-load.md`, slice 1) — a save is the scenario source, the tick and M76's whole record (refused commands and failed ticks included) plus the screen's own note, and loading replays it: `save_json`, `load_save`, codes `bad_save`/`save_format`/`save_diverged`; the pump screen saves on F5 and loads on F9 under `user://saves/`, the menu has a Continue row; an hour of the slowest plant loads in 32.5 s, so slice 2 waits (F7); every plant byte-identical (DESIGN §82). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+**Latest closed: M78 (2026-11-15)**: the plant map inspects (plan `plant-map-screen.md`, slice 1) — the mouse over any node or pipe lists every number its snapshot gives, walked generically, units converted only where known, the wheel scrolls; `--hover=`/`--scroll=` for screenshots; `demo/map.gd` only, no Rust. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

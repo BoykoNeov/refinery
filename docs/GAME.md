@@ -76,6 +76,9 @@ cut of the alternative: one screen that draws whatever it is given. What it
 still lacks is the point of a game — hands. No valve can be clicked, no pump
 stopped, no pipe punctured.
 
+**Eyes done by M78 (2026-11-15)**: the mouse over any node or pipe lists
+every number the plant reports for it; hands are the plan's slice 2.
+
 ### 2.4 Nothing asks anything of the player — `plans/objectives-and-alarms.md`
 
 Each screen is a story the author already knows. There is no goal ("make
