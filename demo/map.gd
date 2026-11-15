@@ -10,18 +10,27 @@
 # It is a first cut, on purpose (docs/plans/plant-map-screen.md has the rest):
 # it WATCHES. No keys reach the plant yet, the layout is computed rather than
 # drawn by a person, and a column or a reactor is one box — their insides are
-# what the hand-drawn screens are for.
+# what the hand-drawn screens are for. The mouse INSPECTS (M78, slice 1 of the
+# plan): over a node or a pipe, the panel at the right lists every number the
+# snapshot gives it, walked generically, so a field the engine adds appears
+# without this file changing.
 #
 # Same rule as every screen: nothing physical is computed here. A pipe's
 # width is its reported flow, its colour its reported temperature; a tank's
-# fill is the level the plant.gd demo derives from snapshot fields only.
+# fill is the level the plant.gd demo derives from snapshot fields only. The
+# panel converts units for reading (Pa to bar, K to °C, W to MW) and nothing
+# more; a field whose unit this file does not know is shown as it came.
 #
 # Interactive:  godot --path . res://demo/map.tscn      (or the menu's last row)
-#               Left/Right plant   Space pause   [ ] speed   Esc menu
+#               Left/Right plant   Space pause   [ ] speed   Esc menu   mouse: inspect (wheel scrolls)
 # Recorded:     godot --headless --path . res://demo/map.tscn -- --auto
 #               ...loads every plant in turn, runs it 200 ticks, prints one
-#               line each and a count: a smoke test of the map on all of them.
-# Screenshot:   add --plant=<file stem> --shot=<file.png> to a windowed run.
+#               line each and a count: a smoke test of the map on all of them
+#               (and builds the panel of every node and pipe, so a field shape
+#               the panel cannot read shows up as a script error).
+# Screenshot:   add --plant=<file stem> --shot=<file.png> to a windowed run;
+#               --hover=<node or pipe name> points at it as the mouse would,
+#               --scroll=<lines> scrolls its panel as the wheel would.
 extends Node2D
 
 const Screen := preload("res://demo/screen.gd")
@@ -50,8 +59,36 @@ const HOT_K := 723.15
 ## More nodes than this in one column of the layout and it is drawn as two.
 const CROWDED := 5
 
-## The page the plant is laid out on, inside the headings and the legend.
-const AREA := Rect2(70, 110, 1012, 440)
+## The page the plant is laid out on, inside the headings and the legend, left
+## of the panel: a node's name runs ~55 px either side of it, so the right-most
+## column of nodes stops that far short of the panel's backing (PANEL_X - 10).
+## A crowded right-most column steps left, not right (`_lay_out`).
+const AREA := Rect2(70, 110, 735, 440)
+
+## The inspection panel: its left edge at the base width [px], its width, and
+## the line height of its text.
+const PANEL_X := 880.0
+const PANEL_WIDTH := 255.0
+## How far each nested level of the panel is set in [px].
+const PANEL_INDENT := 9.0
+const PANEL_LINE := 14.0
+const PANEL_TOP := 104.0
+## Deeper than this many nested names (`a.b.c.d`) and a field is left out: a
+## column's holdup keeps its whole working state under `kind`.
+const PANEL_DEPTH := 4
+## A list longer than this is left out (a column's stage profiles).
+const PANEL_LIST := 6
+
+## Units the panel converts, by a field's last name. A name ending `_pa`, `_k`,
+## `_w`, `_kg_s`, `_s` or `_m` says its unit itself (`_unit`); these are the
+## ones that do not, each as its Rust type declares it (crates/core/src).
+const PASCAL_FIELDS := ["pressure", "set_pressure", "design_pressure", "flare_pressure", "reference_pressure", "accumulation", "ceiling", "bubble_pressure", "full_open", "amount", "column_pressure"]
+const KELVIN_FIELDS := ["temperature", "t_set", "coolant", "water_inlet", "return_temperature", "failure_temperature", "flame_temperature", "upper_cut", "drum_temperature"]
+const WATT_FIELDS := ["duty", "reboiler_duty"]
+const FLOW_FIELDS := ["flow", "mass_flow", "water_flow", "leak_mass_flow"]
+const PERCENT_FIELDS := ["opening"]
+const SECOND_FIELDS := ["tau"]
+const METRE_FIELDS := ["h0", "height", "npsh_required", "diameter", "spacing", "weir_height"]
 
 @onready var sim: RefinerySim = $Sim
 
@@ -67,6 +104,16 @@ var shot_path := ""
 var places: Dictionary = {}
 ## The largest flow on the map this tick [kg/s]: pipe widths are shares of it.
 var largest_flow := 1.0
+## What the mouse is over: {"node": id} or {"edge": id}, or {} for nothing. An
+## id, never the entry itself: the snapshot is replaced every tick.
+var hovered: Dictionary = {}
+## `--hover=<name>`: what to point at once the plant is laid out; the mouse is
+## then ignored, so a screenshot shows what was asked.
+var hover_name := ""
+## `--scroll=<lines>`: the panel scrolled that far, as the wheel would.
+var hover_scroll := 0
+## How many of the panel's lines the mouse wheel has scrolled past.
+var panel_scroll := 0
 
 
 func _ready() -> void:
@@ -83,6 +130,10 @@ func _ready() -> void:
 			asked = arg.trim_prefix("--plant=")
 		elif arg.begins_with("--shot="):
 			shot_path = arg.trim_prefix("--shot=")
+		elif arg.begins_with("--hover="):
+			hover_name = arg.trim_prefix("--hover=")
+		elif arg.begins_with("--scroll="):
+			hover_scroll = int(arg.trim_prefix("--scroll="))
 	if plants.is_empty():
 		_halt("no plant files in %s" % SCENARIOS)
 		return
@@ -99,6 +150,8 @@ func _load(index: int) -> void:
 	halted = ""
 	snapshot = {}
 	places = {}
+	hovered = {}
+	panel_scroll = 0
 	var err = JSON.parse_string(sim.load_scenario("%s/%s.toml" % [SCENARIOS, plants[plant_index]]))
 	if err != null:
 		_halt("load failed: %s" % err["message"])
@@ -106,6 +159,9 @@ func _load(index: int) -> void:
 	if not _step():
 		return
 	_lay_out()
+	if hover_name != "":
+		_hover_named(hover_name)
+		panel_scroll = hover_scroll
 	queue_redraw()
 
 
@@ -153,12 +209,36 @@ func _run_all() -> void:
 			ticks += 1
 		if halted != "":
 			failed += 1
+		if not snapshot.is_empty():
+			# Every node's and pipe's panel, built and thrown away: a field
+			# shape the walker cannot read fails here, on every plant.
+			for node in snapshot["nodes"]:
+				_inspect_lines({"node": int(node["id"])})
+			for edge in snapshot["edges"]:
+				_inspect_lines({"edge": int(edge["id"])})
 		print("map: %-36s %3d nodes drawn, %3d pipes, %s" % [plants[i], places.size(), snapshot.get("edges", []).size(), "ok" if halted == "" else halted])
 	print("map: %d plants, %d stopped" % [plants.size(), failed])
 	get_tree().quit(1 if failed > 0 else 0)
 
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion and hover_name == "" and not places.is_empty():
+		# The local position, not the event's: the page is stretched to the
+		# window, and `places` are page coordinates.
+		var over := _hit(get_local_mouse_position())
+		if over != hovered:
+			hovered = over
+			panel_scroll = 0
+			queue_redraw()
+		return
+	if event is InputEventMouseButton and event.pressed and not hovered.is_empty():
+		# The wheel scrolls the panel: a column reports more than fits.
+		if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			panel_scroll += 3
+		elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			panel_scroll = maxi(0, panel_scroll - 3)
+		queue_redraw()
+		return
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	match event.keycode:
@@ -283,7 +363,8 @@ func _lay_out() -> void:
 			fractions[id] = fraction
 			var x := AREA.position.x + (AREA.size.x * d / deepest if deepest > 0 else AREA.size.x * 0.5)
 			if crowded and i % 2 == 1:
-				x += minf(96.0, step * 0.45)
+				# The right-most column steps left: right of it is the panel.
+				x += minf(96.0, step * 0.45) * (-1.0 if d == deepest and deepest > 0 else 1.0)
 			# Neighbouring columns sit half a step apart in height, so a
 			# straight run of pipe does not hide the names under it.
 			var stagger := 14.0 if d % 2 == 1 and keyed.size() == 1 else 0.0
@@ -320,6 +401,10 @@ func _draw() -> void:
 	for node in snapshot["nodes"]:
 		if places.has(int(node["id"])):
 			_draw_node(node, places[int(node["id"])])
+			if hovered.get("node", -1) == int(node["id"]):
+				var extent := _extent(_kind(node)) + Vector2(5, 5)
+				draw_rect(Rect2(places[int(node["id"])] - extent, extent * 2.0), INK, false, 1.5)
+	_draw_panel(size)
 	_draw_legend(size)
 
 
@@ -330,7 +415,7 @@ func _draw_legend(size: Vector2) -> void:
 		draw_rect(Rect2(Vector2(330 + i * 3.0, y - 10), Vector2(3, 10)), COOL.lerp(HOT, i / 59.0))
 	_text(Vector2(300, y), "20", DIM, 12)
 	_text(Vector2(516, y), "450 °C", DIM, 12)
-	_text(Vector2(30, size.y - 20.0), "Left/Right plant   Space pause   [ ] speed   F11 full screen   Esc menu   (this map watches: the plant's keys are on its own screen)", DIM, 13)
+	_text(Vector2(30, size.y - 20.0), "Left/Right plant   Space pause   [ ] speed   F11 full screen   Esc menu   mouse: inspect, wheel scrolls   (this map watches: the plant's keys are on its own screen)", DIM, 13)
 
 
 func _warmth(kelvin: float) -> Color:
@@ -359,12 +444,9 @@ func _draw_pipe(edge: Dictionary) -> void:
 	var b: Vector2 = places[to]
 	var color := _warmth(float(edge["stream"]["temperature"])) if running else IDLE
 	var width := 1.5 + 6.5 * sqrt(absf(flow) / largest_flow) if running else 1.5
-	var path := PackedVector2Array([a, b])
-	# A pipe back to a node at or left of where it starts (a recycle, a
-	# reflux, a pumparound's return) goes round underneath, not through.
-	if b.x <= a.x + 1.0:
-		var drop := maxf(a.y, b.y) + 46.0 + 5.0 * (int(edge["id"]) % 5)
-		path = PackedVector2Array([a, Vector2(a.x, drop), Vector2(b.x, drop), b])
+	var path := _pipe_path(edge)
+	if hovered.get("edge", -1) == int(edge["id"]):
+		draw_polyline(path, INK, width + 6.0)
 	draw_polyline(path, color, width)
 	if running:
 		var index := path.size() / 2
@@ -381,6 +463,87 @@ func _draw_pipe(edge: Dictionary) -> void:
 			var angle := deg_to_rad(60.0 + i * 15.0)
 			draw_line(mid, mid + Vector2(cos(angle), sin(angle)) * 22.0, WARN, 2.0)
 		_text(mid + Vector2(-26, 38), "leak %.2f kg/s" % float(edge["leak_mass_flow"]), WARN, 11)
+
+
+## Where a pipe between two drawn nodes runs: straight from its upstream node
+## to its downstream one, or — back to a node at or left of where it starts (a
+## recycle, a reflux, a pumparound's return) — round underneath, not through.
+## Empty for a pipe with an end the map hides. Drawing and the mouse both use
+## this, so a pipe is found where it is seen.
+func _pipe_path(edge: Dictionary) -> PackedVector2Array:
+	var from := int(edge["from"])
+	var to := int(edge["to"])
+	if not places.has(from) or not places.has(to):
+		return PackedVector2Array()
+	var a: Vector2 = places[from]
+	var b: Vector2 = places[to]
+	if b.x <= a.x + 1.0:
+		var drop := maxf(a.y, b.y) + 46.0 + 5.0 * (int(edge["id"]) % 5)
+		return PackedVector2Array([a, Vector2(a.x, drop), Vector2(b.x, drop), b])
+	return PackedVector2Array([a, b])
+
+
+## Half the width and height a node of `type` is drawn [px]: what the mouse
+## finds it by, and the outline drawn round it while it is inspected.
+func _extent(type: String) -> Vector2:
+	match type:
+		"source", "sink", "pump":
+			return Vector2(12, 12)
+		"tank", "vessel":
+			return Vector2(17, 20)
+		"valve", "relief_valve", "check_valve":
+			return Vector2(12, 9)
+		"junction":
+			return Vector2(6, 6)
+		"furnace":
+			return Vector2(22, 22)
+		"cooler", "water_cooler", "heat_exchanger", "coil_cell":
+			return Vector2(13, 13)
+		"column", "reactor":
+			return Vector2(18, 60)
+	return Vector2(14, 14)
+
+
+## What is drawn at `point`: a node first (the nearest whose shape holds it),
+## then the pipe nearest it within a few pixels of its line; {} for neither.
+func _hit(point: Vector2) -> Dictionary:
+	var best := {}
+	var best_distance := INF
+	for node in snapshot.get("nodes", []):
+		var id := int(node["id"])
+		if not places.has(id):
+			continue
+		var offset: Vector2 = (point - places[id]).abs()
+		var extent := _extent(_kind(node))
+		if offset.x <= extent.x and offset.y <= extent.y and offset.length() < best_distance:
+			best = {"node": id}
+			best_distance = offset.length()
+	if not best.is_empty():
+		return best
+	for edge in snapshot.get("edges", []):
+		var path := _pipe_path(edge)
+		for i in range(1, path.size()):
+			var distance := point.distance_to(Geometry2D.get_closest_point_to_segment(point, path[i - 1], path[i]))
+			if distance <= 6.0 and distance < best_distance:
+				best = {"edge": int(edge["id"])}
+				best_distance = distance
+	return best
+
+
+## `--hover=<name>`: the named node's place, or the middle of the named pipe's
+## middle run, sent through `_hit` as the mouse's would be.
+func _hover_named(wanted: String) -> void:
+	for node in snapshot["nodes"]:
+		if str(node["name"]) == wanted and places.has(int(node["id"])):
+			hovered = _hit(places[int(node["id"])])
+			return
+	for edge in snapshot["edges"]:
+		var path := _pipe_path(edge)
+		if str(edge["name"]) == wanted and path.size() >= 2:
+			var index := path.size() / 2
+			hovered = _hit((path[index - 1] + path[index]) * 0.5)
+			return
+	print("map: --hover=%s names no drawn node or pipe" % wanted)
 
 
 ## A node, by its kind. Its name under it, and the one or two numbers that
@@ -485,6 +648,236 @@ func _tank_fraction(node: Dictionary) -> float:
 	if specific_volume <= 0.0 or volume <= 0.0:
 		return 0.0
 	return clampf(float(kind["mass"]) * specific_volume / volume, 0.0, 1.0)
+
+
+# ------------------------------------------------------------------ panel
+
+## The panel at the right: what the mouse is over, every number the snapshot
+## gives it, as many lines as fit above the legend and then how many did not.
+func _draw_panel(size: Vector2) -> void:
+	var left := maxf(PANEL_X, size.x - PANEL_WIDTH - 12.0)
+	var bottom := size.y - 66.0
+	draw_rect(Rect2(left - 10.0, PANEL_TOP - 20.0, PANEL_WIDTH + 18.0, bottom - PANEL_TOP + 26.0), BODY.darkened(0.25))
+	var lines := _inspect_lines(hovered) if not hovered.is_empty() else []
+	if lines.is_empty():
+		var hint := "Point at a node or a pipe to read every number the plant reports for it."
+		draw_multiline_string(ThemeDB.fallback_font, Vector2(left, PANEL_TOP), hint, HORIZONTAL_ALIGNMENT_LEFT, PANEL_WIDTH, 12, 3, DIM)
+		return
+	# The title stays; the wheel scrolls the rest (`panel_scroll`), a line
+	# saying how many are above and below where any are hidden.
+	var room := int((bottom - PANEL_TOP) / PANEL_LINE)
+	var body := lines.size() - 1
+	var first := 1
+	if body > room:
+		first = 1 + clampi(panel_scroll, 0, body - room + 1)
+	panel_scroll = first - 1
+	var rows: Array = [lines[0]]
+	if first > 1:
+		rows.append(["… %d above" % (first - 1), "", DIM, 0])
+	var space := room - (rows.size() - 1)
+	var last := mini(lines.size(), first + space)
+	if last < lines.size():
+		last -= 1
+	rows.append_array(lines.slice(first, last))
+	if last < lines.size():
+		rows.append(["… %d more (mouse wheel)" % (lines.size() - last), "", DIM, 0])
+	var font := ThemeDB.fallback_font
+	for i in rows.size():
+		var line: Array = rows[i]
+		var y := PANEL_TOP + i * PANEL_LINE
+		var title := str(line[0])
+		var value := str(line[1])
+		var color: Color = line[2]
+		var x := left + PANEL_INDENT * int(line[3])
+		if value == "":
+			var heading := 14 if i == 0 else 10
+			draw_string(font, Vector2(x, y), title, HORIZONTAL_ALIGNMENT_LEFT, -1, Screen.fitting_size(title, left + PANEL_WIDTH - x, heading, 9), color)
+			continue
+		var value_width := font.get_string_size(value, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
+		draw_string(font, Vector2(left + PANEL_WIDTH - value_width, y), value, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, color)
+		draw_string(font, Vector2(x, y), _shortened(title, left + PANEL_WIDTH - value_width - 10.0 - x, 10), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, DIM)
+
+
+## `text`, its end cut off until it is no wider than `width` at `size`.
+func _shortened(text: String, width: float, size: int) -> String:
+	var font := ThemeDB.fallback_font
+	var cut := text
+	while cut.length() > 1 and font.get_string_size(cut, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x > width:
+		cut = cut.substr(0, cut.length() - 2) + "…"
+	return cut
+
+
+## The panel's lines for `target` ({"node": id} or {"edge": id}), each
+## [name, value, colour, indent], a heading where the value is "". Empty when
+## the target is not in this tick's snapshot.
+func _inspect_lines(target: Dictionary) -> Array:
+	var lines: Array = []
+	if target.has("node"):
+		var node := _entry("nodes", int(target["node"]))
+		if node.is_empty():
+			return lines
+		lines.append([str(node["name"]).replace("_", " "), "", INK, 0])
+		lines.append(["kind", _kind(node).replace("_", " "), INK, 0])
+		var readings := {}
+		for key in node:
+			if key not in ["id", "name", "kind"]:
+				readings[key] = node[key]
+		lines.append(["READINGS", "", DIM, 0])
+		_walk(readings, 1, lines)
+		lines.append(["SETTINGS AND STATE", "", DIM, 0])
+		_walk(node["kind"], 1, lines)
+	elif target.has("edge"):
+		var edge := _entry("edges", int(target["edge"]))
+		if edge.is_empty():
+			return lines
+		lines.append([str(edge["name"]).replace("_", " "), "", INK, 0])
+		lines.append(["pipe from", str(_entry("nodes", int(edge["from"])).get("name", "?")).replace("_", " "), INK, 0])
+		lines.append(["to", str(_entry("nodes", int(edge["to"])).get("name", "?")).replace("_", " "), INK, 0])
+		lines.append(["READINGS", "", DIM, 0])
+		_walk(edge["stream"], 1, lines)
+		var rest := {}
+		for key in edge:
+			if key not in ["id", "name", "from", "to", "stream"]:
+				rest[key] = edge[key]
+		_walk(rest, 1, lines)
+	return lines
+
+
+## This tick's entry in `snapshot[list]` with this id, or {}.
+func _entry(list: String, id: int) -> Dictionary:
+	for entry in snapshot.get(list, []):
+		if int(entry["id"]) == id:
+			return entry
+	return {}
+
+
+## Every scalar under `fields`, depth first, set in by `depth`; a dictionary
+## or a list of them is a heading with its fields under it. A composition is
+## its three largest cuts; a list longer than PANEL_LIST, and anything nested
+## deeper than PANEL_DEPTH, are left out; `type` is serde's tag.
+func _walk(fields: Dictionary, depth: int, lines: Array) -> void:
+	for key in fields:
+		if key == "type":
+			continue
+		var value = fields[key]
+		var title := str(key).replace("_", " ")
+		if value is Dictionary:
+			if value.has("mass_fractions"):
+				_composition(value["mass_fractions"], title, depth, lines)
+			elif depth < PANEL_DEPTH:
+				lines.append([title, "", DIM, depth])
+				_walk(value, depth + 1, lines)
+		elif value is Array:
+			if value.is_empty() or value.size() > PANEL_LIST:
+				continue
+			if value[0] is Dictionary:
+				if depth < PANEL_DEPTH:
+					for i in value.size():
+						if value[i] is Dictionary:
+							lines.append(["%s %d" % [title, i + 1], "", DIM, depth])
+							_walk(value[i], depth + 1, lines)
+			else:
+				var parts := PackedStringArray()
+				for item in value:
+					parts.append(_value("", item))
+				lines.append([title, ", ".join(parts), INK, depth])
+		else:
+			lines.append([_plain_name(str(key)), _value(str(key), value), INK, depth])
+
+
+## A field's name without the unit it ends in when the value shows that unit:
+## `temperature_k` reads "temperature", its value "… °C".
+func _plain_name(key: String) -> String:
+	for suffix in ["_kg_s", "_mol_s", "_pa", "_k", "_w", "_s", "_m"]:
+		if key.ends_with(suffix) and _unit(key) != "":
+			return key.trim_suffix(suffix).replace("_", " ")
+	return key.replace("_", " ")
+
+
+## A composition's three largest cuts by mass, named from the snapshot's slate.
+func _composition(fractions: Array, title: String, depth: int, lines: Array) -> void:
+	var slate: Array = snapshot.get("slate", [])
+	var ranked: Array = []
+	for i in fractions.size():
+		if float(fractions[i]) > 0.0:
+			ranked.append([float(fractions[i]), str(slate[i].get("name", "cut %d" % (i + 1))) if i < slate.size() else "cut %d" % (i + 1)])
+	ranked.sort()
+	ranked.reverse()
+	if ranked.is_empty():
+		lines.append([title, "nothing", INK, depth])
+		return
+	for i in mini(3, ranked.size()):
+		lines.append([title if i == 0 else "", "%s  %.1f %%" % [str(ranked[i][1]).replace("_", " "), ranked[i][0] * 100.0], INK, depth])
+
+
+## A field's value for reading, in the unit its name gives it (`_unit`), or as
+## it came when its name gives none.
+func _value(key: String, value) -> String:
+	if value == null:
+		return "none"
+	if value is bool:
+		return "yes" if value else "no"
+	if value is String:
+		return value.replace("_", " ")
+	var x := float(value)
+	match _unit(key):
+		"bar":
+			return "%s bar" % _number(x / 1.0e5)
+		"°C":
+			return "%s °C" % _number(x - 273.15)
+		"MW":
+			return "%s MW" % _number(x / 1.0e6)
+		"kg/s":
+			return "%s kg/s" % _number(x)
+		"%":
+			return "%s %%" % _number(x * 100.0)
+		"mol/s":
+			return "%s mol/s" % _number(x)
+		"s":
+			return "%s s" % _number(x)
+		"m":
+			return "%s m" % _number(x)
+	return _number(x)
+
+
+## The unit a field's name gives it; "" for none known. SI in, so the
+## conversions in `_value` are the only arithmetic.
+func _unit(key: String) -> String:
+	if key.ends_with("_pa") or key in PASCAL_FIELDS:
+		return "bar"
+	if key.ends_with("_k") or key in KELVIN_FIELDS:
+		return "°C"
+	if key.ends_with("_w") or key in WATT_FIELDS:
+		return "MW"
+	if key.ends_with("_kg_s") or key in FLOW_FIELDS:
+		return "kg/s"
+	if key.ends_with("_fraction") or key in PERCENT_FIELDS:
+		return "%"
+	if key.ends_with("_mol_s"):
+		return "mol/s"
+	if key.ends_with("_s") or key in SECOND_FIELDS:
+		return "s"
+	if key.ends_with("_m") or key in METRE_FIELDS:
+		return "m"
+	return ""
+
+
+## A number in a few characters: whole numbers whole, very large or very
+## small ones as a mantissa and a power of ten (a valve's Cv is ~1e-5).
+func _number(x: float) -> String:
+	if x == 0.0:
+		return "0"
+	var size := absf(x)
+	if size >= 1.0e6 or size < 1.0e-3:
+		var power := floori(log(size) / log(10.0))
+		return "%.3fe%d" % [x / pow(10.0, power), power]
+	if x == roundf(x):
+		return "%d" % int(x)
+	if size >= 100.0:
+		return "%.1f" % x
+	if size >= 1.0:
+		return "%.2f" % x
+	return "%.4f" % x
 
 
 func _centred(at: Vector2, text: String, color: Color, size: int) -> void:
