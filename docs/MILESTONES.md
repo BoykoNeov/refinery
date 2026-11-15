@@ -25,8 +25,11 @@ M77; the user took the recommendation (plan 5, slice 1, no decision needed).
 - One pipe path for drawing and the mouse, so recycle lines are found where
   they are drawn. `--hover=<name>` / `--scroll=<lines>` for recorded
   screenshots, through the same hit test.
-- `AREA` 1012 → 735 px; a crowded right-most column steps left, away from the
-  panel (640 px collided the hydrocracker's names).
+- `AREA` 1012 → 735 px (640 px collided the hydrocracker's names); a crowded
+  right-most column would step left, away from the panel. No shipped plant
+  has one: a guard.
+- **Found**: a pipe's `stream.pressure` is atmospheric in every plant, never
+  set; the panel leaves it out (DEFERRED F10).
 - `--auto` builds every panel on all 72 plants: same lines as before, 0
   stopped, no script errors. Screenshots looked at: `crude_unit_loops`,
   `hydrocracker_hydrogen_quench`, `tank_level_fill_control` (a pipe),

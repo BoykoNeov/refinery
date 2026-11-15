@@ -224,8 +224,12 @@ func _run_all() -> void:
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and hover_name == "" and not places.is_empty():
 		# The local position, not the event's: the page is stretched to the
-		# window, and `places` are page coordinates.
-		var over := _hit(get_local_mouse_position())
+		# window, and `places` are page coordinates. Over the panel itself
+		# the choice stays, so the wheel can scroll it.
+		var mouse := get_local_mouse_position()
+		if _panel_rect(get_viewport_rect().size).has_point(mouse):
+			return
+		var over := _hit(mouse)
 		if over != hovered:
 			hovered = over
 			panel_scroll = 0
@@ -364,6 +368,8 @@ func _lay_out() -> void:
 			var x := AREA.position.x + (AREA.size.x * d / deepest if deepest > 0 else AREA.size.x * 0.5)
 			if crowded and i % 2 == 1:
 				# The right-most column steps left: right of it is the panel.
+				# (No shipped plant has a crowded right-most column, 2026-11-15:
+				# a guard for the plant files to come.)
 				x += minf(96.0, step * 0.45) * (-1.0 if d == deepest and deepest > 0 else 1.0)
 			# Neighbouring columns sit half a step apart in height, so a
 			# straight run of pipe does not hide the names under it.
@@ -655,9 +661,9 @@ func _tank_fraction(node: Dictionary) -> float:
 ## The panel at the right: what the mouse is over, every number the snapshot
 ## gives it, as many lines as fit above the legend and then how many did not.
 func _draw_panel(size: Vector2) -> void:
-	var left := maxf(PANEL_X, size.x - PANEL_WIDTH - 12.0)
+	var left := _panel_rect(size).position.x + 10.0
 	var bottom := size.y - 66.0
-	draw_rect(Rect2(left - 10.0, PANEL_TOP - 20.0, PANEL_WIDTH + 18.0, bottom - PANEL_TOP + 26.0), BODY.darkened(0.25))
+	draw_rect(_panel_rect(size), BODY.darkened(0.25))
 	var lines := _inspect_lines(hovered) if not hovered.is_empty() else []
 	if lines.is_empty():
 		var hint := "Point at a node or a pipe to read every number the plant reports for it."
@@ -698,6 +704,14 @@ func _draw_panel(size: Vector2) -> void:
 		draw_string(font, Vector2(x, y), _shortened(title, left + PANEL_WIDTH - value_width - 10.0 - x, 10), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, DIM)
 
 
+## The panel's backing on a page of `size`: at PANEL_X on the base page, at
+## the right edge of a wider one.
+func _panel_rect(size: Vector2) -> Rect2:
+	var left := maxf(PANEL_X, size.x - PANEL_WIDTH - 12.0)
+	var bottom := size.y - 66.0
+	return Rect2(left - 10.0, PANEL_TOP - 20.0, PANEL_WIDTH + 18.0, bottom - PANEL_TOP + 26.0)
+
+
 ## `text`, its end cut off until it is no wider than `width` at `size`.
 func _shortened(text: String, width: float, size: int) -> String:
 	var font := ThemeDB.fallback_font
@@ -734,7 +748,13 @@ func _inspect_lines(target: Dictionary) -> Array:
 		lines.append(["pipe from", str(_entry("nodes", int(edge["from"])).get("name", "?")).replace("_", " "), INK, 0])
 		lines.append(["to", str(_entry("nodes", int(edge["to"])).get("name", "?")).replace("_", " "), INK, 0])
 		lines.append(["READINGS", "", DIM, 0])
-		_walk(edge["stream"], 1, lines)
+		# A stream's `pressure` is left out: every pipe reports atmospheric
+		# there (DEFERRED F10); the nodes at its ends hold the real ones.
+		var stream := {}
+		for key in edge["stream"]:
+			if key != "pressure":
+				stream[key] = edge["stream"][key]
+		_walk(stream, 1, lines)
 		var rest := {}
 		for key in edge:
 			if key not in ["id", "name", "from", "to", "stream"]:

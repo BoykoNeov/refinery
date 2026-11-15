@@ -48,9 +48,13 @@ Known weak spots, seen in screenshots:
   test the mouse uses. `--auto` also builds every node's and pipe's panel on
   all 72 plants (its printed lines are unchanged).
 - **`AREA` 1012 → 735 px wide**: 640 first, and the hydrocracker's
-  names collided. To win the width back, a crowded right-most column now
-  steps its every second node LEFT (it stepped right, into the panel). The
-  panel draws from x = 870, its text from 880.
+  names collided. A crowded right-most column would step its every second
+  node LEFT, not right into the panel. No shipped plant has one (checked
+  2026-11-15), so this is a guard for plant files to come and has not been
+  seen on screen. The panel draws from x = 870, its text from 880.
+- With the mouse over the panel, the item stays selected, so the wheel works.
+- A pipe's `stream.pressure` is left out: every pipe reports atmospheric
+  pressure there (DEFERRED F10).
 
 ## Slice 2 — hands (no decision)
 

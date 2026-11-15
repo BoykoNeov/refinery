@@ -11574,8 +11574,12 @@ pipe's panel on all 72 plants: its printed lines are unchanged (72 plants, 0
 stopped), with no script errors.
 
 **Layout**: `AREA` 1012 → 735 px wide. A first try at 640 made the
-hydrocracker's names collide; a crowded right-most column now steps left,
-away from the panel.
+hydrocracker's names collide. A crowded right-most column would step left,
+away from the panel; no shipped plant has one, so it is a guard.
+
+**Found**: every pipe's `stream.pressure` is 101 325 Pa in all 72 plants;
+nothing sets it after a stream is made. The panel leaves it out (DEFERRED
+F10).
 
 **Open**: slice 2 (hands: click a valve, a pump, a furnace, a pipe; recovery
 from a failed tick, DEFERRED F8), slice 3 (a layout a person can fix).
