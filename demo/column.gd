@@ -1826,28 +1826,92 @@ func _draw() -> void:
 		)
 
 
-## The column's overhead where its condenser is a limit (M75, §80): a relief
-## valve on its top, red while it is open, with its line to a flare whose
-## flame is sized by what it vents. Its numbers are the panel's
-## (`_draw_overhead_panel`); nothing drawn on a column without one.
+## The column's overhead where its condenser is a limit (M75, §80), drawn in
+## the clear space right of the column's top, between the naphtha and the
+## kerosene: a relief valve (the bow-tie) on the column's top, named, with the
+## pressure it opens at and how far open it is; its line, red while it vents,
+## runs right and down into the FOOT of a flare stack, an arrow on it toward
+## the flare; the gas burns at the stack's tip, the flame sized by what it
+## vents (a pilot while nothing does). Beside the stack, in words, what the
+## flare burns and how much, and a bar of what that gas is, in the products'
+## cut colours. Every number is the snapshot's; nothing drawn on a column
+## without a condenser limit.
 func _draw_overhead() -> void:
+	var declared := _condenser_declared()
 	var ran := _condenser_ran()
-	if _condenser_declared().is_empty() or ran.is_empty():
+	if declared.is_empty() or ran.is_empty():
 		return
 	var relief := _relief_ran()
 	var venting := float(relief.get("flow_kg_s", 0.0))
-	# The valve on the column's top, its line left to the flare.
-	var valve := COLUMN_RECT.position + Vector2(14, -14)
-	var stack := Vector2(290, 150)
-	draw_line(COLUMN_RECT.position + Vector2(14, 0), valve, PIPE, 3.0)
 	var open := float(relief.get("opening", 0.0))
-	draw_colored_polygon(PackedVector2Array([valve + Vector2(-7, -8), valve + Vector2(7, -8), valve + Vector2(0, 2)]), BAD if open > 0.0 else SHELL)
-	draw_polyline(PackedVector2Array([valve + Vector2(0, -8), valve + Vector2(0, -20), Vector2(stack.x, valve.y - 20), stack]), BAD if venting > 0.0 else PIPE, 3.0)
-	draw_line(stack, stack + Vector2(0, 60), SHELL, 5.0)
+	var line_color := BAD if venting > 0.0 else PIPE
+	# The valve on the column's top right, its outlet up to the header.
+	var nozzle := COLUMN_RECT.position + Vector2(COLUMN_RECT.size.x - 12, 0)
+	var valve := nozzle + Vector2(0, -9)
+	var header_y := nozzle.y - 22
+	var drop_x := 565.0
+	var stack_foot := Vector2(600, 190)
+	var stack_tip := Vector2(600, 145)
+	draw_line(nozzle, valve, PIPE, 3.0)
+	draw_polyline(
+		PackedVector2Array([valve + Vector2(0, -7), Vector2(nozzle.x, header_y), Vector2(drop_x, header_y), Vector2(drop_x, stack_foot.y), stack_foot]),
+		line_color, 3.0
+	)
+	# The valve: two triangles tip to tip across the flow (a bow-tie).
+	var body := BAD if open > 0.0 else SHELL
+	draw_colored_polygon(PackedVector2Array([valve + Vector2(-7, 7), valve + Vector2(7, 7), valve]), body)
+	draw_colored_polygon(PackedVector2Array([valve + Vector2(-7, -7), valve + Vector2(7, -7), valve]), body)
+	# Its words under the header, clear of the naphtha's pipe above it.
+	_text(Vector2(nozzle.x + 16, header_y + 18), "relief valve", INK, 12)
+	var set_bar := float(declared.get("relief", {}).get("set_pressure", 0.0)) / 1.0e5
+	_text(Vector2(nozzle.x + 16, header_y + 32), "opens at %.2f bar" % set_bar, DIM, 12)
+	_text(
+		Vector2(nozzle.x + 16, header_y + 46),
+		"%.0f %% open" % (open * 100.0) if open > 0.0 else "shut",
+		BAD if open > 0.0 else DIM, 12
+	)
+	# The flow's way: an arrowhead on the last run, into the stack's foot.
+	var arrow := Vector2(stack_foot.x - 14, stack_foot.y)
+	draw_colored_polygon(PackedVector2Array([arrow + Vector2(-8, -6), arrow + Vector2(-8, 6), arrow + Vector2(2, 0)]), line_color)
+	# The stack, the gas rising inside it to burn at the tip.
+	draw_line(stack_foot + Vector2(0, 2), stack_tip, SHELL, 6.0)
+	var height := 6.0
 	if venting > 0.0:
-		var size := 6.0 + 26.0 * clampf(venting / 80.0, 0.0, 1.0)
-		draw_colored_polygon(PackedVector2Array([stack + Vector2(-size * 0.4, 0), stack + Vector2(size * 0.4, 0), stack + Vector2(0, -size * 1.6)]), FLAME)
-	_text(stack + Vector2(-26, 78), "flare", DIM, 12)
+		height = 12.0 + 30.0 * clampf(venting / 80.0, 0.0, 1.0)
+	_draw_flame(stack_tip, height)
+	# What it does, in words, and what it is burning.
+	var words := Vector2(stack_tip.x + 18, stack_tip.y - 12)
+	_text(words, "FLARE", INK, 13)
+	_text(words + Vector2(0, 15), "burns the vapour the", DIM, 12)
+	_text(words + Vector2(0, 29), "condenser can't take", DIM, 12)
+	if venting > 0.0:
+		_text(words + Vector2(0, 45), "%.1f kg/s burning" % venting, FLAME, 13)
+		var fractions: Array = relief.get("composition", {}).get("mass_fractions", [])
+		var bar := Rect2(words + Vector2(0, 52), Vector2(120, 8))
+		var x := bar.position.x
+		for c in fractions.size():
+			var width := bar.size.x * float(fractions[c])
+			draw_rect(Rect2(Vector2(x, bar.position.y), Vector2(width, bar.size.y)), CUT_COLORS[c % CUT_COLORS.size()])
+			x += width
+		draw_rect(bar, SHELL, false, 1.0)
+	else:
+		_text(words + Vector2(0, 45), "idle: valve shut", DIM, 13)
+
+
+## A flame standing on `base`, `height` px tall: a round-bottomed tongue with
+## a yellow core — not a triangle, which would read as an arrow.
+func _draw_flame(base: Vector2, height: float) -> void:
+	for layer in [[1.0, FLAME], [0.55, Color(1.0, 0.85, 0.35)]]:
+		var h: float = height * float(layer[0])
+		var radius := maxf(h * 0.26, 2.0)
+		var centre := base - Vector2(0, radius)
+		var points := PackedVector2Array()
+		# The lower half-circle, left to right, then up to the tip.
+		for i in 9:
+			var angle := PI - PI * float(i) / 8.0
+			points.append(centre + Vector2(cos(angle), sin(angle)) * radius)
+		points.append(base - Vector2(0, h))
+		draw_colored_polygon(points, layer[1])
 
 
 ## The overhead's lines on the panel (M75, §80), in place of the furnace's
@@ -1873,7 +1937,7 @@ func _draw_overhead_panel(y: float) -> float:
 	elif bool(ran.get("at_capacity", false)):
 		state = "  PRESSURE HIGH"
 		color = WARN
-	_text(Vector2(PANEL_X, y), "top %.2f bar (set %.2f)%s" % [float(ran["pressure_pa"]) / 1.0e5, float(ran["set_pressure_pa"]) / 1.0e5, state], color)
+	_text(Vector2(PANEL_X, y), "top %.2f bar (normal %.2f)%s" % [float(ran["pressure_pa"]) / 1.0e5, float(ran["set_pressure_pa"]) / 1.0e5, state], color)
 	y += 20
 	var lost := _coolant_lost()
 	_text(Vector2(PANEL_X, y), "condenser can take %.1f MW%s" % [float(ran["capacity_w"]) / 1.0e6, ": COOLING LOST" if lost else ""], BAD if lost else INK, 14)
