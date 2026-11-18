@@ -1797,7 +1797,7 @@ func _draw() -> void:
 	_draw_panel()
 
 	draw_multiline_string(
-		ThemeDB.fallback_font, Vector2(30, 556), message, HORIZONTAL_ALIGNMENT_LEFT,
+		ThemeDB.fallback_font, Vector2(30, 580), message, HORIZONTAL_ALIGNMENT_LEFT,
 		get_viewport_rect().size.x - 60, 15, 2, BAD if message_bad else GOOD
 	)
 	var keys := "Up/Down furnace   W/S reflux   E/D pumparounds   Space pause   [ ] speed"
@@ -1813,9 +1813,9 @@ func _draw() -> void:
 		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   Space pause   [ ] speed"
 	# Both legends stop short of the panel, whose last lines reach this low.
 	var legend_width := PANEL_X - 30.0 - 24.0
-	_text(Vector2(30, 600), keys, DIM, 16, legend_width)
+	_text(Vector2(30, 612), keys, DIM, 16, legend_width)
 	_text(
-		Vector2(30, 624),
+		Vector2(30, 634),
 		"1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup   9 overfill   Esc menu",
 		DIM, 16, legend_width
 	)
@@ -2032,7 +2032,7 @@ func _draw_column() -> void:
 
 	# Condenser and reflux.
 	var top := COLUMN_RECT.position + Vector2(COLUMN_RECT.size.x * 0.5, 0)
-	var condenser := top + Vector2(0, -40)
+	var condenser := _condenser_point()
 	draw_line(top, condenser, PIPE, 4.0)
 	draw_circle(condenser, 14, COOLER)
 	var raised := _raised()
@@ -2045,7 +2045,7 @@ func _draw_column() -> void:
 	# and its base beside the reboiler, each filled to its level.
 	var holdup := _holdup()
 	if not holdup.is_empty():
-		var drum := Rect2(condenser + Vector2(24, -26), Vector2(54, 20))
+		var drum := _drum_rect()
 		draw_line(condenser + Vector2(14, 0), Vector2(drum.position.x, drum.get_center().y), PIPE, 3.0)
 		_draw_level(drum, float(holdup["drum_level"]), str(holdup["drum_limit"]), bool(holdup["drum_loop_at_max"]))
 		_text(drum.position + Vector2(0, -5), "drum %.0f %%" % (float(holdup["drum_level"]) * 100.0), _limit_color(str(holdup["drum_limit"])), 12)
@@ -2058,15 +2058,14 @@ func _draw_column() -> void:
 		draw_line(from, Vector2(COLUMN_RECT.position.x, bottom_y), STEAM, 3.0)
 		_text(from + Vector2(0, -22), "steam %.2f kg/s" % _steam_kg_s(), STEAM, 13)
 		_text(from + Vector2(0, -7), "%s, valve %.0f %%" % [_c(_steam_k()), _steam_opening() * 100.0], DIM, 11)
-	# A column held at zero has no reboiler to draw: its bottom stage's
-	# balance is held at zero (the panel says so). One held above zero —
-	# partway through a start-up — still has one, at the duty it holds.
-	if not _held() or _mw("reboiler_w") > 0.0:
-		var reboiler := Rect2(foot + Vector2(-30, 10), Vector2(60, 26))
+	# The reboiler, where the column has one (`_reboiler_rect`).
+	var reboiler := _reboiler_rect()
+	if reboiler.has_area():
 		draw_line(foot, reboiler.position + Vector2(30, 0), PIPE, 4.0)
 		draw_rect(reboiler, Color(0.35, 0.18, 0.10))
 		draw_rect(reboiler, SHELL, false, 2.0)
-		_text(reboiler.position + Vector2(-60, 46), "reboiler %.1f MW%s" % [_mw("reboiler_w"), "  held" if _held() else ""], INK, 14)
+		# Close under the reboiler, clear of the message's row below it.
+		_text(reboiler.position + Vector2(-60, 42), "reboiler %.1f MW%s" % [_mw("reboiler_w"), "  held" if _held() else ""], INK, 14)
 	if not holdup.is_empty():
 		var base := Rect2(foot + Vector2(-50, 10), Vector2(14, 26))
 		_draw_level(base, float(holdup["base_level"]), str(holdup["base_limit"]), bool(holdup["base_loop_at_max"]))
@@ -2099,6 +2098,25 @@ func _draw_column() -> void:
 		var flagged := _loop_flag(run) != ""
 		_text(Vector2(x + 10, return_y + 4), "%.0f kg/s → %s" % [float(run["flow_kg_s"]), _c(float(run["return_temperature_k"]))], WARN if flagged else color, 10)
 		_text(Vector2(x + 10, return_y + 15), "%.1f MW off%s" % [float(run["duty_w"]) / 1.0e6, _loop_flag(run)], WARN if flagged else color, 10)
+
+
+## The condenser's centre, on its line above the column's top.
+func _condenser_point() -> Vector2:
+	return COLUMN_RECT.position + Vector2(COLUMN_RECT.size.x * 0.5, -40)
+
+
+## The reflux drum (M74), right of the condenser and a little above it.
+func _drum_rect() -> Rect2:
+	return Rect2(_condenser_point() + Vector2(24, -26), Vector2(54, 20))
+
+
+## The reboiler under the column's foot, or an empty rect where none is
+## drawn: a column held at zero has none (its bottom stage's balance is held
+## at zero); one held above zero, partway through a start-up, still has one.
+func _reboiler_rect() -> Rect2:
+	if _held() and _mw("reboiler_w") <= 0.0:
+		return Rect2()
+	return Rect2(COLUMN_RECT.position + Vector2(COLUMN_RECT.size.x * 0.5 - 30, COLUMN_RECT.size.y + 10), Vector2(60, 26))
 
 
 ## A drum's or base's level: its vessel, filled from the bottom to its level
@@ -2209,6 +2227,10 @@ func _draw_products() -> void:
 	var plant: Dictionary = PLANTS[plant_key]
 	var draws: Array = _column()["kind"]["draws"]
 	var slate: Array = snapshot["slate"]
+	var holds := not _holdup().is_empty()
+	# The overhead's outlet: the condenser's right side, where a column
+	# without a drum sends its distillate.
+	var outlet := _condenser_point() + Vector2(14, 0)
 	for i in draw_ids.size():
 		var edge := _edge(draw_ids[i])
 		var stage := int(draws[i]["stage"])
@@ -2216,14 +2238,38 @@ func _draw_products() -> void:
 		if stage == 0 and draws[i].get("water", false):
 			# The decanter's free water, above the naphtha drawn beside it.
 			y = COLUMN_RECT.position.y - 72
+		elif stage == 0 and holds:
+			# A column that holds liquid draws its distillate from the drum.
+			y = _drum_rect().get_center().y
 		elif stage == 0:
-			y = COLUMN_RECT.position.y - 40
+			y = outlet.y
 		elif stage >= _stage_count():
 			y = COLUMN_RECT.end.y + 23
 		else:
 			y = _stage_y(stage - 1)
-		var from := Vector2(COLUMN_RECT.end.x + (14 if stage == 0 else 0), y)
-		draw_line(from, Vector2(PRODUCT_X - 8, y), PIPE, 3.0)
+		var end := Vector2(PRODUCT_X - 8, y)
+		if stage == 0 and holds:
+			# Out of the drum's right end, straight to its bar.
+			draw_line(Vector2(_drum_rect().end.x, y), end, PIPE, 3.0)
+		elif stage == 0 and y != outlet.y:
+			# The water leaves the condensate's pipe at a tee and rises to
+			# its own line; both start at the condenser.
+			var tee := Vector2(COLUMN_RECT.end.x + 14, outlet.y)
+			draw_polyline(PackedVector2Array([outlet, tee, Vector2(tee.x, y), end]), PIPE, 3.0)
+			draw_circle(tee, 3.5, PIPE)
+		elif stage == 0:
+			draw_line(outlet, end, PIPE, 3.0)
+		elif stage >= _stage_count():
+			# The bottoms: out of the reboiler's side, or, on a column
+			# without one, down from the column's foot.
+			var reboiler := _reboiler_rect()
+			if reboiler.has_area():
+				draw_line(Vector2(reboiler.end.x, y), end, PIPE, 3.0)
+			else:
+				var foot := Vector2(COLUMN_RECT.get_center().x, COLUMN_RECT.end.y)
+				draw_polyline(PackedVector2Array([foot, Vector2(foot.x, y), end]), PIPE, 3.0)
+		else:
+			draw_line(Vector2(COLUMN_RECT.end.x, y), end, PIPE, 3.0)
 		var fractions: Array = edge["stream"]["composition"]["mass_fractions"]
 		var x := PRODUCT_X
 		for c in fractions.size():
