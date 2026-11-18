@@ -1797,7 +1797,7 @@ func _draw() -> void:
 	_draw_panel()
 
 	draw_multiline_string(
-		ThemeDB.fallback_font, Vector2(30, 580), message, HORIZONTAL_ALIGNMENT_LEFT,
+		ThemeDB.fallback_font, Vector2(30, 575), message, HORIZONTAL_ALIGNMENT_LEFT,
 		get_viewport_rect().size.x - 60, 15, 2, BAD if message_bad else GOOD
 	)
 	var keys := "Up/Down furnace   W/S reflux   E/D pumparounds   Space pause   [ ] speed"
@@ -1813,9 +1813,9 @@ func _draw() -> void:
 		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   Space pause   [ ] speed"
 	# Both legends stop short of the panel, whose last lines reach this low.
 	var legend_width := PANEL_X - 30.0 - 24.0
-	_text(Vector2(30, 612), keys, DIM, 16, legend_width)
+	_text(Vector2(30, 621), keys, DIM, 16, legend_width)
 	_text(
-		Vector2(30, 634),
+		Vector2(30, 641),
 		"1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup   9 overfill   Esc menu",
 		DIM, 16, legend_width
 	)
@@ -2065,7 +2065,7 @@ func _draw_column() -> void:
 		draw_rect(reboiler, Color(0.35, 0.18, 0.10))
 		draw_rect(reboiler, SHELL, false, 2.0)
 		# Close under the reboiler, clear of the message's row below it.
-		_text(reboiler.position + Vector2(-60, 42), "reboiler %.1f MW%s" % [_mw("reboiler_w"), "  held" if _held() else ""], INK, 14)
+		_text(reboiler.position + Vector2(-60, 40), "reboiler %.1f MW%s" % [_mw("reboiler_w"), "  held" if _held() else ""], INK, 14)
 	if not holdup.is_empty():
 		var base := Rect2(foot + Vector2(-50, 10), Vector2(14, 26))
 		_draw_level(base, float(holdup["base_level"]), str(holdup["base_limit"]), bool(holdup["base_loop_at_max"]))
