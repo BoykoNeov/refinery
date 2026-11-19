@@ -88,7 +88,8 @@ The commands are the engine's own JSON (`crates/core/src/snapshot.rs`,
 - **A click on a punctureable pipe's downstream half means the same pipe**:
   the loader splits it at `<pipe>__leak_point`, and only the upstream half
   takes `puncture_pipe`; without this the visible half answered "declares
-  no leak path".
+  no leak path". Likewise a click on the `__leak_point` junction itself —
+  the dot at the pipe's middle, which the mouse finds before the pipe.
 - The message line is two lines at the bottom (a recovery says what it
   undid and why); the pipes' key moved up beside the headings.
 - Q/Z steps: temperature 5 °C, level 0.25 m, pressure 0.1 bar, flow 5 %

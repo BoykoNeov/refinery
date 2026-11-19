@@ -429,6 +429,13 @@ func _click(target: Dictionary, puncture: bool) -> void:
 	var node := _entry("nodes", int(target["node"]))
 	if node.is_empty():
 		return
+	if str(node["name"]).ends_with("__leak_point"):
+		# The junction the loader puts in the middle of a punctureable pipe
+		# (drawn as a dot, no name): a click on it is a click on that pipe.
+		for edge in snapshot["edges"]:
+			if int(edge["to"]) == int(node["id"]):
+				_click({"edge": int(edge["id"])}, puncture)
+				return
 	var label := str(node["name"]).replace("_", " ")
 	var type := _kind(node)
 	match type:
@@ -617,9 +624,14 @@ func _hands() -> void:
 		_run_ticks(HANDS_PAUSE)
 		_click(holeable, true)
 	if not downstream.is_empty():
-		# The pipe's downstream half holes and mends the same pipe.
+		# The pipe's downstream half holes and mends the same pipe; so does a
+		# click at the pipe's middle, where the mouse finds the junction the
+		# loader put there — sent through `_hit`, as the mouse's would be.
 		_click(downstream, true)
 		_click(downstream, true)
+		var middle: Vector2 = places[int(_entry("edges", int(downstream["edge"]))["from"])]
+		_click(_hit(middle), true)
+		_click(_hit(middle), true)
 	var loops: Array = snapshot.get("controls", [])
 	if loops.size() > 1:
 		_act("next_loop")
