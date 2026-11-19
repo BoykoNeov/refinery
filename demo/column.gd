@@ -317,6 +317,10 @@ const PLANTS := {
 		# corners and 200 single moves at 0–80 MW, every one ran.
 		"reboiler_mw": [0.0, 215.0],
 		"range_ref": "§79.8, §79.13",
+		# The drum's and base's levels over the last twenty minutes, drawn
+		# where the furnace is on the other plants (M83, the user's choice):
+		# here a key moved takes minutes to reach them.
+		"level_chart": true,
 	},
 	"overfill":
 	{
@@ -567,6 +571,12 @@ var seen_raised := false
 ## The wall time the last PRINT_EVERY ticks took [µs], tick and snapshot both:
 ## the screen's own cost, printed on the `t=` line.
 var block_usec := 0
+## The level chart's samples (M83), oldest first: [sample number, drum level
+## %, base level %], one every LEVEL_SAMPLE_S of plant time; how many were
+## taken since the load, and the plant time [s] the next is due at.
+var level_samples: Array = []
+var levels_taken := 0
+var next_level_s := 0.0
 
 
 func _ready() -> void:
@@ -589,6 +599,9 @@ func _load(key: String) -> void:
 	snapshot = {}
 	seen_raised = false
 	block_usec = 0
+	level_samples = []
+	levels_taken = 0
+	next_level_s = 0.0
 	var plant: Dictionary = PLANTS[key]
 	ticks_per_frame = plant["ticks_per_frame"]
 
@@ -652,6 +665,7 @@ func _step() -> bool:
 	snapshot = JSON.parse_string(sim.snapshot_json())
 	block_usec += Time.get_ticks_usec() - started
 	var tick := sim.tick_index()
+	_sample_levels()
 	_report_events(tick)
 
 	if not auto_run:
@@ -675,6 +689,23 @@ func _step() -> bool:
 		_shoot(tick)
 		return false
 	return true
+
+
+## On a plant with a level chart, the drum's and base's levels once every
+## LEVEL_SAMPLE_S of plant time, the last LEVEL_SAMPLES kept.
+func _sample_levels() -> void:
+	if not PLANTS[plant_key].get("level_chart", false) or _holdup().is_empty():
+		return
+	var now := float(snapshot["sim_time"])
+	if now + 1.0e-6 < next_level_s:
+		return
+	while next_level_s <= now + 1.0e-6:
+		next_level_s += LEVEL_SAMPLE_S
+	var holdup := _holdup()
+	level_samples.append([levels_taken, float(holdup["drum_level"]) * 100.0, float(holdup["base_level"]) * 100.0])
+	levels_taken += 1
+	if level_samples.size() > LEVEL_SAMPLES:
+		level_samples.pop_front()
 
 
 ## A line when the column starts or stops running above its reflux setting.
@@ -1728,6 +1759,15 @@ func _readout(tick: int) -> String:
 # ---------------------------------------------------------------- drawing
 
 const FURNACE_RECT := Rect2(40, 330, 150, 170)
+## The level chart (M83), where a plant with one draws it in place of the
+## furnace: a sample every this many seconds of plant time, twenty minutes of
+## them, the levels on a fixed 0–100 % scale.
+const LEVEL_RECT := Rect2(70, 352, 175, 128)
+const LEVEL_SAMPLE_S := 5.0
+const LEVEL_SAMPLES := 240
+const LEVEL_AXIS := {"step": 25.0, "range": [0.0, 100.0]}
+const DRUM_LINE := Color(0.40, 0.70, 0.95)
+const BASE_LINE := Screen.WARN
 const COLUMN_RECT := Rect2(330, 130, 100, 380)
 const PRODUCT_X := 520.0
 const BAR_WIDTH := 140.0
@@ -1777,7 +1817,7 @@ func _draw() -> void:
 	_text(Vector2(30, 34), PLANTS[plant_key]["title"], INK, 20)
 	_text(
 		Vector2(30, 60),
-		"t = %d s    %d tick(s) per frame%s" % [sim.tick_index(), ticks_per_frame, "    PAUSED" if paused else ""],
+		"t = %.0f s    %d tick(s) per frame%s" % [float(snapshot.get("sim_time", 0.0)), ticks_per_frame, "    PAUSED" if paused else ""],
 		DIM
 	)
 
@@ -1945,6 +1985,9 @@ func _draw_overhead_panel(y: float) -> float:
 
 ## The furnace: flames sized by its duty, the coil coloured toward its tube limit.
 func _draw_furnace() -> void:
+	if PLANTS[plant_key].get("level_chart", false):
+		_draw_level_chart()
+		return
 	draw_rect(FURNACE_RECT, Color(0.13, 0.12, 0.12))
 	draw_rect(FURNACE_RECT, SHELL, false, 3.0)
 	var mw := _duty_w() / 1.0e6
@@ -1970,6 +2013,35 @@ func _draw_furnace() -> void:
 	var feed_y := _stage_y(int(_cascade()["feed_stage"]) - 1)
 	var out := Vector2(FURNACE_RECT.end.x, FURNACE_RECT.position.y + 40)
 	draw_polyline(PackedVector2Array([out, Vector2(260, out.y), Vector2(260, feed_y), Vector2(COLUMN_RECT.position.x, feed_y)]), PIPE, 6.0)
+	_text(FURNACE_RECT.position + Vector2(0, FURNACE_RECT.size.y + 20), "feed %s, %.0f kg/s" % [_c(_feed_k()), _feed_kg_s()], INK, 14)
+	_text(FURNACE_RECT.position + Vector2(0, FURNACE_RECT.size.y + 38), "%.0f %% flashes in the column" % (_flash() * 100.0), WARN if _flash() > 0.0 else DIM, 13)
+
+
+## On a plant with a level chart (M83): the furnace in words, the drum's and
+## base's levels over the last twenty minutes where its picture would be, the
+## transfer line from the furnace's words into the feed stage, and the feed's
+## lines under the chart as under the furnace.
+func _draw_level_chart() -> void:
+	var mw := _duty_w() / 1.0e6
+	_text(FURNACE_RECT.position + Vector2(0, -26), "furnace  %.1f MW" % mw, FLAME if mw > 0.0 else DIM)
+	_text(FURNACE_RECT.position + Vector2(0, -8), "coil %s (tubes fail %s)" % [_c(_coil_k()), _c(_failure_k())], DIM, 13)
+	var feed_y := _stage_y(int(_cascade()["feed_stage"]) - 1)
+	var out := Vector2(190, FURNACE_RECT.position.y - 32)
+	draw_polyline(PackedVector2Array([out, Vector2(260, out.y), Vector2(260, feed_y), Vector2(COLUMN_RECT.position.x, feed_y)]), PIPE, 6.0)
+	var series := []
+	var drum := []
+	var base := []
+	for sample in level_samples:
+		drum.append([sample[0], sample[1]])
+		base.append([sample[0], sample[2]])
+	series.append([drum, DRUM_LINE, 2.0])
+	series.append([base, BASE_LINE, 2.0])
+	Screen.chart(
+		self, LEVEL_RECT, "levels, % full", series, [], LEVEL_AXIS,
+		levels_taken - 1, float(LEVEL_SAMPLES - 1), ["-20 min", "now"]
+	)
+	_text(Vector2(LEVEL_RECT.position.x + 52, LEVEL_RECT.end.y + 16), "drum", DRUM_LINE, 12)
+	_text(Vector2(LEVEL_RECT.position.x + 92, LEVEL_RECT.end.y + 16), "base", BASE_LINE, 12)
 	_text(FURNACE_RECT.position + Vector2(0, FURNACE_RECT.size.y + 20), "feed %s, %.0f kg/s" % [_c(_feed_k()), _feed_kg_s()], INK, 14)
 	_text(FURNACE_RECT.position + Vector2(0, FURNACE_RECT.size.y + 38), "%.0f %% flashes in the column" % (_flash() * 100.0), WARN if _flash() > 0.0 else DIM, 13)
 
