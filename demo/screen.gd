@@ -27,6 +27,24 @@ const SAVE_META := "refinery_save"
 ## `user://` is Godot's folder for this game under the user's profile.
 const QUICK_SAVE := "user://saves/quick.json"
 
+## Every screen's palette (M82). A screen names the ones it draws with, under
+## its own name where it has one: `const INK := Screen.INK`,
+## `const MARK := Screen.WARN`.
+const BACKGROUND := Color(0.09, 0.10, 0.12)
+const SHELL := Color(0.42, 0.45, 0.50)
+const PIPE := Color(0.55, 0.58, 0.62)
+const LIQUID := Color(0.20, 0.45, 0.75)
+const COOL := Color(0.25, 0.50, 0.85)
+const HOT := Color(0.90, 0.30, 0.15)
+const FLAME := Color(1.0, 0.55, 0.10)
+const INK := Color(0.88, 0.90, 0.93)
+const DIM := Color(0.60, 0.63, 0.68)
+const GRID := Color(0.20, 0.22, 0.25)
+const GOOD := Color(0.35, 0.80, 0.45)
+const BAD := Color(0.95, 0.30, 0.25)
+## A mark, a warning, a fired trip.
+const WARN := Color(0.95, 0.78, 0.30)
+
 
 ## The plant the menu asked for, or `otherwise`. Read once: switching plants
 ## inside the screen, then coming back through the menu, starts clean.
@@ -122,3 +140,53 @@ static func fitting_size(text: String, width: float, size: int, smallest: int = 
 	while fitted > smallest and font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fitted).x > width:
 		fitted -= 1
 	return fitted
+
+
+## A line of text on `canvas`, its baseline starting at `at`. One too long for
+## its space — `width` where something is drawn beside it, else up to `margin`
+## short of the window's right edge — is drawn smaller rather than over its
+## neighbour or off the screen.
+static func text(canvas: CanvasItem, at: Vector2, line: String, color: Color, size: int = 16, width: float = -1.0, margin: float = 8.0) -> void:
+	var room := width if width > 0.0 else canvas.get_viewport_rect().size.x - at.x - margin
+	canvas.draw_string(ThemeDB.fallback_font, at, line, HORIZONTAL_ALIGNMENT_LEFT, -1, fitting_size(line, room, size), color)
+
+
+## The key legend at the bottom of a screen: `lines` drawn `step` apart from
+## `at` down, each fitted to `width` as `text` fits it, with "Esc menu" closing
+## the last — so a screen adds a key in one place and every screen has the way
+## out.
+static func legend(canvas: CanvasItem, at: Vector2, lines: Array, color: Color, size: int = 16, step: float = 24.0, width: float = -1.0) -> void:
+	for i in lines.size():
+		var line: String = lines[i]
+		if i == lines.size() - 1:
+			line += "   Esc menu"
+		text(canvas, at + Vector2(0, step * i), line, color, size, width)
+
+
+## The options every screen reads after `--`: {auto, shots, shot}, and "plant"
+## only when `--plant=` was given (an empty one is kept, for the screen to
+## refuse). `--shots=` is a folder a timeline's frames go to, `--shot=` one
+## file. A screen's own options are its own to read.
+static func arguments() -> Dictionary:
+	var found := {"auto": false, "shots": "", "shot": ""}
+	for arg in OS.get_cmdline_user_args():
+		if arg == "--auto":
+			found["auto"] = true
+		elif arg.begins_with("--plant="):
+			found["plant"] = arg.trim_prefix("--plant=")
+		elif arg.begins_with("--shots="):
+			found["shots"] = arg.trim_prefix("--shots=")
+		elif arg.begins_with("--shot="):
+			found["shot"] = arg.trim_prefix("--shot=")
+	return found
+
+
+## Save the window as a PNG at `path` once the frame being drawn is done, and
+## print "<who>: saved <path>". A coroutine: `await Screen.shoot(...)`, or the
+## caller runs on before the frame is saved.
+static func shoot(canvas: CanvasItem, who: String, path: String) -> void:
+	await RenderingServer.frame_post_draw
+	var image := canvas.get_viewport().get_texture().get_image()
+	if image != null:
+		image.save_png(path)
+		print("%s: saved %s" % [who, path])

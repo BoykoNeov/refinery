@@ -226,14 +226,12 @@ var loading := false
 
 
 func _ready() -> void:
+	var options := Screen.arguments()
+	auto_run = options["auto"]
+	plant_key = options.get("plant", plant_key)
+	shots_dir = options["shots"]
 	for arg in OS.get_cmdline_user_args():
-		if arg == "--auto":
-			auto_run = true
-		elif arg.begins_with("--plant="):
-			plant_key = arg.trim_prefix("--plant=")
-		elif arg.begins_with("--shots="):
-			shots_dir = arg.trim_prefix("--shots=")
-		elif arg.begins_with("--break-at="):
+		if arg.begins_with("--break-at="):
 			break_at = int(arg.trim_prefix("--break-at="))
 		elif arg.begins_with("--save-at="):
 			save_at = int(arg.trim_prefix("--save-at="))
@@ -440,12 +438,7 @@ func _report_events(tick: int) -> void:
 func _shoot(tick: int) -> void:
 	shooting = true
 	queue_redraw()
-	await RenderingServer.frame_post_draw
-	var path := "%s/pump_%s_t%04d.png" % [shots_dir, plant_key, tick]
-	var image := get_viewport().get_texture().get_image()
-	if image != null:
-		image.save_png(path)
-		print("pump: saved %s" % path)
+	await Screen.shoot(self, "pump", "%s/pump_%s_t%04d.png" % [shots_dir, plant_key, tick])
 	shooting = false
 
 
@@ -827,18 +820,18 @@ const GAUGE_RECT := Rect2(60, 300, 24, 200)
 const PLOT_RECT := Rect2(360, 300, 340, 200)
 const PANEL_X := 790.0
 
-const BACKGROUND := Color(0.09, 0.10, 0.12)
-const SHELL := Color(0.42, 0.45, 0.50)
-const PIPE := Color(0.55, 0.58, 0.62)
-const LIQUID := Color(0.20, 0.45, 0.75)
+const BACKGROUND := Screen.BACKGROUND
+const SHELL := Screen.SHELL
+const PIPE := Screen.PIPE
+const LIQUID := Screen.LIQUID
 const VAPOUR := Color(0.85, 0.90, 0.95)
 const PUSH := Color(0.95, 0.60, 0.20)
-const INK := Color(0.88, 0.90, 0.93)
-const DIM := Color(0.60, 0.63, 0.68)
-const GRID := Color(0.20, 0.22, 0.25)
-const GOOD := Color(0.35, 0.80, 0.45)
-const BAD := Color(0.95, 0.30, 0.25)
-const MARK := Color(0.95, 0.78, 0.30)
+const INK := Screen.INK
+const DIM := Screen.DIM
+const GRID := Screen.GRID
+const GOOD := Screen.GOOD
+const BAD := Screen.BAD
+const MARK := Screen.WARN
 
 
 func _draw() -> void:
@@ -868,16 +861,10 @@ func _draw() -> void:
 		ThemeDB.fallback_font, Vector2(30, 556), message, HORIZONTAL_ALIGNMENT_LEFT,
 		get_viewport_rect().size.x - 60, 15, 2, BAD if message_bad else GOOD
 	)
-	_text(
-		Vector2(30, 600),
+	Screen.legend(self, Vector2(30, 600), [
 		"Up/Down valve   K pump on/off   W/S supply pressure   E/D supply temperature   R/F destination pressure   F5 save   F9 load",
-		DIM
-	)
-	_text(
-		Vector2(30, 624),
-		"C clear trail   V vent   Space pause   [ ] speed   1 long suction (M50)   2 no suction model (M11)   3 gas lock (M54)   Esc menu",
-		DIM
-	)
+		"C clear trail   V vent   Space pause   [ ] speed   1 long suction (M50)   2 no suction model (M11)   3 gas lock (M54)",
+	], DIM)
 	if halted != "":
 		_text(Vector2(30, 90), "HALTED — %s" % halted, BAD)
 
@@ -1151,7 +1138,7 @@ func _draw_panel() -> void:
 
 
 func _text(at: Vector2, text: String, color: Color, size: int = 16) -> void:
-	draw_string(ThemeDB.fallback_font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+	Screen.text(self, at, text, color, size)
 
 
 func _halt(reason: String) -> void:
