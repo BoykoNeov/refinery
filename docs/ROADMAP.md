@@ -11706,3 +11706,27 @@ smallest size; the plan's flow dashes and trend chart; the map plan's
 slice 4 (ask first).
 
 **M82 CLOSED** (2026-11-19; `docs/MILESTONES.md`).
+
+## M83 — the screen kit's new visuals; plan `docs/plans/screen-kit.md` "Then"; CLOSED 2026-11-19
+
+Asked as "what is next" after M82 (2026-11-19). The user took option 1, the
+plan's flow dashes and trend chart, which need no decision; then chose where
+the column screen's chart goes (in place of the furnace's picture, on the
+holdup plant only). No Rust.
+
+**Done**: `Screen.pipe`/`Screen.dash_speed` on the map's pipes;
+`Screen.chart` (with `nice_range`, `chart_y`, `grid`) under the reactor's
+chart and the holdup plant's drum and base levels; the column screen's clock
+in plant time (it showed ticks as seconds); the furnace's "waits for …" on
+its own line.
+
+**Verified by running**, against a record taken first: `--auto` lines the
+same on the map, reactor, column and the permissive furnace plant; the
+reactor's 42 screenshots identical to the pixel; the map's shots the same
+run to run and looked at; the holdup chart and the furnace panel looked at.
+Not run: the dashes watched moving live.
+
+**Open**: the furnace's trip names run into their state; the map plan's
+slice 4 (ask first).
+
+**M83 CLOSED** (2026-11-19; `docs/MILESTONES.md`).

@@ -12,6 +12,39 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M83 is CLOSED (2026-11-19): the screen kit's new visuals — dashes run
+along the map's pipes, the reactor's chart shared, the holdup plant's levels
+charted (`docs/plans/screen-kit.md`, "Then").** Asked as "what is next"
+after M82; the user took option 1 (no decision needed), then chose where
+the column's chart goes.
+- **`demo/screen.gd` grows**, no Rust: `Screen.pipe` and
+  `Screen.dash_speed` (dashes lighter than the pipe, carried round its
+  corners, 10–60 px a second by the flow's share, backwards on a reversed
+  flow); `Screen.chart` with `nice_range`, `chart_y`, `grid` and
+  `CHART_BACKGROUND`, lifted from the reactor's "last 30 minutes" chart.
+  A plan change: each pipe keeps the distance its dashes moved, added to
+  each frame the plant runs — the plan's wall time × speed would jump
+  every dash whenever a flow moved, and ran on while paused.
+- **The column's holdup plant** draws the reflux drum's and the base's
+  levels over the last twenty minutes of plant time (0–100 %, a sample
+  every 5 s) where the furnace's picture is on the other plants — the
+  user's choice, the screen having no free space; the furnace stays in
+  words. **Found and fixed**: the column screen's clock showed ticks as
+  seconds (every column plant runs 0.1 s a tick: "t = 11400 s" was
+  1140 s). The furnace's reset line puts "waits for …" on its own line.
+- **Checked against a record taken first**: `--auto` on the map (72
+  plants), all six reactor, nine column and the permissive furnace plants
+  prints the same lines; the reactor's 42 screenshots identical to the
+  pixel; the map's `--shot` the same twice running (four plants looked
+  at, only the pipes changed); the holdup chart looked at from 120 to
+  1140 s; the overfill plant changed only in its clock line. Menu, pump
+  and plant screens still run. **Not run**: the dashes watched moving in a
+  live window (the shots are stills). **Seen, not fixed**: the furnace's
+  trip names run into their state ("hold_tank_high_levelTRIPPED").
+  **Open**: the map plan's slice 4 (ask first).
+
+---
+
 **M82 is CLOSED (2026-11-19): one kit under every screen
 (`docs/plans/screen-kit.md`, steps 0–6).** Asked as "what is next" after
 M81; the user took the recommendation.

@@ -1,4 +1,4 @@
-# Plan: one kit under every screen — steps 0–6 DONE 2026-11-19 (M82)
+# Plan: one kit under every screen — steps 0–6 DONE 2026-11-19 (M82); the new visuals DONE 2026-11-19 (M83)
 
 ## The problem
 
@@ -68,16 +68,28 @@ window fitting, `fitting_size`). This plan grows it.
 
 ## Then, new shared visuals (each its own commit, each LOOKED at)
 
-- [ ] **Flow dashes.** `Screen.pipe(canvas, points, flow_share, color,
+- [x] **Flow dashes.** `Screen.pipe(canvas, points, flow_share, color,
       phase)`: the polyline plus short dashes that advance along it by
       `phase` (seconds of wall time × a speed set by the flow's share). Use
       it in `map.gd` first.
-- [ ] **A trend chart.** Lift the reactor screen's chart
+- [x] **A trend chart.** Lift the reactor screen's chart
       (`demo/reactor.gd`, the "temperature, last 30 minutes" block and its
       `samples` array) into `Screen.chart(canvas, rect, series, …)`; the
       reactor uses it unchanged; give the column screen's holdup plant a
       chart of its drum and base levels (it is the plant whose answers take
       minutes).
+
+*Done (M83), with two changes. The dashes: `Screen.pipe(canvas, points, color,
+width, travel)` and `Screen.dash_speed(share)`; the map keeps each pipe's
+distance moved and adds speed × the frame's seconds each frame the plant
+runs — the plan's phase = wall time × speed would jump every dash whenever a
+flow changed a little, and kept moving while paused. The chart:
+`Screen.chart` with `nice_range`, `chart_y`, `grid` (the reactor's 42
+screenshots identical to the pixel); the holdup plant's level chart is drawn
+where the furnace's picture is on the other plants — the user's choice, the
+screen had no free space. Found on the way: the column screen's clock showed
+ticks as seconds (0.1 s a tick) — fixed. The furnace's reset line now puts
+"waits for …" on a line of its own.*
 
 ## Done when
 
