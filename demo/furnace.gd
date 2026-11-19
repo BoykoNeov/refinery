@@ -201,13 +201,10 @@ var seen_stop := ""
 
 
 func _ready() -> void:
-	for arg in OS.get_cmdline_user_args():
-		if arg == "--auto":
-			auto_run = true
-		elif arg.begins_with("--plant="):
-			plant_key = arg.trim_prefix("--plant=")
-		elif arg.begins_with("--shots="):
-			shots_dir = arg.trim_prefix("--shots=")
+	var options := Screen.arguments()
+	auto_run = options["auto"]
+	plant_key = options.get("plant", plant_key)
+	shots_dir = options["shots"]
 	plant_key = Screen.chosen_plant(get_tree(), plant_key)
 	Screen.fit(get_window())
 	if not PLANTS.has(plant_key):
@@ -332,12 +329,7 @@ func _report_events(tick: int) -> void:
 func _shoot(tick: int) -> void:
 	shooting = true
 	queue_redraw()
-	await RenderingServer.frame_post_draw
-	var path := "%s/furnace_%s_t%04d.png" % [shots_dir, plant_key, tick]
-	var image := get_viewport().get_texture().get_image()
-	if image != null:
-		image.save_png(path)
-		print("furnace: saved %s" % path)
+	await Screen.shoot(self, "furnace", "%s/furnace_%s_t%04d.png" % [shots_dir, plant_key, tick])
 	shooting = false
 
 
@@ -760,22 +752,22 @@ const LEAK_POS := Vector2(600, 180)
 const DEST_RECT := Rect2(650, 250, 100, 190)
 const PANEL_X := 790.0
 
-const BACKGROUND := Color(0.09, 0.10, 0.12)
-const SHELL := Color(0.42, 0.45, 0.50)
-const PIPE := Color(0.55, 0.58, 0.62)
-const LIQUID := Color(0.20, 0.45, 0.75)
+const BACKGROUND := Screen.BACKGROUND
+const SHELL := Screen.SHELL
+const PIPE := Screen.PIPE
+const LIQUID := Screen.LIQUID
 const STEEL := Color(0.50, 0.52, 0.56)
-const HOT := Color(0.90, 0.30, 0.15)
+const HOT := Screen.HOT
 const WHITE_HOT := Color(1.0, 0.92, 0.65)
-const FLAME := Color(1.0, 0.55, 0.10)
+const FLAME := Screen.FLAME
 const FIRE := Color(1.0, 0.30, 0.05)
 const SPRAY := Color(0.45, 0.70, 0.95)
-const INK := Color(0.88, 0.90, 0.93)
-const DIM := Color(0.60, 0.63, 0.68)
-const GOOD := Color(0.35, 0.80, 0.45)
-const BAD := Color(0.95, 0.30, 0.25)
+const INK := Screen.INK
+const DIM := Screen.DIM
+const GOOD := Screen.GOOD
+const BAD := Screen.BAD
 ## A trip's limit on a gauge while it is armed; BAD once it has tripped.
-const TRIP_MARK := Color(0.95, 0.78, 0.30)
+const TRIP_MARK := Screen.WARN
 
 
 func _draw() -> void:
@@ -804,16 +796,10 @@ func _draw() -> void:
 		ThemeDB.fallback_font, Vector2(30, 556), message, HORIZONTAL_ALIGNMENT_LEFT,
 		get_viewport_rect().size.x - 60, 15, 2, BAD if message_bad else GOOD
 	)
-	_text(
-		Vector2(30, 600),
+	Screen.legend(self, Vector2(30, 600), [
 		"E emergency stop   R reset trips   A loop auto/manual   W/S setpoint   Up/Down fuel",
-		DIM
-	)
-	_text(
-		Vector2(30, 624),
-		"P patch   N new tubes   K pump   Space pause   [ ] speed   1 trip   2 burn-out   3 self-reset   4 burst   5 pump trip   Esc menu",
-		DIM
-	)
+		"P patch   N new tubes   K pump   Space pause   [ ] speed   1 trip   2 burn-out   3 self-reset   4 burst   5 pump trip",
+	], DIM)
 	if halted != "":
 		_text(Vector2(30, 90), "HALTED — %s" % halted, BAD)
 
@@ -1111,7 +1097,7 @@ func _flames(base_left: Vector2, width: float, height: float, count: int, color:
 
 
 func _text(at: Vector2, text: String, color: Color, size: int = 16) -> void:
-	draw_string(ThemeDB.fallback_font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+	Screen.text(self, at, text, color, size)
 
 
 func _halt(reason: String) -> void:
