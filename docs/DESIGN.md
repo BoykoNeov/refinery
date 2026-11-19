@@ -32362,3 +32362,48 @@ the last tick is in it; the source in the save is the plant; every bad save
 by its code, the running plant untouched; a note that is not JSON refused;
 `save_json` before a load is `not_loaded`. Mutation pass, 12 mutants, 12
 killed. The godot-feature clippy is clean on the two new binding lines.
+
+## 83. A loop names the equipment it moves (M80) — so a screen can take it by hand
+
+**Why.** On the plant map (M79) a click on a valve or a furnace and Up/Down
+is refused on most plants with loops: the item is a loop's actuator and the
+loop is in AUTO, so the write would be overwritten on the next tick (§10
+fork 4). The refusal names the loop, but only in its words, and a screen
+never matches on words. The snapshot published which loop a cascade primary
+sets (`drives`, §29) but not which node any other loop moves, so a screen
+could not offer "take this one by hand" on the picked item.
+
+**The field.** `ControlSnapshot::actuates: Option<NodeId>`, indexing the
+snapshot's own `nodes`, written from `Actuator::node()`. Exactly one of
+`drives` and `actuates` is on every loop: a loop writes another loop's
+setpoint or one piece of equipment (§29 fork 1's enum), and the loader
+refuses two loops on one actuator, so a node is named by at most one loop.
+Placed after `drives`, so the bytes the wire-form tests pin (`mode`,
+`action`, `setpoint` adjacent) are unchanged; skipped when `None`, a cascade
+primary, whose bytes did not move. Static data, as `watches` is. No command
+changed: taking a valve by hand is `set_controller_mode` on the loop the
+field names, which the engine already took.
+
+**Corpus.** Every plant with a loop that moves equipment gained the key in
+every snapshot, so its fingerprint moved on both solvers: 21 of 72, exactly
+the 21 plant files that declare `[[controls]]`; the user approved the move
+(2026-11-19). Worst and total iterations are unchanged on every plant, both
+solvers. That nothing else moved was checked apart from the fingerprints:
+four loop plants (`furnace_cascade_control`, `furnace_coil_trip`,
+`hydrocracker_quench`, `vessel_pressure_control`) and two without loops, run
+3 000 ticks on both solvers with every 25th snapshot written, give the same
+bytes before and after once the new key is taken out (120–360 keys each).
+
+**The map** (`demo/map.gd`). M on a picked valve, furnace or cooler puts the
+loop that moves it in MANUAL, and M again puts it back in AUTO; picking it
+also picks that loop for A and Q/Z. A line under the headings says what is
+picked and what each key does to it now (and, on a cascade's inner loop
+whose outer loop is in AUTO, that the target is the outer loop's). Over a
+node or a pipe the panel's second line says what a click on it does, and
+which loop moves it. Coolers gained Up/Down (`set_cooler_duty`) for this:
+`tank_temperature_control`'s loop moves one.
+
+**Gate** (`crates/scenarios/tests/cascade_control_reference.rs`, gate 10b):
+the field names the right node BY NAME on the cascade demo and the six
+loop plants before M25, on the bytes too, and no loop has both or neither.
+Mutation pass: `actuates: None` and `actuates: Some(NodeId(0))`, both killed.

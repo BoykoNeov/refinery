@@ -1086,6 +1086,20 @@ pub struct ControlSnapshot {
     /// field saying it would be a second owner of one fact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drives: Option<LoopId>,
+    /// The node this loop moves — the valve whose opening it writes, or the
+    /// cooler or furnace whose duty it writes — indexing the snapshot's own
+    /// `nodes` (M80, docs/DESIGN.md §83).
+    ///
+    /// **Exactly one of `drives` and `actuates` is written**: a loop writes
+    /// either another loop's setpoint or one piece of equipment
+    /// ([`crate::graph::Actuator`]). A frontend needs this one to put a hand on
+    /// a valve a loop in AUTO holds: the engine refuses that write and names the
+    /// loop only in the refusal's words, and a screen may not match on words.
+    /// The loader refuses two loops on one actuator, so a node is named by at
+    /// most one loop. **Skipped when `None`**, a cascade primary, so a
+    /// primary's bytes are as they were; every other loop's bytes gained it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actuates: Option<NodeId>,
     /// The pump this loop holds its valve for, and the opening it holds (M45.1,
     /// docs/DESIGN.md §50): the file's declaration, static data like `drives`.
     ///

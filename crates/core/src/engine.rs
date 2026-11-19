@@ -4484,6 +4484,7 @@ impl Engine {
                 measurement: c.last_measurement,
                 output: c.last_output,
                 drives: c.actuator.driven_loop(),
+                actuates: c.actuator.node(),
                 on_pump_stop: c.on_pump_stop,
                 quench: c.last_quench,
             })

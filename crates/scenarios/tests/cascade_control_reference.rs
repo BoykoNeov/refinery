@@ -1149,6 +1149,78 @@ fn only_a_primary_publishes_what_it_drives() {
     }
 }
 
+/// **Gate 10b (M80). `actuates` names the equipment a loop moves, by its
+/// node, on every loop but a primary** (docs/DESIGN.md §83).
+///
+/// Asserted by NAME, not by presence: a faceplate naming the wrong node would
+/// hand a frontend's operator the wrong valve. On the bytes too, for gate 10's
+/// reason — a Rust match passes under any key — and exactly one of `drives`
+/// and `actuates` on every loop.
+#[test]
+fn every_loop_but_a_primary_names_the_equipment_it_moves() {
+    let actuated = |engine: &Engine, name: &str| -> Option<String> {
+        faceplate(engine, name)
+            .actuates
+            .map(|id| engine.snapshot().nodes[id.0 as usize].name.clone())
+    };
+    let engine = build(DEMO);
+    assert_eq!(
+        actuated(&engine, "tank_temperature"),
+        None,
+        "a primary moves a loop"
+    );
+    assert_eq!(
+        actuated(&engine, "outlet_temperature").as_deref(),
+        Some("heater")
+    );
+    let secondary = serde_json::to_string(&faceplate(&engine, "outlet_temperature")).unwrap();
+    let heater = engine
+        .snapshot()
+        .nodes
+        .iter()
+        .position(|n| n.name == "heater")
+        .unwrap();
+    assert!(
+        secondary.contains(&format!(r#""actuates":{heater}"#)),
+        "{secondary}"
+    );
+    let back: ControlSnapshot = serde_json::from_str(&secondary).expect("round trips");
+    assert_eq!(serde_json::to_string(&back).unwrap(), secondary);
+    for (src, loop_name, node) in [
+        (OUTLET_LOOP, "outlet_temperature", "heater"),
+        (TANK_LOOP, "tank_temperature", "heater"),
+        (COOLER, "tank_temperature", "chiller"),
+        (LEVEL, "receiving_level", "level_valve"),
+        (
+            include_str!("../../../scenarios/tank_flow_control.toml"),
+            "fill_flow",
+            "discharge_valve",
+        ),
+        (
+            include_str!("../../../scenarios/vessel_pressure_control.toml"),
+            "receiver_pressure",
+            "vent_valve",
+        ),
+    ] {
+        let mut engine = build(src);
+        tick(&mut engine);
+        assert_eq!(
+            actuated(&engine, loop_name).as_deref(),
+            Some(node),
+            "{loop_name}"
+        );
+    }
+    for src in [DEMO, OUTLET_LOOP, TANK_LOOP, COOLER, LEVEL] {
+        for c in build(src).snapshot().controls {
+            assert!(
+                c.drives.is_some() != c.actuates.is_some(),
+                "'{}' names both or neither",
+                c.name
+            );
+        }
+    }
+}
+
 // ------------------------------------------------- gate 11: a stall opens it
 
 /// **Gate 11. A stall opens the cascade**, on the COOLER pairing with a valve on
