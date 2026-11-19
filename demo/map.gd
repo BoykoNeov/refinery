@@ -30,6 +30,13 @@
 # headings says what the keys do to what is picked, and the panel over a node
 # or a pipe says what a click on it does.
 #
+# And a person can fix its LAYOUT (M81, slice 3): Ctrl+drag moves a node,
+# Ctrl+S keeps every node's place in `demo/layout/<plant>.json` (name → [x, y]
+# on the page), and the next load draws each node that file names there —
+# the computed place for the rest. A file naming a node the plant does not
+# have, or a place off the page, is named on the message line, and `--auto`
+# counts that plant as stopped, so a layout cannot go quietly stale.
+#
 # Same rule as every screen: nothing physical is computed here. A pipe's
 # width is its reported flow, its colour its reported temperature; a tank's
 # fill is the level the plant.gd demo derives from snapshot fields only. The
@@ -41,6 +48,7 @@
 #               click a valve/furnace: Up/Down, M take it from its loop or give it back
 #               click a pump: on/off   P+click a pipe: hole/mend
 #               Tab loop   A auto/manual   Q/Z target   R reset tripped trips
+#               Ctrl+drag a node: move it   Ctrl+S keep the layout (demo/layout/)
 # Recorded:     godot --headless --path . res://demo/map.tscn -- --auto
 #               ...loads every plant in turn, runs it 200 ticks, prints one
 #               line each and a count: a smoke test of the map on all of them
@@ -60,6 +68,10 @@
 #               on pump_gas_lock the next tick cannot be solved) and see the
 #               map recover. With --shot=<file.png> on a windowed run, the
 #               page is saved at tick 200 after the tour.
+# Layout:       --drag=<node>@<x>,<y> (repeatable) moves a node as Ctrl+drag
+#               would, --save-layout then saves as Ctrl+S would, and
+#               --layout-dir=<dir> reads and writes the layout files there
+#               instead of demo/layout (a test that leaves the shipped ones be).
 extends Node2D
 
 const Screen := preload("res://demo/screen.gd")
@@ -93,6 +105,14 @@ const CROWDED := 5
 ## column of nodes stops that far short of the panel's backing (PANEL_X - 10).
 ## A crowded right-most column steps left, not right (`_lay_out`).
 const AREA := Rect2(70, 110, 735, 440)
+
+## Where each plant's hand-placed layout is kept (M81): `<plant stem>.json`,
+## node name → [x, y] on the page. Beside the map, never in the plant file.
+const LAYOUTS := "res://demo/layout"
+## Where a node may be dragged or placed by a layout file: below the headings,
+## above the message line, and as far right as AREA reaches (a name runs ~55 px
+## either side of its node; right of that is the panel).
+const PLACEABLE := Rect2(30, 100, 785, 460)
 
 ## The inspection panel: its left edge at the base width [px], its width, and
 ## the line height of its text.
@@ -183,6 +203,23 @@ var hands_run := false
 var break_at := -1
 ## `--hands-at=<tick>`: the tick the tour starts at (a trip that fires later).
 var hands_at := HANDS_TICKS
+## The folder the layout files are read from and written to; `--layout-dir=`
+## moves it (a test that must not touch the shipped files).
+var layout_dir := LAYOUTS
+## How many nodes the plant's layout file placed, and what was wrong with it
+## (a name the plant does not have, a place off the page): `--auto` fails on
+## any, so a renamed node cannot leave a layout file quietly stale.
+var hand_placed := 0
+var layout_problems: Array = []
+## The node Ctrl+drag is moving (-1: none), and where the mouse took it from.
+var dragging := -1
+var drag_offset := Vector2.ZERO
+## A node was moved since the layout file was last read or written.
+var layout_moved := false
+## `--drag=<name>@<x>,<y>` (repeatable) and `--save-layout`: moves and a save
+## made through the same calls as Ctrl+drag and Ctrl+S, once, at the first load.
+var drags: Array = []
+var save_layout := false
 
 
 func _ready() -> void:
@@ -212,6 +249,12 @@ func _ready() -> void:
 			hands_at = int(arg.trim_prefix("--hands-at="))
 		elif arg.begins_with("--break-at="):
 			break_at = int(arg.trim_prefix("--break-at="))
+		elif arg.begins_with("--layout-dir="):
+			layout_dir = arg.trim_prefix("--layout-dir=").trim_suffix("/")
+		elif arg.begins_with("--drag="):
+			drags.append(arg.trim_prefix("--drag="))
+		elif arg == "--save-layout":
+			save_layout = true
 	if plants.is_empty():
 		_halt("no plant files in %s" % SCENARIOS)
 		return
@@ -239,6 +282,7 @@ func _load(index: int) -> void:
 	message = ""
 	sent_what = {}
 	holes = []
+	dragging = -1
 	var err = JSON.parse_string(sim.load_scenario("%s/%s.toml" % [SCENARIOS, plants[plant_index]]))
 	if err != null:
 		_halt("load failed: %s" % err["message"])
@@ -246,6 +290,13 @@ func _load(index: int) -> void:
 	if not _step():
 		return
 	_lay_out()
+	if not layout_problems.is_empty():
+		_say("layout %s: %s" % [_layout_path(), "; ".join(layout_problems)], BAD)
+		if not auto_run:
+			print("map: %s: LAYOUT — %s" % [plants[plant_index], "; ".join(layout_problems)])
+	elif hand_placed > 0 and not auto_run:
+		print("map: %s: %d node(s) placed by %s" % [plants[plant_index], hand_placed, _layout_path()])
+	_scripted_layout()
 	if hover_name != "":
 		_hover_named(hover_name)
 		panel_scroll = hover_scroll
@@ -326,7 +377,8 @@ func _run_all() -> void:
 		var ticks := 1
 		while halted == "" and ticks < AUTO_TICKS and _step():
 			ticks += 1
-		if halted != "":
+		if halted != "" or not layout_problems.is_empty():
+			# A layout file naming a node the plant lacks fails too: stale.
 			failed += 1
 		if not snapshot.is_empty():
 			# Every node's and pipe's panel, built and thrown away: a field
@@ -335,12 +387,26 @@ func _run_all() -> void:
 				_inspect_lines({"node": int(node["id"])})
 			for edge in snapshot["edges"]:
 				_inspect_lines({"edge": int(edge["id"])})
-		print("map: %-36s %3d nodes drawn, %3d pipes, %s" % [plants[i], places.size(), snapshot.get("edges", []).size(), "ok" if halted == "" else halted])
+		var placed := ", %d by hand" % hand_placed if hand_placed > 0 else ""
+		var verdict := "ok" if halted == "" else halted
+		if not layout_problems.is_empty():
+			verdict = "LAYOUT: " + "; ".join(layout_problems)
+		print("map: %-36s %3d nodes drawn%s, %3d pipes, %s" % [plants[i], places.size(), placed, snapshot.get("edges", []).size(), verdict])
 	print("map: %d plants, %d stopped" % [plants.size(), failed])
 	get_tree().quit(1 if failed > 0 else 0)
 
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion and dragging >= 0:
+		# A node on the move follows the mouse; nothing is hovered meanwhile.
+		_drag_to(get_local_mouse_position())
+		queue_redraw()
+		return
+	if event is InputEventMouseButton and not event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		if dragging >= 0:
+			_drag_end()
+			queue_redraw()
+		return
 	if event is InputEventMouseMotion and hover_name == "" and not places.is_empty():
 		# The local position, not the event's: the page is stretched to the
 		# window, and `places` are page coordinates. Over the panel itself
@@ -356,8 +422,17 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		# A click on the plant (not on the panel) is a hand on what it hits.
+		# With Ctrl held it is a node picked up to move instead, and never a
+		# click: a click on a pump would start or stop it.
 		var mouse := get_local_mouse_position()
-		if not places.is_empty() and halted == "" and not _panel_rect(get_viewport_rect().size).has_point(mouse):
+		if places.is_empty() or _panel_rect(get_viewport_rect().size).has_point(mouse):
+			return
+		if event.ctrl_pressed:
+			var under := _hit(mouse)
+			if under.has("node"):
+				_drag_start(int(under["node"]), mouse)
+			return
+		if halted == "":
 			_click(_hit(mouse), Input.is_key_pressed(KEY_P))
 			queue_redraw()
 		return
@@ -404,6 +479,9 @@ func _input(event: InputEvent) -> void:
 			_act("reset")
 		KEY_M:
 			_act("hand")
+		KEY_S:
+			if event.ctrl_pressed and not snapshot.is_empty():
+				_save_layout()
 	queue_redraw()
 
 
@@ -896,6 +974,140 @@ func _lay_out() -> void:
 			# straight run of pipe does not hide the names under it.
 			var stagger := 14.0 if d % 2 == 1 and keyed.size() == 1 else 0.0
 			places[id] = Vector2(x, AREA.position.y + AREA.size.y * fraction + stagger)
+	# Last, so the computed order of the nodes it does not name is unchanged.
+	_apply_layout()
+
+
+# ------------------------------------------------------- a layout by hand
+#
+# Computed layout will never suit every plant (docs/plans/plant-map-screen.md,
+# slice 3). A person drags a node with Ctrl held and Ctrl+S keeps every drawn
+# node's place in `demo/layout/<plant>.json`; the next load puts each node the
+# file names there, and the computed place stands for any it does not (a node
+# a plant file adds later). Where a node is drawn changes nothing else.
+
+func _layout_path() -> String:
+	return "%s/%s.json" % [layout_dir, plants[plant_index]]
+
+
+## The plant's layout file, if it has one, over the computed places. Anything
+## wrong with it is a problem named, and the rest of it still applied.
+func _apply_layout() -> void:
+	hand_placed = 0
+	layout_problems = []
+	layout_moved = false
+	var path := _layout_path()
+	if not FileAccess.file_exists(path):
+		return
+	var file = JSON.parse_string(FileAccess.get_file_as_string(path))
+	if not file is Dictionary:
+		layout_problems.append("not a JSON object of node name → [x, y]")
+		return
+	var ids := {}
+	for node in snapshot["nodes"]:
+		var name := str(node["name"])
+		if ids.has(name):
+			layout_problems.append("two nodes are named '%s'" % name)
+		ids[name] = int(node["id"])
+	for name in file:
+		var at = file[name]
+		if not ids.has(name):
+			layout_problems.append("no node is named '%s'" % name)
+			continue
+		if not places.has(ids[name]):
+			layout_problems.append("'%s' is not drawn on the map" % name)
+			continue
+		if not (at is Array and at.size() == 2 and typeof(at[0]) in [TYPE_INT, TYPE_FLOAT] and typeof(at[1]) in [TYPE_INT, TYPE_FLOAT]):
+			layout_problems.append("'%s' is not at [x, y]" % name)
+			continue
+		var point := Vector2(float(at[0]), float(at[1]))
+		if point != _placeable(point):
+			layout_problems.append("'%s' at (%d, %d) is off the page" % [name, point.x, point.y])
+		places[ids[name]] = _placeable(point)
+		hand_placed += 1
+
+
+## `point`, moved onto the part of the page a node may sit on.
+func _placeable(point: Vector2) -> Vector2:
+	return point.clamp(PLACEABLE.position, PLACEABLE.end)
+
+
+## Ctrl+press on a node: it follows the mouse until the button is let go.
+func _drag_start(id: int, mouse: Vector2) -> void:
+	dragging = id
+	drag_offset = places[id] - mouse
+
+
+func _drag_to(mouse: Vector2) -> void:
+	if dragging < 0:
+		return
+	places[dragging] = _placeable(mouse + drag_offset)
+	layout_moved = true
+
+
+func _drag_end() -> void:
+	if dragging < 0:
+		return
+	var node := _entry("nodes", dragging)
+	dragging = -1
+	_say("moved %s — Ctrl+S keeps the layout (%s); Left/Right drops it" % [node.get("name", "?"), _layout_path()], WARN)
+
+
+## Ctrl+S: every drawn node's place, in whole pixels and sorted by name, so a
+## file edited by hand and one saved here read alike. Run from the project
+## folder the file lands in `demo/layout/`; where that cannot be written (an
+## exported game) the message line says so and nothing changes.
+func _save_layout() -> void:
+	var names: Array = []
+	var at := {}
+	for node in snapshot.get("nodes", []):
+		var id := int(node["id"])
+		if places.has(id):
+			names.append(str(node["name"]))
+			at[str(node["name"])] = places[id]
+	names.sort()
+	# One node a line, `"name": [x, y]`, so the file reads (and is edited) as
+	# a list of places; JSON.stringify would spread each pair over four lines.
+	var rows: Array = []
+	for name in names:
+		rows.append("\t%s: [%d, %d]" % [JSON.stringify(name), roundi(at[name].x), roundi(at[name].y)])
+	var path := _layout_path()
+	DirAccess.make_dir_recursive_absolute(layout_dir)
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		_say("the layout could not be written to %s: %s" % [path, error_string(FileAccess.get_open_error())], BAD)
+		print("map: layout NOT saved — %s: %s" % [path, error_string(FileAccess.get_open_error())])
+		return
+	file.store_string("{\n%s\n}\n" % ",\n".join(rows))
+	file.close()
+	layout_moved = false
+	hand_placed = names.size()
+	layout_problems = []
+	_say("layout saved: %d nodes in %s" % [names.size(), ProjectSettings.globalize_path(path)], GOOD)
+	print("map: layout saved — %d nodes in %s" % [names.size(), path])
+
+
+## `--drag=<name>@<x>,<y>` and `--save-layout`, through the calls the mouse and
+## Ctrl+S make; once, so Left/Right later does not repeat them on another plant.
+func _scripted_layout() -> void:
+	for drag in drags:
+		var parts: PackedStringArray = str(drag).split("@")
+		var xy: PackedStringArray = parts[1].split(",") if parts.size() == 2 else PackedStringArray()
+		var id := -1
+		for node in snapshot["nodes"]:
+			if parts.size() == 2 and str(node["name"]) == parts[0] and places.has(int(node["id"])):
+				id = int(node["id"])
+		if id < 0 or xy.size() != 2:
+			print("map: --drag=%s: not <drawn node name>@<x>,<y>" % drag)
+			continue
+		_drag_start(id, places[id])
+		_drag_to(Vector2(float(xy[0]), float(xy[1])))
+		print("map: dragged %s to (%d, %d)" % [parts[0], places[id].x, places[id].y])
+		_drag_end()
+	drags = []
+	if save_layout:
+		save_layout = false
+		_save_layout()
 
 
 # ---------------------------------------------------------------- drawing
@@ -909,8 +1121,9 @@ func _draw() -> void:
 	_text(Vector2(30, 34), plants[plant_index].replace("_", " "), INK, 20)
 	_text(
 		Vector2(30, 60),
-		"plant %d of %d    t = %.1f s    %d tick(s) per frame%s" % [
-			plant_index + 1, plants.size(), float(snapshot.get("sim_time", 0.0)), ticks_per_frame, "    PAUSED" if paused else ""
+		"plant %d of %d    t = %.1f s    %d tick(s) per frame%s%s" % [
+			plant_index + 1, plants.size(), float(snapshot.get("sim_time", 0.0)), ticks_per_frame, "    PAUSED" if paused else "",
+			"    layout moved, not kept (Ctrl+S)" if layout_moved else ""
 		],
 		DIM
 	)
@@ -959,7 +1172,7 @@ func _draw_legend(size: Vector2) -> void:
 	_text(Vector2(x + 486, 60), "450 °C", DIM, 12)
 	if message != "":
 		draw_multiline_string(ThemeDB.fallback_font, Vector2(30, size.y - 54.0), message, HORIZONTAL_ALIGNMENT_LEFT, size.x - 60.0, 13, 2, message_color)
-	var help := "Left/Right plant   Space pause   [ ] speed   click a valve/furnace/cooler: Up/Down, M by hand   click a pump: on/off   P+click a pipe: hole/mend   Tab A Q Z loops   R reset trips   F11   Esc menu"
+	var help := "Left/Right plant   Space pause   [ ] speed   click a valve/furnace/cooler: Up/Down, M by hand   click a pump: on/off   P+click a pipe: hole/mend   Tab A Q Z loops   R reset trips   Ctrl+drag move, Ctrl+S keep   F11   Esc menu"
 	_text(Vector2(30, size.y - 14.0), help, DIM, Screen.fitting_size(help, size.x - 60.0, 13, 10))
 
 

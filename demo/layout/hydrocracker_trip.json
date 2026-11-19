@@ -1,0 +1,9 @@
+{
+	"bed": [560, 320],
+	"feed_valve": [190, 320],
+	"heated_line__leak_point": [435, 320],
+	"preheater": [310, 320],
+	"product": [790, 320],
+	"product_line__leak_point": [675, 320],
+	"vgo_feed": [70, 320]
+}

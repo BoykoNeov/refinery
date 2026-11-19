@@ -11652,3 +11652,15 @@ removed. The `--hands` tour on all 21 loop plants (M taken and given back
 on each, every answer the engine's), and `--auto` on all 72.
 
 **M80 CLOSED** (2026-11-19; `docs/MILESTONES.md`).
+
+## M81 — a layout a person can fix: Ctrl+drag a node on the map, Ctrl+S keeps it beside the plant; plan `docs/plans/plant-map-screen.md` slice 3; OPEN
+
+Asked as "what is next" after M80 (2026-11-19). The user took the
+recommendation (option 1): the same plan's slice 3, which needs no decision.
+The map's layout is computed, and on some plants it crowds or tangles.
+
+**Scope**: a sidecar per plant, `demo/layout/<plant>.json` (node name →
+page position), never the scenario file; the map uses it for every node it
+names and the computed place for the rest. Ctrl+drag moves a node, Ctrl+S
+writes the sidecar. The fifteen plants the column (9) and reactor (6)
+screens draw are placed by hand. No Rust.

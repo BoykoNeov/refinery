@@ -1,0 +1,19 @@
+{
+	"bed1": [275, 244],
+	"bed2": [425, 320],
+	"effluent_line__leak_point": [462, 339],
+	"feed_valve": [125, 168],
+	"heated_line__leak_point": [237, 225],
+	"interbed_line__leak_point": [312, 263],
+	"letdown_valve": [575, 396],
+	"mix": [350, 282],
+	"preheater": [200, 206],
+	"product": [800, 510],
+	"product_cooler": [500, 358],
+	"product_drum": [650, 434],
+	"quench_check": [265, 440],
+	"quench_pump": [200, 470],
+	"quench_valve": [330, 400],
+	"rundown_valve": [725, 472],
+	"vgo_feed": [50, 130]
+}

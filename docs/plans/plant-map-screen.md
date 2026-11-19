@@ -113,20 +113,24 @@ The commands are the engine's own JSON (`crates/core/src/snapshot.rs`,
   screenshots; the `--hands` tour adds Up, M, Up, M on a loop-held item
   (run on all 21 loop plants). A fired trip is named on the keys line.
 
-## Slice 3 — a layout a person can fix (no decision)
+## Slice 3 — a layout a person can fix (no decision) — DONE 2026-11-19 (M81)
 
 Computed layout will never be right for every plant. Give each plant an
 optional sidecar: `demo/layout/<plant>.json`, `{"node_name": [x, y], …}` in
 page coordinates. **Not** in the scenario file (those never change:
 CLAUDE.md, Conventions).
 
-- [ ] `_lay_out` uses the sidecar's position for any node it names and the
-      computed one for the rest.
-- [ ] In the map: hold Ctrl and drag a node to move it; Ctrl+S writes the
+- [x] `_lay_out` uses the sidecar's position for any node it names and the
+      computed one for the rest. (A name the plant lacks, or a place off the
+      page, is named on the message line and fails `--auto`.)
+- [x] In the map: hold Ctrl and drag a node to move it; Ctrl+S writes the
       sidecar (only when run from the project folder, i.e.
       `OS.has_feature("editor")` or the path is writable; otherwise say so).
-- [ ] Hand-place the eight column-screen plants and the six reactor plants.
+      (Done by trying the write and saying why it failed, not by the feature
+      test; `--drag=`, `--save-layout`, `--layout-dir=` script it.)
+- [x] Hand-place the eight column-screen plants and the six reactor plants.
       Commit the sidecars. Screenshots before/after in the commit message.
+      (Fifteen: the column screen has nine plants since M75's overfill.)
 
 ## Slice 4 — one running plant, many screens (ASK FIRST)
 

@@ -1,0 +1,7 @@
+{
+	"bed": [430, 320],
+	"feed_valve": [250, 320],
+	"product": [790, 320],
+	"product_line__leak_point": [610, 320],
+	"vgo_feed": [70, 320]
+}

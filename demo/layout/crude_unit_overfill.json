@@ -1,0 +1,19 @@
+{
+	"column": [390, 290],
+	"column_psv": [520, 500],
+	"crude_source": [60, 190],
+	"diesel_pa_cooler": [235, 415],
+	"diesel_pa_pump": [90, 415],
+	"diesel_tank": [650, 290],
+	"flare": [650, 520],
+	"furnace": [170, 190],
+	"gas_oil_pa_cooler": [235, 500],
+	"gas_oil_pa_pump": [90, 500],
+	"gas_oil_tank": [650, 365],
+	"kero_pa_cooler": [235, 330],
+	"kero_pa_pump": [90, 330],
+	"kerosene_tank": [650, 215],
+	"naphtha_tank": [650, 140],
+	"residue_tank": [650, 440],
+	"transfer_line__leak_point": [280, 245]
+}

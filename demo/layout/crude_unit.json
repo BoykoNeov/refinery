@@ -1,0 +1,11 @@
+{
+	"column": [450, 300],
+	"crude_source": [80, 300],
+	"diesel_tank": [680, 300],
+	"furnace": [210, 300],
+	"gas_oil_tank": [680, 375],
+	"kerosene_tank": [680, 225],
+	"naphtha_tank": [680, 150],
+	"residue_tank": [680, 450],
+	"transfer_line__leak_point": [330, 300]
+}

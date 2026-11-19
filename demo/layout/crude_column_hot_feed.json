@@ -1,0 +1,9 @@
+{
+	"bottoms_tank": [680, 410],
+	"column": [450, 300],
+	"crude_source": [80, 300],
+	"distillate_tank": [680, 300],
+	"hot_feed_line__leak_point": [330, 300],
+	"naphtha_tank": [680, 190],
+	"preheater": [210, 300]
+}
