@@ -29,9 +29,12 @@ at least when an element is clicked".
   …"); the panel's second line over a node or pipe says what a click does,
   and which loop moves it. Coolers gained Up/Down (`set_cooler_duty`).
 - `--hands` adds Up (refused in AUTO), M, Up (taken), M on the first
-  loop-held item, and stops loudly on a library built before M80. Eight
-  plants exit 0; `--auto` 72 plants, 0 stopped, no script errors.
-  `--pick=<name>` screenshots looked at (three plants).
+  loop-held item, and stops loudly on a library built before M80. All 21
+  loop plants exit 0, M taken and given back on each; `--auto` 72 plants,
+  0 stopped, no script errors. `--pick=<name>` screenshots looked at
+  (three plants). A fired trip puts "(a trip has fired: R resets it)" on
+  the keys line; M while a trip holds the item was not run (the tour
+  resets trips before it reaches M).
 
 ---
 

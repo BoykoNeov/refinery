@@ -585,6 +585,12 @@ func _keys_line() -> Array:
 		now = "%.2f MW" % (float(kind.get("duty", 0.0)) / 1.0e6)
 		step = "Up/Down move its %s 5 %% (at least 0.5 MW)" % ("cooling" if _kind(node) == "cooler" else "firing")
 	var head := "PICKED %s, %s" % [_label(node), now]
+	# A fired trip may hold what is picked whatever its loop's mode: the
+	# engine says so if it does; this line says one has fired.
+	for trip in snapshot.get("trips", []):
+		if trip["state"]["status"] == "tripped":
+			head = "(a trip has fired: R resets it)   " + head
+			break
 	var owner := _loop_on(int(node["id"]))
 	if owner.is_empty():
 		return ["%s — %s   (no loop moves it)" % [head, step], WARN]

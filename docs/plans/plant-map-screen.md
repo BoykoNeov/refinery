@@ -110,7 +110,8 @@ The commands are the engine's own JSON (`crates/core/src/snapshot.rs`,
   for A and Q/Z. A line under the headings says what is picked and what the
   keys do to it now; the panel over a node or pipe says what a click does
   and which loop moves it. Coolers gained Up/Down. `--pick=<name>` for
-  screenshots; the `--hands` tour adds Up, M, Up, M on a loop-held item.
+  screenshots; the `--hands` tour adds Up, M, Up, M on a loop-held item
+  (run on all 21 loop plants). A fired trip is named on the keys line.
 
 ## Slice 3 — a layout a person can fix (no decision)
 

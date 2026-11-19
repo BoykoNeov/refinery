@@ -32398,7 +32398,8 @@ bytes before and after once the new key is taken out (120–360 keys each).
 loop that moves it in MANUAL, and M again puts it back in AUTO; picking it
 also picks that loop for A and Q/Z. A line under the headings says what is
 picked and what each key does to it now (and, on a cascade's inner loop
-whose outer loop is in AUTO, that the target is the outer loop's). Over a
+whose outer loop is in AUTO, that the target is the outer loop's; and when
+a trip has fired, that R resets it). Over a
 node or a pipe the panel's second line says what a click on it does, and
 which loop moves it. Coolers gained Up/Down (`set_cooler_duty`) for this:
 `tank_temperature_control`'s loop moves one.

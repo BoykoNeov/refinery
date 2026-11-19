@@ -11648,7 +11648,7 @@ click does and which loop moves it. Coolers gained Up/Down.
 **Verified.** FULL tier 1370 passed; gate 10b by name, two mutants killed.
 Corpus: 21 of 72 moved, exactly the plants with loops, on both solvers;
 iterations unchanged; six plants' outputs identical once the new key is
-removed. The `--hands` tour on eight plants (a cooler, a valve, a furnace,
-a cascade, a quench, a latched-then-reset trip), and `--auto` on all 72.
+removed. The `--hands` tour on all 21 loop plants (M taken and given back
+on each, every answer the engine's), and `--auto` on all 72.
 
 **M80 CLOSED** (2026-11-19; `docs/MILESTONES.md`).
