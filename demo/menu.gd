@@ -63,10 +63,10 @@ const SCREENS := [
 	},
 ]
 
-const BACKGROUND := Color(0.09, 0.10, 0.12)
-const INK := Color(0.88, 0.90, 0.93)
-const DIM := Color(0.60, 0.63, 0.68)
-const ACCENT := Color(1.0, 0.55, 0.10)
+const BACKGROUND := Screen.BACKGROUND
+const INK := Screen.INK
+const DIM := Screen.DIM
+const ACCENT := Screen.FLAME
 const BAND := Color(0.16, 0.18, 0.22)
 
 const LEFT := 40.0
@@ -87,13 +87,13 @@ var row_step := ROW
 
 
 func _ready() -> void:
-	if "--auto" in OS.get_cmdline_user_args():
+	var options := Screen.arguments()
+	if options["auto"]:
 		get_tree().change_scene_to_file.call_deferred("res://demo/plant.tscn")
 		return
 	Screen.fit(get_window())
-	for arg in OS.get_cmdline_user_args():
-		if arg.begins_with("--shot="):
-			_shoot.call_deferred(arg.trim_prefix("--shot="))
+	if options["shot"] != "":
+		_shoot.call_deferred(options["shot"])
 	var y := TOP
 	var save: Dictionary = Screen.read_save(Screen.QUICK_SAVE)
 	if not save.is_empty() and save["note"].has("scene"):
@@ -125,11 +125,7 @@ func _ready() -> void:
 func _shoot(path: String) -> void:
 	queue_redraw()
 	await RenderingServer.frame_post_draw
-	await RenderingServer.frame_post_draw
-	var image := get_viewport().get_texture().get_image()
-	if image != null:
-		image.save_png(path)
-		print("menu: saved %s" % path)
+	await Screen.shoot(self, "menu", path)
 	get_tree().quit()
 
 
@@ -230,5 +226,4 @@ func _draw() -> void:
 
 
 func _text(at: Vector2, text: String, color: Color, size: int = 16) -> void:
-	var fitted := Screen.fitting_size(text, get_viewport_rect().size.x - at.x - 16.0, size)
-	draw_string(ThemeDB.fallback_font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, fitted, color)
+	Screen.text(self, at, text, color, size, -1.0, 16.0)
