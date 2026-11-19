@@ -80,17 +80,17 @@ const SCENARIOS := "res://scenarios"
 const MAX_TICKS_PER_FRAME := 64
 const AUTO_TICKS := 200
 
-const BACKGROUND := Color(0.09, 0.10, 0.12)
-const SHELL := Color(0.42, 0.45, 0.50)
+const BACKGROUND := Screen.BACKGROUND
+const SHELL := Screen.SHELL
 const BODY := Color(0.15, 0.17, 0.20)
-const INK := Color(0.88, 0.90, 0.93)
-const DIM := Color(0.60, 0.63, 0.68)
-const COOL := Color(0.25, 0.50, 0.85)
-const HOT := Color(0.90, 0.30, 0.15)
-const FLAME := Color(1.0, 0.55, 0.10)
-const GOOD := Color(0.35, 0.80, 0.45)
-const BAD := Color(0.95, 0.30, 0.25)
-const WARN := Color(0.95, 0.78, 0.30)
+const INK := Screen.INK
+const DIM := Screen.DIM
+const COOL := Screen.COOL
+const HOT := Screen.HOT
+const FLAME := Screen.FLAME
+const GOOD := Screen.GOOD
+const BAD := Screen.BAD
+const WARN := Screen.WARN
 const IDLE := Color(0.30, 0.32, 0.36)
 
 ## The temperatures a pipe's colour runs between [K]: 20 °C to 450 °C.
@@ -228,15 +228,12 @@ func _ready() -> void:
 		if file.ends_with(".toml"):
 			plants.append(file.trim_suffix(".toml"))
 	plants.sort()
-	var asked := Screen.chosen_plant(get_tree(), "")
+	var options := Screen.arguments()
+	auto_run = options["auto"]
+	var asked: String = options.get("plant", Screen.chosen_plant(get_tree(), ""))
+	shot_path = options["shot"]
 	for arg in OS.get_cmdline_user_args():
-		if arg == "--auto":
-			auto_run = true
-		elif arg.begins_with("--plant="):
-			asked = arg.trim_prefix("--plant=")
-		elif arg.begins_with("--shot="):
-			shot_path = arg.trim_prefix("--shot=")
-		elif arg.begins_with("--hover="):
+		if arg.begins_with("--hover="):
 			hover_name = arg.trim_prefix("--hover=")
 		elif arg.begins_with("--scroll="):
 			hover_scroll = int(arg.trim_prefix("--scroll="))
@@ -361,11 +358,7 @@ func _physics_process(_delta: float) -> void:
 func _shoot(path: String) -> void:
 	paused = true
 	queue_redraw()
-	await RenderingServer.frame_post_draw
-	var image := get_viewport().get_texture().get_image()
-	if image != null:
-		image.save_png(path)
-		print("map: saved %s" % path)
+	await Screen.shoot(self, "map", path)
 	get_tree().quit()
 
 
@@ -1172,8 +1165,8 @@ func _draw_legend(size: Vector2) -> void:
 	_text(Vector2(x + 486, 60), "450 °C", DIM, 12)
 	if message != "":
 		draw_multiline_string(ThemeDB.fallback_font, Vector2(30, size.y - 54.0), message, HORIZONTAL_ALIGNMENT_LEFT, size.x - 60.0, 13, 2, message_color)
-	var help := "Left/Right plant   Space pause   [ ] speed   click a valve/furnace/cooler: Up/Down, M by hand   click a pump: on/off   P+click a pipe: hole/mend   Tab A Q Z loops   R reset trips   Ctrl+drag move, Ctrl+S keep   F11   Esc menu"
-	_text(Vector2(30, size.y - 14.0), help, DIM, Screen.fitting_size(help, size.x - 60.0, 13, 10))
+	var help := "Left/Right plant   Space pause   [ ] speed   click a valve/furnace/cooler: Up/Down, M by hand   click a pump: on/off   P+click a pipe: hole/mend   Tab A Q Z loops   R reset trips   Ctrl+drag move, Ctrl+S keep   F11"
+	Screen.legend(self, Vector2(30, size.y - 14.0), [help], DIM, 13, 24.0, size.x - 60.0)
 
 
 func _warmth(kelvin: float) -> Color:
@@ -1753,8 +1746,7 @@ func _centred(at: Vector2, text: String, color: Color, size: int) -> void:
 
 
 func _text(at: Vector2, text: String, color: Color, size: int = 16) -> void:
-	var fitted := Screen.fitting_size(text, get_viewport_rect().size.x - at.x - 8.0, size)
-	draw_string(ThemeDB.fallback_font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, fitted, color)
+	Screen.text(self, at, text, color, size)
 
 
 func _halt(reason: String) -> void:
