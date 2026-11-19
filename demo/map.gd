@@ -171,6 +171,10 @@ var shot_path := ""
 var places: Dictionary = {}
 ## The largest flow on the map this tick [kg/s]: pipe widths are shares of it.
 var largest_flow := 1.0
+## Pipe id → how far its dashes have moved along it [px] (M83). Moved each
+## frame the plant runs, by that pipe's flow then, so a paused or stopped plant
+## holds them still and a screenshot taken at a tick is the same every run.
+var dash_travel: Dictionary = {}
 ## What the mouse is over: {"node": id} or {"edge": id}, or {} for nothing. An
 ## id, never the entry itself: the snapshot is replaced every tick.
 var hovered: Dictionary = {}
@@ -280,6 +284,7 @@ func _load(index: int) -> void:
 	sent_what = {}
 	holes = []
 	dragging = -1
+	dash_travel = {}
 	var err = JSON.parse_string(sim.load_scenario("%s/%s.toml" % [SCENARIOS, plants[plant_index]]))
 	if err != null:
 		_halt("load failed: %s" % err["message"])
@@ -342,12 +347,13 @@ func _recover(err: Dictionary) -> void:
 	queue_redraw()
 
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	if auto_run or halted != "" or paused or snapshot.is_empty():
 		return
 	for i in ticks_per_frame:
 		if not _step():
 			return
+	_move_dashes(delta)
 	queue_redraw()
 	if shot_path != "" and sim.tick_index() >= AUTO_TICKS:
 		var path := shot_path
@@ -1131,9 +1137,7 @@ func _draw() -> void:
 		_draw_legend(size)
 		return
 
-	largest_flow = 1.0e-9
-	for edge in snapshot["edges"]:
-		largest_flow = maxf(largest_flow, absf(float(edge["stream"]["mass_flow"])))
+	largest_flow = _largest_flow()
 	for edge in snapshot["edges"]:
 		_draw_pipe(edge)
 	for node in snapshot["nodes"]:
@@ -1169,6 +1173,25 @@ func _draw_legend(size: Vector2) -> void:
 	Screen.legend(self, Vector2(30, size.y - 14.0), [help], DIM, 13, 24.0, size.x - 60.0)
 
 
+## The largest flow on the map this tick [kg/s], never zero.
+func _largest_flow() -> float:
+	var largest := 1.0e-9
+	for edge in snapshot["edges"]:
+		largest = maxf(largest, absf(float(edge["stream"]["mass_flow"])))
+	return largest
+
+
+## Every running pipe's dashes moved on by `seconds` at the speed its share of
+## the largest flow sets, the way it flows now (M83, Screen.dash_speed).
+func _move_dashes(seconds: float) -> void:
+	var largest := _largest_flow()
+	for edge in snapshot["edges"]:
+		var flow := float(edge["stream"]["mass_flow"])
+		if absf(flow) > 1.0e-6:
+			var id := int(edge["id"])
+			dash_travel[id] = fposmod(float(dash_travel.get(id, 0.0)) + Screen.dash_speed(flow / largest) * seconds, Screen.DASH_PERIOD)
+
+
 func _warmth(kelvin: float) -> Color:
 	return COOL.lerp(HOT, clampf((kelvin - COLD_K) / (HOT_K - COLD_K), 0.0, 1.0))
 
@@ -1198,7 +1221,7 @@ func _draw_pipe(edge: Dictionary) -> void:
 	var path := _pipe_path(edge)
 	if hovered.get("edge", -1) == int(edge["id"]):
 		draw_polyline(path, INK, width + 6.0)
-	draw_polyline(path, color, width)
+	Screen.pipe(self, path, color, width, float(dash_travel.get(int(edge["id"]), 0.0)) if running else NAN)
 	if running:
 		var index := path.size() / 2
 		var start: Vector2 = path[index - 1]

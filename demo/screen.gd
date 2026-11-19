@@ -47,6 +47,14 @@ const WARN := Color(0.95, 0.78, 0.30)
 ## Behind a chart, a shade off the background.
 const CHART_BACKGROUND := Color(0.11, 0.12, 0.14)
 
+## A pipe's dashes (M83, `pipe`): drawn this long [px] every this far along
+## it, moving this many px a second on a pipe carrying the screen's largest
+## flow, and at least the slow speed on any pipe that flows at all.
+const DASH_LENGTH := 7.0
+const DASH_PERIOD := 22.0
+const DASH_FAST := 60.0
+const DASH_SLOW := 10.0
+
 
 ## The plant the menu asked for, or `otherwise`. Read once: switching plants
 ## inside the screen, then coming back through the menu, starts clean.
@@ -276,3 +284,54 @@ static func chart(canvas: CanvasItem, rect: Rect2, title: String, series: Array,
 	canvas.draw_rect(rect, SHELL, false, 1.0)
 	text(canvas, Vector2(rect.position.x, rect.end.y + 16), ends[0], DIM, 12)
 	text(canvas, Vector2(rect.end.x - 26, rect.end.y + 16), ends[1], DIM, 12)
+
+
+## How fast a pipe's dashes move [px/s] (M83): by `share`, its flow's share of
+## the screen's largest, from DASH_SLOW to DASH_FAST as its square root (as
+## the map's pipe widths grow); negative, flowing back, they move back.
+static func dash_speed(share: float) -> float:
+	if share == 0.0:
+		return 0.0
+	return signf(share) * lerpf(DASH_SLOW, DASH_FAST, sqrt(minf(absf(share), 1.0)))
+
+
+## A pipe (M83): `points`, from its upstream end, as one line and — unless
+## `travel` is NaN, a pipe not flowing — short dashes along it, lighter than
+## the line, moved `travel` px on from the upstream end. A screen that adds
+## `dash_speed` × the frame's seconds to `travel` each frame the plant runs
+## makes them run the way the flow does. A dash is carried round a corner,
+## not cut at it.
+static func pipe(canvas: CanvasItem, points: PackedVector2Array, color: Color, width: float, travel: float = NAN) -> void:
+	canvas.draw_polyline(points, color, width)
+	if is_nan(travel) or points.size() < 2:
+		return
+	# How far along the pipe each of its points is [px].
+	var lengths := PackedFloat32Array([0.0])
+	for i in range(1, points.size()):
+		lengths.append(lengths[i - 1] + points[i - 1].distance_to(points[i]))
+	var total: float = lengths[lengths.size() - 1]
+	var dash_color := color.lightened(0.55)
+	var dash_width := maxf(1.0, width * 0.5)
+	var start := fposmod(travel, DASH_PERIOD) - DASH_PERIOD
+	while start < total:
+		var a := maxf(start, 0.0)
+		var b := minf(start + DASH_LENGTH, total)
+		if b > a:
+			var dash := PackedVector2Array([_along(points, lengths, a)])
+			for i in points.size():
+				if lengths[i] > a and lengths[i] < b:
+					dash.append(points[i])
+			dash.append(_along(points, lengths, b))
+			canvas.draw_polyline(dash, dash_color, dash_width)
+		start += DASH_PERIOD
+
+
+## The point `distance` px along the line through `points`, `lengths` how far
+## along each point is.
+static func _along(points: PackedVector2Array, lengths: PackedFloat32Array, distance: float) -> Vector2:
+	for i in range(1, points.size()):
+		if distance <= lengths[i] or i == points.size() - 1:
+			var segment := lengths[i] - lengths[i - 1]
+			var share := 0.0 if segment <= 0.0 else (distance - lengths[i - 1]) / segment
+			return points[i - 1].lerp(points[i], share)
+	return points[0]
