@@ -1172,6 +1172,9 @@ const VESSEL_LOW_K := 473.15
 const VESSEL_HIGH_K := 1073.15
 const CHART_RECT := Rect2(60, 420, 520, 250)
 const TRAIL_RECT := Rect2(660, 420, 280, 250)
+## Both charts' temperature scale (Screen.nice_range, Screen.grid): whole
+## 25-degree steps counted in degrees Celsius, at least 50 degrees tall.
+const CHART_AXIS := {"step": 25.0, "least": 50.0, "offset": 273.15}
 ## On a plant with a hydrogen loop the loop is drawn where the charts' top was,
 ## and the charts are shorter.
 const CHART_RECT_GAS := Rect2(60, 545, 520, 135)
@@ -1194,7 +1197,6 @@ const WHITE_HOT := Color(1.0, 0.92, 0.65)
 const FLAME := Screen.FLAME
 const INK := Screen.INK
 const DIM := Screen.DIM
-const GRID := Screen.GRID
 const GOOD := Screen.GOOD
 const BAD := Screen.BAD
 const TRIP_MARK := Screen.WARN
@@ -1579,62 +1581,38 @@ func _quench_loop() -> Variant:
 ## targets across it. The vertical scale fits what is drawn.
 func _draw_chart() -> void:
 	var rect := CHART_RECT if separator_id < 0 else CHART_RECT_GAS
-	draw_rect(rect, Color(0.11, 0.12, 0.14))
-	_text(rect.position + Vector2(0, -10), "temperature, last 30 minutes (bold: bed, thin: oil entering it)", DIM, 14)
 	var shown := samples.slice(maxi(0, samples.size() - CHART_SAMPLES))
 	var marks: Array = []
 	for i in bed_ids.size():
 		for trip in _bed_trips(i):
-			marks.append([float(trip["limit"]["k"]), TRIP_MARK, "trip"])
+			var limit := float(trip["limit"]["k"])
+			marks.append([limit, TRIP_MARK, "trip %.0f" % (limit - 273.15)])
 		for loop in _bed_loops(i):
-			marks.append([float(loop["setpoint"]["k"]), TARGET_MARK, "target"])
-	var low := INF
-	var high := -INF
-	for sample in shown:
-		for pair in sample["beds"]:
-			for k in pair:
-				if not is_nan(k):
-					low = minf(low, k)
-					high = maxf(high, k)
-	for mark in marks:
-		low = minf(low, mark[0])
-		high = maxf(high, mark[0])
-	if shown.is_empty() or low > high:
-		draw_rect(rect, SHELL, false, 1.0)
-		_text(rect.position + Vector2(12, 28), "waiting for the first sample", DIM, 14)
-		return
-	var scale := _nice_range(low, high)
-	_grid_y(rect, scale)
-	for mark in marks:
-		var y := _y_of(rect, scale, mark[0])
-		draw_line(Vector2(rect.position.x, y), Vector2(rect.end.x, y), mark[1], 1.0)
-		_text(Vector2(rect.end.x - 54, y - 4), "%s %.0f" % [mark[2], mark[0] - 273.15], mark[1], 12)
-	var last_tick := int(samples[-1]["tick"])
-	var span := float(CHART_SAMPLES * SAMPLE_TICKS)
+			var target := float(loop["setpoint"]["k"])
+			marks.append([target, TARGET_MARK, "target %.0f" % (target - 273.15)])
+	# Per bed, the oil entering it (thin) under the bed itself (bold).
+	var series: Array = []
 	for i in bed_ids.size():
-		var bed_line := PackedVector2Array()
-		var inlet_line := PackedVector2Array()
+		var bed_points: Array = []
+		var inlet_points: Array = []
 		for sample in shown:
-			var x := rect.end.x - rect.size.x * (last_tick - int(sample["tick"])) / span
 			var pair: Array = sample["beds"][i]
-			bed_line.append(Vector2(x, _y_of(rect, scale, pair[0])))
-			if not is_nan(pair[1]):
-				inlet_line.append(Vector2(x, _y_of(rect, scale, pair[1])))
+			bed_points.append([int(sample["tick"]), pair[0]])
+			inlet_points.append([int(sample["tick"]), pair[1]])
 		var color: Color = BED_COLORS[i % BED_COLORS.size()]
-		if inlet_line.size() > 1:
-			draw_polyline(inlet_line, color.darkened(0.35), 1.0)
-		if bed_line.size() > 1:
-			draw_polyline(bed_line, color, 2.5)
-	draw_rect(rect, SHELL, false, 1.0)
-	_text(Vector2(rect.position.x, rect.end.y + 16), "-30 min", DIM, 12)
-	_text(Vector2(rect.end.x - 26, rect.end.y + 16), "now", DIM, 12)
+		series.append([inlet_points, color.darkened(0.35), 1.0])
+		series.append([bed_points, color, 2.5])
+	Screen.chart(
+		self, rect, "temperature, last 30 minutes (bold: bed, thin: oil entering it)", series, marks,
+		CHART_AXIS, int(samples[-1]["tick"]) if not samples.is_empty() else 0, float(CHART_SAMPLES * SAMPLE_TICKS), ["-30 min", "now"]
+	)
 
 
 ## The trail: every sample as a dot at (oil entering the bed, bed), older dots
 ## fainter, the newest ringed. No curve is drawn that the engine did not report.
 func _draw_trail() -> void:
 	var rect := TRAIL_RECT if separator_id < 0 else TRAIL_RECT_GAS
-	draw_rect(rect, Color(0.11, 0.12, 0.14))
+	draw_rect(rect, Screen.CHART_BACKGROUND)
 	_text(rect.position + Vector2(0, -10), "trail: bed against oil entering it", DIM, 14)
 	var x_low := INF
 	var x_high := -INF
@@ -1679,32 +1657,16 @@ func _draw_trail() -> void:
 ## A range [K] around `low`..`high`, widened to whole 25-degree steps, at least
 ## 50 degrees tall so a settled line is not drawn as noise.
 func _nice_range(low: float, high: float) -> Array:
-	var step := 25.0
-	var a := floorf((low - 273.15) / step) * step
-	var b := ceilf((high - 273.15) / step) * step
-	if b - a < 50.0:
-		var middle := (a + b) * 0.5
-		a = floorf((middle - 25.0) / step) * step
-		b = a + 50.0
-	return [a + 273.15, b + 273.15]
+	return Screen.nice_range(low, high, CHART_AXIS["step"], CHART_AXIS["least"], CHART_AXIS["offset"])
 
 
 func _y_of(rect: Rect2, scale: Array, kelvin: float) -> float:
-	return rect.end.y - rect.size.y * clampf((kelvin - scale[0]) / (scale[1] - scale[0]), 0.0, 1.0)
+	return Screen.chart_y(rect, scale, kelvin)
 
 
 ## Horizontal grid lines with their °C, about five to a chart.
 func _grid_y(rect: Rect2, scale: Array) -> void:
-	var span: float = scale[1] - scale[0]
-	var step := 25.0
-	while span / step > 6.0:
-		step *= 2.0
-	var c := ceilf((scale[0] - 273.15) / step) * step
-	while c + 273.15 <= scale[1] + 0.01:
-		var y := _y_of(rect, scale, c + 273.15)
-		draw_line(Vector2(rect.position.x, y), Vector2(rect.end.x, y), GRID, 1.0)
-		_text(Vector2(rect.position.x - 40, y + 4), "%.0f" % c, DIM, 12)
-		c += step
+	Screen.grid(self, rect, scale, CHART_AXIS["step"], CHART_AXIS["offset"])
 
 
 ## The right-hand panel: the feed, the heater and quench, each loop's faceplate

@@ -44,6 +44,8 @@ const GOOD := Color(0.35, 0.80, 0.45)
 const BAD := Color(0.95, 0.30, 0.25)
 ## A mark, a warning, a fired trip.
 const WARN := Color(0.95, 0.78, 0.30)
+## Behind a chart, a shade off the background.
+const CHART_BACKGROUND := Color(0.11, 0.12, 0.14)
 
 
 ## The plant the menu asked for, or `otherwise`. Read once: switching plants
@@ -190,3 +192,87 @@ static func shoot(canvas: CanvasItem, who: String, path: String) -> void:
 	if image != null:
 		image.save_png(path)
 		print("%s: saved %s" % [who, path])
+
+
+## A range around `low`..`high` (M83, the reactor's chart's own rule): widened
+## to whole `step`s counted from `offset` (273.15 to count degrees Celsius
+## from kelvin), at least `least` tall so a settled line is not drawn as noise.
+static func nice_range(low: float, high: float, step: float, least: float, offset: float = 0.0) -> Array:
+	var a := floorf((low - offset) / step) * step
+	var b := ceilf((high - offset) / step) * step
+	if b - a < least:
+		var middle := (a + b) * 0.5
+		a = floorf((middle - least * 0.5) / step) * step
+		b = a + least
+	return [a + offset, b + offset]
+
+
+## Where `value` falls on a chart's `rect` drawn over `scale` ([low, high]):
+## low at the bottom edge, high at the top, kept inside.
+static func chart_y(rect: Rect2, scale: Array, value: float) -> float:
+	return rect.end.y - rect.size.y * clampf((value - scale[0]) / (scale[1] - scale[0]), 0.0, 1.0)
+
+
+## Lines across `rect` at whole steps of `scale`, about five to a chart, each
+## labelled left of it in `format` (counted from `offset`, as `nice_range`).
+static func grid(canvas: CanvasItem, rect: Rect2, scale: Array, step: float, offset: float = 0.0, format: String = "%.0f") -> void:
+	var span: float = scale[1] - scale[0]
+	while span / step > 6.0:
+		step *= 2.0
+	var c := ceilf((scale[0] - offset) / step) * step
+	while c + offset <= scale[1] + 0.01:
+		var y := chart_y(rect, scale, c + offset)
+		canvas.draw_line(Vector2(rect.position.x, y), Vector2(rect.end.x, y), GRID, 1.0)
+		text(canvas, Vector2(rect.position.x - 40, y + 4), format % c, DIM, 12)
+		c += step
+
+
+## A time chart (M83, lifted from the reactor's): `title` over its panel, the
+## grid, `marks` across it, each `series` as a line, the frame, and `ends`
+## under its two ends ([left, right], e.g. ["-30 min", "now"]).
+##   series  [[points, color, width], …] drawn in that order; points are
+##           [tick, value] pairs, a NaN value left out; a tick `now_tick -
+##           span_ticks` sits at the left edge, `now_tick` at the right.
+##   marks   [[value, color, label], …], a limit or a target: a line, its
+##           label at the right end.
+##   axis    {step, least, offset, format} as `nice_range` and `grid` take
+##           them; with "range": [low, high] the scale is that, not fitted.
+## The vertical scale fits the series and the marks. With nothing to draw,
+## the panel says `waiting` instead.
+static func chart(canvas: CanvasItem, rect: Rect2, title: String, series: Array, marks: Array, axis: Dictionary, now_tick: int, span_ticks: float, ends: Array, waiting: String = "waiting for the first sample") -> void:
+	canvas.draw_rect(rect, CHART_BACKGROUND)
+	text(canvas, rect.position + Vector2(0, -10), title, DIM, 14)
+	var points := 0
+	var low := INF
+	var high := -INF
+	for line in series:
+		for point in line[0]:
+			points += 1
+			if not is_nan(point[1]):
+				low = minf(low, point[1])
+				high = maxf(high, point[1])
+	for mark in marks:
+		low = minf(low, mark[0])
+		high = maxf(high, mark[0])
+	if points == 0 or low > high:
+		canvas.draw_rect(rect, SHELL, false, 1.0)
+		text(canvas, rect.position + Vector2(12, 28), waiting, DIM, 14)
+		return
+	var offset: float = axis.get("offset", 0.0)
+	var scale: Array = axis["range"] if axis.has("range") else nice_range(low, high, axis["step"], axis["least"], offset)
+	grid(canvas, rect, scale, axis["step"], offset, axis.get("format", "%.0f"))
+	for mark in marks:
+		var y := chart_y(rect, scale, mark[0])
+		canvas.draw_line(Vector2(rect.position.x, y), Vector2(rect.end.x, y), mark[1], 1.0)
+		text(canvas, Vector2(rect.end.x - 54, y - 4), mark[2], mark[1], 12)
+	for line in series:
+		var drawn := PackedVector2Array()
+		for point in line[0]:
+			if not is_nan(point[1]):
+				var x: float = rect.end.x - rect.size.x * (now_tick - int(point[0])) / span_ticks
+				drawn.append(Vector2(x, chart_y(rect, scale, point[1])))
+		if drawn.size() > 1:
+			canvas.draw_polyline(drawn, line[1], line[2])
+	canvas.draw_rect(rect, SHELL, false, 1.0)
+	text(canvas, Vector2(rect.position.x, rect.end.y + 16), ends[0], DIM, 12)
+	text(canvas, Vector2(rect.end.x - 26, rect.end.y + 16), ends[1], DIM, 12)
