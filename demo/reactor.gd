@@ -344,13 +344,10 @@ var reads_timed := 0
 
 
 func _ready() -> void:
-	for arg in OS.get_cmdline_user_args():
-		if arg == "--auto":
-			auto_run = true
-		elif arg.begins_with("--plant="):
-			plant_key = arg.trim_prefix("--plant=")
-		elif arg.begins_with("--shots="):
-			shots_dir = arg.trim_prefix("--shots=")
+	var options := Screen.arguments()
+	auto_run = options["auto"]
+	plant_key = options.get("plant", plant_key)
+	shots_dir = options["shots"]
 	plant_key = Screen.chosen_plant(get_tree(), plant_key)
 	Screen.fit(get_window(), Vector2i(1440, 810))
 	if not PLANTS.has(plant_key):
@@ -619,12 +616,7 @@ func _event(tick: int, text: String, bad: bool) -> void:
 func _shoot(tick: int) -> void:
 	shooting = true
 	queue_redraw()
-	await RenderingServer.frame_post_draw
-	var path := "%s/reactor_%s_t%05d.png" % [shots_dir, plant_key, tick]
-	var image := get_viewport().get_texture().get_image()
-	if image != null:
-		image.save_png(path)
-		print("reactor: saved %s" % path)
+	await Screen.shoot(self, "reactor", "%s/reactor_%s_t%05d.png" % [shots_dir, plant_key, tick])
 	shooting = false
 
 
@@ -1193,19 +1185,19 @@ const GAS_COMPRESSOR_X := 240.0
 const GAS_HEATER_X := 355.0
 const PANEL_X := 990.0
 
-const BACKGROUND := Color(0.09, 0.10, 0.12)
-const SHELL := Color(0.42, 0.45, 0.50)
-const PIPE := Color(0.55, 0.58, 0.62)
-const LIQUID := Color(0.20, 0.45, 0.75)
-const HOT := Color(0.90, 0.30, 0.15)
+const BACKGROUND := Screen.BACKGROUND
+const SHELL := Screen.SHELL
+const PIPE := Screen.PIPE
+const LIQUID := Screen.LIQUID
+const HOT := Screen.HOT
 const WHITE_HOT := Color(1.0, 0.92, 0.65)
-const FLAME := Color(1.0, 0.55, 0.10)
-const INK := Color(0.88, 0.90, 0.93)
-const DIM := Color(0.60, 0.63, 0.68)
-const GRID := Color(0.20, 0.22, 0.25)
-const GOOD := Color(0.35, 0.80, 0.45)
-const BAD := Color(0.95, 0.30, 0.25)
-const TRIP_MARK := Color(0.95, 0.78, 0.30)
+const FLAME := Screen.FLAME
+const INK := Screen.INK
+const DIM := Screen.DIM
+const GRID := Screen.GRID
+const GOOD := Screen.GOOD
+const BAD := Screen.BAD
+const TRIP_MARK := Screen.WARN
 const TARGET_MARK := Color(0.45, 0.85, 0.95)
 ## One colour per bed, on the vessels' labels and both charts.
 const BED_COLORS := [Color(1.0, 0.62, 0.25), Color(0.62, 0.55, 1.0)]
@@ -1242,16 +1234,10 @@ func _draw() -> void:
 		ThemeDB.fallback_font, Vector2(30, 712), message, HORIZONTAL_ALIGNMENT_LEFT,
 		get_viewport_rect().size.x - 60, 15, 2, BAD if message_bad else GOOD
 	)
-	_text(
-		Vector2(30, 768),
+	Screen.legend(self, Vector2(30, 768), [
 		"W/S feed temperature   Up/Down feed valve   F/V preheater firing   C/X product cooler   D hydrogen vent   Tab pick loop   A auto/manual   Q/Z loop target",
-		DIM, 14
-	)
-	_text(
-		Vector2(30, 790),
-		"E emergency stop   R reset trips   P patch holes   M repair wall   T clear charts   Space pause   [ ] speed   1 calm  2 trip  3 quench  4 wall  5 hydrogen  6 h2 quench   Esc menu",
-		DIM, 14
-	)
+		"E emergency stop   R reset trips   P patch holes   M repair wall   T clear charts   Space pause   [ ] speed   1 calm  2 trip  3 quench  4 wall  5 hydrogen  6 h2 quench",
+	], DIM, 14, 22.0)
 	if halted != "":
 		_text(Vector2(30, 90), "HALTED — %s" % halted, BAD)
 
@@ -1819,7 +1805,7 @@ func _temperature_color(kelvin: float) -> Color:
 
 
 func _text(at: Vector2, text: String, color: Color, size: int = 16) -> void:
-	draw_string(ThemeDB.fallback_font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+	Screen.text(self, at, text, color, size)
 
 
 func _halt(reason: String) -> void:
