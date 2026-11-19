@@ -4,6 +4,13 @@
 is answered.** It is here so the question is written down with what each
 answer costs.
 
+**Answered 2026-11-19:** a **sandbox (A) for now**; the **operator's game
+(B) in the future**; the **builder (C) after that, much later**. The aim
+behind it, in the user's words: one complex plant that can show how a change
+or a problem in one component propagates — while exploring components in
+isolation stays valuable. So nothing below is built yet; B's pieces wait for
+the user to open them.
+
 ## The question
 
 What is the player for?

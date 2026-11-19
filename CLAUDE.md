@@ -147,11 +147,12 @@ cargo clippy -p refinery-godot-ext --features godot --all-targets -- -D warnings
 godot --headless --path . --editor --quit    # once, after cloning
 godot --path .                               # the menu: every screen and plant (Esc in a screen returns to it, F11 full screen)
 godot --headless --path . res://demo/plant.tscn -- --auto   # the M6.2 demo; ends at t=350
-godot --path . res://demo/map.tscn           # the plant map: any shipped plant drawn from its snapshot (the mouse inspects, M78; clicks and keys work it, M79; M takes a loop's valve by hand, M80; Ctrl+drag moves a node, Ctrl+S keeps it in demo/layout/<plant>.json, M81)
+godot --path . res://demo/map.tscn           # the plant map: any shipped plant drawn from its snapshot (the mouse inspects, M78; clicks and keys work it, M79; M takes a loop's valve by hand, M80; Ctrl+drag moves a node, Ctrl+S keeps it in demo/layout/<plant>.json, M81; Enter opens the screen that draws the plant running, on the same running plant, and Enter there comes back, M84)
 #   screenshot: --quit-after 4000 -- --plant=<stem> --shot=W:/temp/claude/<task>/x.png [--hover=<node or pipe> --scroll=<lines> --pick=<valve/furnace/cooler>]
 godot --headless --path . res://demo/map.tscn -- --hands --plant=<stem> [--hands-at=<tick>] [--break-at=<tick>]   # M79: valve, pump, furnace, pipes, loops, trips worked; M80: a loop-held valve taken by hand; every answer printed
 godot --headless --path . res://demo/map.tscn -- --auto     # every plant loaded, laid out, run 200 ticks; nonzero if one stops or a layout file is stale
 #   M81 layout, scripted: -- --plant=<stem> --drag=<node>@<x>,<y> [--save-layout] [--layout-dir=W:/temp/claude/<task>]
+#   M84 hand-over, scripted: --quit-after 1500 -- --plant=crude_unit_loops --enter=40,120,200   (Enter pressed at those ticks; each screen prints the tick it took the plant over at)
 godot --path . res://demo/furnace.tscn       # the M39 furnace screen (keys on screen)
 godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [--plant=burnout]
 godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on screen)
@@ -200,8 +201,8 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none open** — the user picks the next (C30's base side is still open; `docs/plans/` lists the review's plans).
-**Latest closed: M83 (2026-11-19)**: the screen kit's new visuals — dashes run along the map's pipes the way they flow (`Screen.pipe`), the reactor's chart shared (`Screen.chart`) and the column's holdup plant charting its drum and base levels in place of the furnace's picture; the column screen's clock now in plant time. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none open** — the user picks the next (C30's base side is still open; `docs/plans/` lists the review's plans; the user's aim, 2026-11-19: one complex plant that shows a fault spreading — next would be a screen finding its unit inside a bigger plant, and a plant joining the units).
+**Latest closed: M84 (2026-11-20)**: one running plant behind every screen — `demo/running.gd` holds the simulator; Enter on the map opens the screen that draws the running plant, as it stands, and Enter there comes back. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

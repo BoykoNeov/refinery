@@ -12,6 +12,34 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M84 is CLOSED (2026-11-20): one running plant behind every screen
+(`docs/plans/plant-map-screen.md` slice 4).** Asked as "what is next" after
+M83; the user took the furnace's trip-name fix first, then option (a), one
+shared simulator — and answered the objectives plan: a sandbox now, an
+operator's game later, a builder's much later; the aim one complex plant
+that shows a fault spreading, the units still explorable alone.
+- **`demo/running.gd`** (an autoload, `Running`) owns the one `RefinerySim`
+  and the file it loaded, and keeps what the screens noted that the
+  simulator does not: each command in words, the map's holes, the plant as
+  loaded (the column's design duties). A fresh load forgets them. No Rust.
+- **Enter** on the map opens the screen whose `PLANTS` names the running
+  plant's file (never its node names: the crude units share them), on the
+  plant as it stands; Enter there comes back; a plant only the map draws
+  says so. The menu's map row opens on the plant running; a row naming a
+  plant, a screen's number keys and every recorded run load afresh.
+  `Screen.SCREENS` (moved from the menu), `--enter=<tick>,…` for a recorded
+  hand-over.
+- **Checked against a record taken first**: 39 recorded runs (map, every
+  unit screen's plants, leaking line, pump break/save/continue, map hands)
+  print the same lines, timings masked. Hand-over runs on the column,
+  furnace, pump, reactor and leaking-line plants carry the tick count across
+  (40 → 120 → 200 on `crude_unit_loops`); a hole punched on the leaking line
+  stays on the map's record. **Not run**: Enter by hand in a live window.
+  **Open**: a screen that finds its unit inside a bigger plant, and a plant
+  that joins the units — what the user's aim needs next.
+
+---
+
 **M83 is CLOSED (2026-11-19): the screen kit's new visuals — dashes run
 along the map's pipes, the reactor's chart shared, the holdup plant's levels
 charted (`docs/plans/screen-kit.md`, "Then").** Asked as "what is next"

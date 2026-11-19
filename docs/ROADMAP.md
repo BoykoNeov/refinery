@@ -11730,3 +11730,38 @@ Not run: the dashes watched moving live.
 slice 4 (ask first).
 
 **M83 CLOSED** (2026-11-19; `docs/MILESTONES.md`).
+
+## M84 — one running plant behind every screen; plan `docs/plans/plant-map-screen.md` slice 4; CLOSED 2026-11-20
+
+Asked as "what is next" after M83 (2026-11-19). The user took the furnace's
+trip-name fix first (committed on its own), then slice 4 with option (a): one
+shared simulator. They also answered `objectives-and-alarms.md`: a sandbox
+now, an operator's game later, a builder's much later — the aim one complex
+plant that shows a fault spreading, with the units still explorable alone.
+No Rust.
+
+**Done**: `demo/running.gd`, an autoload, owns the one `RefinerySim`, the
+file it loaded, and what the screens noted that the simulator does not keep
+(each command in words, the map's holes, the plant as loaded); the scenes'
+own `Sim` nodes are gone. Enter on the map opens the screen whose `PLANTS`
+names the running plant's file, on the plant as it stands; Enter there comes
+back; a plant only the map draws says so. The menu's map row opens on the
+plant running. The screens' list moved from the menu into `demo/screen.gd`
+(`Screen.SCREENS`). `--enter=<tick>,…` presses Enter in a recorded run.
+
+**Verified by running**, against a record taken first: the `--auto` lines of
+the map (72 plants), every furnace, pump, reactor and column plant, the
+leaking line, the pump's break, save and continue, and the map's `--hands`
+on two plants — all 39 the same, timings masked. Hand-over runs: map →
+column → map → column on `crude_unit_loops` (taken over at ticks 40, 120,
+200, never reloaded), and there and back on the furnace, pump, reactor and
+leaking-line plants; Enter on `tank_overflow` says only the map draws it; a
+hole the leaking-line screen punched is on the map's record after Enter.
+Screenshots of the map, column and menu looked at (the map's key line
+shortened to fit). Not run: Enter pressed by hand in a live window.
+
+**Open**: what the user's aim needs next, each a milestone of its own — a
+screen that finds its unit inside a bigger plant (the furnace screen on a
+crude unit's furnace), and a plant that joins the units.
+
+**M84 CLOSED** (2026-11-20; `docs/MILESTONES.md`).
