@@ -1,4 +1,4 @@
-# Plan: one kit under every screen
+# Plan: one kit under every screen — steps 0–6 DONE 2026-11-19 (M82)
 
 ## The problem
 
@@ -30,35 +30,41 @@ window fitting, `fitting_size`). This plan grows it.
 
 ## Steps
 
-- [ ] **0. Record.** For every screen and plant: the headless `--auto`
+- [x] **0. Record.** For every screen and plant: the headless `--auto`
       output to `W:\temp\claude\screen-kit\before\<screen>_<plant>.txt`, and
       a windowed `--shots` run. Strip the `[x.x ms/tick]` timings before
       diffing (they vary run to run).
-- [ ] **1. Palette.** Move the colour constants every screen shares
+- [x] **1. Palette.** Move the colour constants every screen shares
       (`BACKGROUND`, `SHELL`, `PIPE`, `COOL`, `HOT`, `FLAME`, `INK`, `DIM`,
       `GOOD`, `BAD`, `WARN`) into `screen.gd` as constants; each screen
       keeps `const INK := Screen.INK` lines so its drawing code is untouched.
       Check first that the values really are equal across screens
       (`grep -n '^const \(INK\|DIM\|…\) ' demo/*.gd`); where one differs,
       keep that screen's own and note it.
-- [ ] **2. Text.** One `Screen.text(canvas, at, text, color, size, width)`
+- [x] **2. Text.** One `Screen.text(canvas, at, text, color, size, width)`
       that shrinks to fit (what `column.gd`'s `_text` does now). Every
       screen's `_text` becomes a one-line call to it. Look at every
       screenshot: nothing should move, and anything that ran off the edge
       before now fits.
-- [ ] **3. Arguments.** `Screen.arguments() -> Dictionary` returning
+- [x] **3. Arguments.** `Screen.arguments() -> Dictionary` returning
       `{auto, plant, shots}`; each `_ready` uses it.
-- [ ] **4. Screenshot.** `Screen.shoot(node, path)` (the
+- [x] **4. Screenshot.** `Screen.shoot(node, path)` (the
       `await RenderingServer.frame_post_draw` / `save_png` block, four
       copies today).
-- [ ] **5. Legends.** `Screen.legend(canvas, lines, max_width)` drawing the
+- [x] **5. Legends.** `Screen.legend(canvas, lines, max_width)` drawing the
       one or two key-legend lines at the bottom, fitted, with "Esc menu"
       appended — so a new key is added in one place per screen and never
       overlaps a side panel.
-- [ ] **6. Stop here** and report the line counts before and after. The
+- [x] **6. Stop here** and report the line counts before and after. The
       tick loop and timelines differ enough between screens (walks,
       trails, charts) that sharing them is a redesign, not a tidy-up; do
       not attempt it under this plan.
+      *Done (M82): before 9 046 lines (seven screens + kit), after 9 048 —
+      the screens lost 66, the kit gained 68. Every `--auto` run the same;
+      every screenshot identical to the pixel except where a line that ran
+      off the window is now drawn smaller (pump, furnace panels). Seen: the
+      furnace's permissive reset line is too long even at size 10 and still
+      ends at the edge — it wants wrapping or rewording.*
 
 ## Then, new shared visuals (each its own commit, each LOOKED at)
 

@@ -200,8 +200,8 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M82 — one kit under every screen** (`docs/plans/screen-kit.md`, steps 0–6: palette, text, arguments, screenshot, legend moved into `demo/screen.gd`, one screen per commit; every `--auto` output unchanged).
-**Latest closed: M81 (2026-11-19)**: a layout a person can fix — on the plant map Ctrl+drag moves a node and Ctrl+S keeps every node's place in `demo/layout/<plant>.json` (never the plant file); a stale file fails `--auto`; fifteen plants placed by hand. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none open** — the user picks the next (C30's base side is still open; `docs/plans/` lists the review's plans).
+**Latest closed: M82 (2026-11-19)**: one kit under every screen — palette, `Screen.text`, `Screen.legend`, `Screen.arguments`, `Screen.shoot` in `demo/screen.gd`, used by all seven screens; every `--auto` line and nearly every pixel unchanged (overlong panel lines now drawn smaller). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

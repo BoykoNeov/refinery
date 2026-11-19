@@ -21,7 +21,7 @@ change and no decision.
 | 3 | [failed-tick-recovery.md](failed-tick-recovery.md) — slice 1 DONE (M76) | `godot-ext` bridge, screens | slice 1 a day; slice 2 larger | slice 2 yes |
 | 4 | [save-and-load.md](save-and-load.md) — slice 1 DONE (M77) | `godot-ext` bridge, menu | a day after #3 | file location only |
 | 5 | [plant-map-screen.md](plant-map-screen.md) — slices 1, 2, 3 DONE (M78, M79, M81; M80 takes a loop's valve by hand) | `demo/map.gd` | a day per slice | slice 4 yes |
-| 6 | [screen-kit.md](screen-kit.md) | `demo/*.gd` | two days | no |
+| 6 | [screen-kit.md](screen-kit.md) — steps 0–6 DONE (M82); flow dashes and trend chart open | `demo/*.gd` | two days | no |
 | 7 | [objectives-and-alarms.md](objectives-and-alarms.md) | everything | — | **yes, before anything** |
 
 ## Rules for whoever carries one out

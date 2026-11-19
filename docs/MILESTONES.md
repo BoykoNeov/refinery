@@ -12,6 +12,32 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M82 is CLOSED (2026-11-19): one kit under every screen
+(`docs/plans/screen-kit.md`, steps 0–6).** Asked as "what is next" after
+M81; the user took the recommendation.
+- **`demo/screen.gd` grows**, no Rust: the shared palette (`INK`, `DIM`,
+  `WARN`, …; a screen borrows them under its own names, `MARK :=
+  Screen.WARN`), `Screen.text` (a line too long for its space drawn
+  smaller), `Screen.legend` (the key lines, "Esc menu" closing the last),
+  `Screen.arguments` (`--auto`, `--plant=`, `--shots=`, `--shot=`; a
+  screen's own options stay its own), `Screen.shoot` (awaited). Pump,
+  furnace, reactor, column, map, menu and the M6.2 plant screen use
+  them, one commit each; each keeps its own order of the menu's plant
+  against `--plant=`.
+- **Checked against a record taken first** (`--auto` on every screen and
+  plant, the pump's break/save/continue, the map's `--hands` on three
+  plants; timings masked): every line the same. Windowed screenshots,
+  pixel against pixel: reactor 42, column 37, map 8, menu 1 identical;
+  pump and furnace differ only where a side-panel line ran off the
+  window and is now drawn smaller and whole (looked at). The plant
+  screen has no screenshot option: not compared.
+- Line counts: 9 046 → 9 048 (screens −66, kit +68): the gain is one
+  place to fix, not fewer lines. **Seen**: the furnace's permissive
+  reset line is too long even at size 10. **Open**: the plan's flow
+  dashes and trend chart; the map plan's slice 4 (ask first).
+
+---
+
 **M81 is CLOSED (2026-11-19): a layout a person can fix — Ctrl+drag a node
 on the map, Ctrl+S keeps it beside the plant
 (`docs/plans/plant-map-screen.md`, slice 3).** Asked as "what is next" after
