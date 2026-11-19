@@ -11752,11 +11752,14 @@ plant running. The screens' list moved from the menu into `demo/screen.gd`
 **Verified by running**, against a record taken first: the `--auto` lines of
 the map (72 plants), every furnace, pump, reactor and column plant, the
 leaking line, the pump's break, save and continue, and the map's `--hands`
-on two plants — all 39 the same, timings masked. Hand-over runs: map →
+on two plants — all 30 the same, timings masked. Hand-over runs: map →
 column → map → column on `crude_unit_loops` (taken over at ticks 40, 120,
 200, never reloaded), and there and back on the furnace, pump, reactor and
 leaking-line plants; Enter on `tank_overflow` says only the map draws it; a
 hole the leaking-line screen punched is on the map's record after Enter.
+The hand-overs run again in a window on six plants (holdup, loops, the
+reactor's trip, furnace, pump, leaking line): each screen drew the plant it
+took over, no script error.
 Screenshots of the map, column and menu looked at (the map's key line
 shortened to fit). Not run: Enter pressed by hand in a live window.
 

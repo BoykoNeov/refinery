@@ -29,12 +29,13 @@ that shows a fault spreading, the units still explorable alone.
   plant, a screen's number keys and every recorded run load afresh.
   `Screen.SCREENS` (moved from the menu), `--enter=<tick>,…` for a recorded
   hand-over.
-- **Checked against a record taken first**: 39 recorded runs (map, every
+- **Checked against a record taken first**: 30 recorded runs (map, every
   unit screen's plants, leaking line, pump break/save/continue, map hands)
   print the same lines, timings masked. Hand-over runs on the column,
   furnace, pump, reactor and leaking-line plants carry the tick count across
   (40 → 120 → 200 on `crude_unit_loops`); a hole punched on the leaking line
-  stays on the map's record. **Not run**: Enter by hand in a live window.
+  stays on the map's record; windowed on six plants, every screen drew the
+  plant it took over without a script error. **Not run**: Enter by hand in a live window.
   **Open**: a screen that finds its unit inside a bigger plant, and a plant
   that joins the units — what the user's aim needs next.
 
