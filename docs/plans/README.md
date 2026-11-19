@@ -20,7 +20,7 @@ change and no decision.
 | 2 | [refusal-messages.md](refusal-messages.md) | `core` messages, tests | half a day | no |
 | 3 | [failed-tick-recovery.md](failed-tick-recovery.md) — slice 1 DONE (M76) | `godot-ext` bridge, screens | slice 1 a day; slice 2 larger | slice 2 yes |
 | 4 | [save-and-load.md](save-and-load.md) — slice 1 DONE (M77) | `godot-ext` bridge, menu | a day after #3 | file location only |
-| 5 | [plant-map-screen.md](plant-map-screen.md) — slices 1, 2 DONE (M78, M79) | `demo/map.gd` | a day per slice | slice 4 yes |
+| 5 | [plant-map-screen.md](plant-map-screen.md) — slices 1, 2 DONE (M78, M79; M80 takes a loop's valve by hand) | `demo/map.gd` | a day per slice | slice 4 yes |
 | 6 | [screen-kit.md](screen-kit.md) | `demo/*.gd` | two days | no |
 | 7 | [objectives-and-alarms.md](objectives-and-alarms.md) | everything | — | **yes, before anything** |
 

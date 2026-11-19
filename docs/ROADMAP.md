@@ -11628,3 +11628,27 @@ publish.
 asked first). Saves on the map (F9).
 
 **M79 CLOSED** (2026-11-19; `docs/MILESTONES.md`).
+
+## M80 — a loop names the valve it moves, and the map takes it by hand; CLOSED 2026-11-19
+
+Asked by the user after M79, from a note that map clicks on loop-held
+valves were refused: "maybe add the option to override the controller?"
+Three ways were offered (an engine field, reading the loop's name out of
+the refusal's words, or leaving it); the user chose the engine field and
+approved the corpus move, and asked for text explaining the controls, at
+least when an element is clicked.
+
+**Done.** The engine: each loop's report names the node it moves
+(`actuates`, docs/DESIGN.md §83). The map: M on a picked valve, furnace or
+cooler puts its loop in MANUAL, and M again in AUTO; picking it picks that
+loop for A and Q/Z. A line under the headings names what is picked and
+what each key does to it now; the panel over a node or a pipe says what a
+click does and which loop moves it. Coolers gained Up/Down.
+
+**Verified.** FULL tier 1370 passed; gate 10b by name, two mutants killed.
+Corpus: 21 of 72 moved, exactly the plants with loops, on both solvers;
+iterations unchanged; six plants' outputs identical once the new key is
+removed. The `--hands` tour on eight plants (a cooler, a valve, a furnace,
+a cascade, a quench, a latched-then-reset trip), and `--auto` on all 72.
+
+**M80 CLOSED** (2026-11-19; `docs/MILESTONES.md`).

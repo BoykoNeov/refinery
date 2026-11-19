@@ -23,6 +23,13 @@
 # tick the engine cannot solve puts the plant back to just before the last
 # command it accepted and undoes that command (M76), as the pump screen does.
 #
+# A valve or a furnace a control loop holds in AUTO refuses Up/Down: the loop
+# would overwrite the move on the next tick. M takes it by hand (M80): the
+# snapshot names the node each loop moves (`actuates`), so M puts THAT loop in
+# MANUAL, and M again gives the valve back to it in AUTO. The line under the
+# headings says what the keys do to what is picked, and the panel over a node
+# or a pipe says what a click on it does.
+#
 # Same rule as every screen: nothing physical is computed here. A pipe's
 # width is its reported flow, its colour its reported temperature; a tank's
 # fill is the level the plant.gd demo derives from snapshot fields only. The
@@ -31,7 +38,8 @@
 #
 # Interactive:  godot --path . res://demo/map.tscn      (or the menu's last row)
 #               Left/Right plant   Space pause   [ ] speed   Esc menu   mouse: inspect (wheel scrolls)
-#               click a valve/furnace: Up/Down   click a pump: on/off   P+click a pipe: hole/mend
+#               click a valve/furnace: Up/Down, M take it from its loop or give it back
+#               click a pump: on/off   P+click a pipe: hole/mend
 #               Tab loop   A auto/manual   Q/Z target   R reset tripped trips
 # Recorded:     godot --headless --path . res://demo/map.tscn -- --auto
 #               ...loads every plant in turn, runs it 200 ticks, prints one
@@ -40,10 +48,12 @@
 #               the panel cannot read shows up as a script error).
 # Screenshot:   add --plant=<file stem> --shot=<file.png> to a windowed run;
 #               --hover=<node or pipe name> points at it as the mouse would,
-#               --scroll=<lines> scrolls its panel as the wheel would.
+#               --scroll=<lines> scrolls its panel as the wheel would,
+#               --pick=<valve or furnace name> clicks it as the mouse would.
 # Hands:        godot --headless --path . res://demo/map.tscn -- --hands --plant=<stem>
 #               ...runs 20 ticks (--hands-at=<tick>: that many), then works the first valve, pump and furnace,
-#               a pipe or two and the loops and trips through the same calls
+#               a pipe or two, the loops and trips, and the first valve or furnace a
+#               loop holds (Up, M, Up, M) through the same calls
 #               the mouse and keys make, printing every answer; exits nonzero
 #               if the plant stopped. Add --break-at=<tick> to set the first
 #               supply to -270 °C at that tick (the pump screen's own break:
@@ -149,6 +159,8 @@ var hovered: Dictionary = {}
 var hover_name := ""
 ## `--scroll=<lines>`: the panel scrolled that far, as the wheel would.
 var hover_scroll := 0
+## `--pick=<name>`: the valve or furnace to click once the plant is laid out.
+var pick_name := ""
 ## How many of the panel's lines the mouse wheel has scrolled past.
 var panel_scroll := 0
 ## What a click picked for Up/Down: {"node": id} of a valve or a furnace, or {}.
@@ -191,6 +203,8 @@ func _ready() -> void:
 			hover_name = arg.trim_prefix("--hover=")
 		elif arg.begins_with("--scroll="):
 			hover_scroll = int(arg.trim_prefix("--scroll="))
+		elif arg.begins_with("--pick="):
+			pick_name = arg.trim_prefix("--pick=")
 		elif arg == "--hands":
 			hands_run = true
 		elif arg.begins_with("--hands-at="):
@@ -235,6 +249,10 @@ func _load(index: int) -> void:
 	if hover_name != "":
 		_hover_named(hover_name)
 		panel_scroll = hover_scroll
+	if pick_name != "":
+		for node in snapshot["nodes"]:
+			if str(node["name"]) == pick_name:
+				_click({"node": int(node["id"])}, false)
 	queue_redraw()
 
 
@@ -384,6 +402,8 @@ func _input(event: InputEvent) -> void:
 			_act("target_down")
 		KEY_R:
 			_act("reset")
+		KEY_M:
+			_act("hand")
 	queue_redraw()
 
 
@@ -439,9 +459,19 @@ func _click(target: Dictionary, puncture: bool) -> void:
 	var label := str(node["name"]).replace("_", " ")
 	var type := _kind(node)
 	match type:
-		"valve", "furnace":
+		"valve", "furnace", "cooler":
 			selected = {"node": int(node["id"])}
-			_say("%s picked — Up/Down move it" % label, INK)
+			# The loop that moves it is picked too, so A and Q/Z work the loop
+			# M takes it from.
+			var owner := _loop_on(int(node["id"]))
+			if owner.is_empty():
+				_say("%s picked — Up/Down move it" % label, INK)
+				return
+			selected_loop = (snapshot["controls"] as Array).find(owner)
+			if owner["mode"] == "auto":
+				_say("%s picked — loop %s holds it in AUTO: M takes it by hand, Q/Z move the loop's target" % [label, _label(owner)], INK)
+			else:
+				_say("%s picked — loop %s is in MANUAL, so it is yours: Up/Down move it, M gives it back" % [label, _label(owner)], INK)
 		"pump":
 			selected = {}
 			var on := not bool(node["kind"].get("on", true))
@@ -461,7 +491,7 @@ func _act(action: String) -> void:
 			var direction := 1.0 if action == "up" else -1.0
 			var node := _entry("nodes", int(selected.get("node", -1)))
 			if node.is_empty():
-				_say("click a valve or a furnace first: Up/Down move what is picked", DIM)
+				_say("click a valve, a furnace or a cooler first: Up/Down move what is picked", DIM)
 				return
 			var label := str(node["name"]).replace("_", " ")
 			var kind: Dictionary = node["kind"]
@@ -477,7 +507,10 @@ func _act(action: String) -> void:
 				# furnace can be put out; one from nothing is sent as it is.
 				if duty > 0.0 and next < 0.0:
 					next = 0.0
-				_send("fire %s at %.2f MW" % [label, next / 1.0e6], {"cmd": "set_furnace_duty", "node": int(node["id"]), "duty": next})
+				if _kind(node) == "cooler":
+					_send("cool %s by %.2f MW" % [label, next / 1.0e6], {"cmd": "set_cooler_duty", "node": int(node["id"]), "duty": next})
+				else:
+					_send("fire %s at %.2f MW" % [label, next / 1.0e6], {"cmd": "set_furnace_duty", "node": int(node["id"]), "duty": next})
 		"next_loop":
 			var loops: Array = snapshot.get("controls", [])
 			if loops.is_empty():
@@ -496,6 +529,21 @@ func _act(action: String) -> void:
 			if loop.is_empty():
 				return
 			_step_target(loop, 1.0 if action == "target_up" else -1.0)
+		"hand":
+			# M: the loop that moves what is picked to MANUAL, or back to AUTO.
+			var node := _entry("nodes", int(selected.get("node", -1)))
+			if node.is_empty():
+				_say("click a valve, a furnace or a cooler first: M takes it from the loop that holds it, or gives it back", DIM)
+				return
+			var label := str(node["name"]).replace("_", " ")
+			var owner := _loop_on(int(node["id"]))
+			if owner.is_empty():
+				_say("%s: no control loop moves it, so Up/Down are yours already" % label, DIM)
+				return
+			if owner["mode"] == "auto":
+				_send("%s taken by hand: loop %s to MANUAL" % [label, _label(owner)], {"cmd": "set_controller_mode", "loop_id": int(owner["id"]), "mode": "manual"})
+			else:
+				_send("%s given back: loop %s to AUTO" % [label, _label(owner)], {"cmd": "set_controller_mode", "loop_id": int(owner["id"]), "mode": "auto"})
 		"reset":
 			var reset := 0
 			for trip in snapshot.get("trips", []):
@@ -504,6 +552,51 @@ func _act(action: String) -> void:
 					reset += 1
 			if reset == 0:
 				_say("reset: no trip on this plant has tripped", DIM)
+
+
+## The control loop that moves node `id` — the one whose `actuates` names it
+## (M80) — or {}. The engine refuses two loops on one actuator, so it is one.
+func _loop_on(id: int) -> Dictionary:
+	for loop in snapshot.get("controls", []):
+		if int(loop.get("actuates", -1)) == id:
+			return loop
+	return {}
+
+
+## A loop's or a node's name, as the map writes it.
+func _label(entry: Dictionary) -> String:
+	return str(entry["name"]).replace("_", " ")
+
+
+## The line under the headings: what is picked and what each key does to it
+## now, from this tick's snapshot (the loop's mode as the engine reports it).
+## [text, colour].
+func _keys_line() -> Array:
+	var node := _entry("nodes", int(selected.get("node", -1)))
+	if node.is_empty():
+		return ["click a valve, a furnace or a cooler to pick it   ·   point at anything to see what a click on it does", DIM]
+	var kind: Dictionary = node["kind"]
+	var now := ""
+	var step := ""
+	if _kind(node) == "valve":
+		now = "%s %% open" % _number(float(kind.get("opening", 0.0)) * 100.0)
+		step = "Up/Down open or close it 5 %"
+	else:
+		now = "%.2f MW" % (float(kind.get("duty", 0.0)) / 1.0e6)
+		step = "Up/Down move its %s 5 %% (at least 0.5 MW)" % ("cooling" if _kind(node) == "cooler" else "firing")
+	var head := "PICKED %s, %s" % [_label(node), now]
+	var owner := _loop_on(int(node["id"]))
+	if owner.is_empty():
+		return ["%s — %s   (no loop moves it)" % [head, step], WARN]
+	if owner["mode"] == "auto":
+		# A cascade's inner loop: while the outer one is in AUTO it writes the
+		# target, and the engine refuses Q/Z on it.
+		var targets := "Q/Z move the target"
+		for loop in snapshot.get("controls", []):
+			if int(loop.get("drives", -1)) == int(owner["id"]) and loop["mode"] == "auto":
+				targets = "the target is set by loop %s (Tab to it)" % _label(loop)
+		return ["%s — loop %s holds it in AUTO, target %s:   M take it by hand   %s" % [head, _label(owner), _value_text(owner["setpoint"]), targets], WARN]
+	return ["%s — yours (loop %s in MANUAL):   %s   M give it back to the loop" % [head, _label(owner), step], WARN]
 
 
 ## The loop Tab has picked, or {} (said on the message line) when there is none.
@@ -645,6 +738,25 @@ func _hands() -> void:
 		_act("up")
 		_act("down")
 		_act("down")
+	# The first valve, furnace or cooler a loop holds: Up (refused while the
+	# loop is in AUTO), M takes it by hand, Up, M gives it back. Every loop
+	# names what it moves (`actuates`) or the loop it sets (`drives`); a
+	# library built before M80 names neither, and the tour says so and stops.
+	var held := -1
+	for loop in snapshot.get("controls", []):
+		if not loop.has("actuates") and not loop.has("drives"):
+			_halt("loop '%s' names nothing it moves: the Godot library predates M80 — rebuild it" % loop["name"])
+			return
+		if held < 0 and loop.has("actuates") and places.has(int(loop["actuates"])):
+			held = int(loop["actuates"])
+	if held >= 0:
+		_click({"node": held}, false)
+		print("map: keys line: %s" % _keys_line()[0])
+		_act("up")
+		_act("hand")
+		print("map: keys line: %s" % _keys_line()[0])
+		_act("up")
+		_act("hand")
 	if break_at > sim.tick_index():
 		_run_ticks(break_at - sim.tick_index())
 	_run_ticks(HANDS_TICKS)
@@ -798,6 +910,11 @@ func _draw() -> void:
 	)
 	if halted != "":
 		draw_multiline_string(ThemeDB.fallback_font, Vector2(30, 86), "HALTED — %s" % halted, HORIZONTAL_ALIGNMENT_LEFT, size.x - 60, 14, 4, BAD)
+	elif not snapshot.is_empty():
+		# What is picked and what the keys do to it, left of the panel.
+		var keys := _keys_line()
+		var room := _panel_rect(size).position.x - 50.0
+		_text(Vector2(30, 86), keys[0], keys[1], Screen.fitting_size(keys[0], room, 13, 9))
 	if snapshot.is_empty():
 		_draw_legend(size)
 		return
@@ -836,7 +953,8 @@ func _draw_legend(size: Vector2) -> void:
 	_text(Vector2(x + 486, 60), "450 °C", DIM, 12)
 	if message != "":
 		draw_multiline_string(ThemeDB.fallback_font, Vector2(30, size.y - 54.0), message, HORIZONTAL_ALIGNMENT_LEFT, size.x - 60.0, 13, 2, message_color)
-	_text(Vector2(30, size.y - 14.0), "Left/Right plant   Space pause   [ ] speed   click a valve or furnace, then Up/Down   click a pump: on/off   P+click a pipe: hole/mend   mouse: inspect, wheel scrolls   F11 full screen   Esc menu", DIM, 13)
+	var help := "Left/Right plant   Space pause   [ ] speed   click a valve/furnace/cooler: Up/Down, M by hand   click a pump: on/off   P+click a pipe: hole/mend   Tab A Q Z loops   R reset trips   F11   Esc menu"
+	_text(Vector2(30, size.y - 14.0), help, DIM, Screen.fitting_size(help, size.x - 60.0, 13, 10))
 
 
 func _warmth(kelvin: float) -> Color:
@@ -1145,6 +1263,10 @@ func _inspect_lines(target: Dictionary) -> Array:
 		if node.is_empty():
 			return lines
 		lines.append([str(node["name"]).replace("_", " "), "", INK, 0])
+		lines.append(_click_line(target))
+		var owner := _loop_on(int(node["id"]))
+		if not owner.is_empty():
+			lines.append(["moved by loop", "%s (%s)" % [_label(owner), str(owner["mode"]).to_upper()], INK, 0])
 		lines.append(["kind", _kind(node).replace("_", " "), INK, 0])
 		var readings := {}
 		for key in node:
@@ -1159,6 +1281,7 @@ func _inspect_lines(target: Dictionary) -> Array:
 		if edge.is_empty():
 			return lines
 		lines.append([str(edge["name"]).replace("_", " "), "", INK, 0])
+		lines.append(_click_line(target))
 		lines.append(["pipe from", str(_entry("nodes", int(edge["from"])).get("name", "?")).replace("_", " "), INK, 0])
 		lines.append(["to", str(_entry("nodes", int(edge["to"])).get("name", "?")).replace("_", " "), INK, 0])
 		lines.append(["READINGS", "", DIM, 0])
@@ -1177,6 +1300,26 @@ func _inspect_lines(target: Dictionary) -> Array:
 	return lines
 
 
+## The panel's line saying what a click on `target` does, a heading.
+func _click_line(target: Dictionary) -> Array:
+	if target.has("edge"):
+		var edge := _entry("edges", int(target["edge"]))
+		# A pipe the plant lets leak is split at a `__leak_point` junction.
+		for end in ["from", "to"]:
+			if str(_entry("nodes", int(edge[end])).get("name", "")).ends_with("__leak_point"):
+				return ["P+click makes a hole in it; P+click again mends it", "", WARN, 0]
+		return ["no hand on this pipe (it has no leak path)", "", DIM, 0]
+	var node := _entry("nodes", int(target["node"]))
+	if str(node["name"]).ends_with("__leak_point"):
+		return ["the middle of a pipe: P+click holes or mends it", "", WARN, 0]
+	match _kind(node):
+		"valve", "furnace", "cooler":
+			return ["click picks it: Up/Down move it, M by hand", "", WARN, 0]
+		"pump":
+			return ["click starts or stops it", "", WARN, 0]
+	return ["no hand on it from the map", "", DIM, 0]
+
+
 ## The panel over nothing: what is picked, then every control loop (target,
 ## what it last measured, its output) and every trip (what it watches, its
 ## limit, its state), the snapshot's `controls` and `trips` as
@@ -1186,7 +1329,7 @@ func _overview_lines() -> Array:
 	lines.append(["point at a node or a pipe to read it", "", DIM, 0])
 	var picked := _entry("nodes", int(selected.get("node", -1)))
 	if not picked.is_empty():
-		lines.append(["picked (Up/Down)", str(picked["name"]).replace("_", " "), WARN, 0])
+		lines.append(["picked (Up/Down, M)", str(picked["name"]).replace("_", " "), WARN, 0])
 	lines.append(["LOOPS — Tab picks, A auto/manual, Q/Z target", "", DIM, 0])
 	var loops: Array = snapshot.get("controls", [])
 	if loops.is_empty():
@@ -1198,6 +1341,8 @@ func _overview_lines() -> Array:
 		lines.append(["target", _value_text(loop["setpoint"]), INK, 1])
 		lines.append(["measured", _value_text(loop.get("measurement")), INK, 1])
 		lines.append(["output", "%s %%" % _number(float(loop["output"]) * 100.0), INK, 1])
+		if loop.has("actuates"):
+			lines.append(["moves", str(_entry("nodes", int(loop["actuates"])).get("name", "?")).replace("_", " "), INK, 1])
 		if loop.has("drives"):
 			lines.append(["sets the target of", str(loops[int(loop["drives"])]["name"]).replace("_", " "), INK, 1])
 	lines.append(["TRIPS — R resets the tripped", "", DIM, 0])

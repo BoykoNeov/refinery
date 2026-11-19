@@ -12,6 +12,29 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M80 is CLOSED (2026-11-19): a loop names the valve it moves, and the map
+takes it by hand with M (docs/DESIGN.md §83).** Asked by the user after
+M79: "add the option to override the controller", option (a) — the engine
+field and the corpus move approved — plus "text that explains the controls,
+at least when an element is clicked".
+- **Engine**: `ControlSnapshot::actuates`, the node a loop writes; exactly
+  one of `drives`/`actuates` per loop. Gate 10b by name; 2 mutants killed.
+  FULL tier 1370/0. Corpus: 21 of 72 moved on both solvers, exactly the
+  plants declaring loops; iterations unchanged; six plants' outputs
+  identical once the key is stripped. Baseline refreshed.
+- **Map**: M on a picked valve, furnace or cooler takes it from its loop
+  (MANUAL) or gives it back (AUTO); picking it picks the loop for A and
+  Q/Z. A yellow line under the headings names what is picked and what each
+  key does to it now (a cascade's inner loop: "the target is set by loop
+  …"); the panel's second line over a node or pipe says what a click does,
+  and which loop moves it. Coolers gained Up/Down (`set_cooler_duty`).
+- `--hands` adds Up (refused in AUTO), M, Up (taken), M on the first
+  loop-held item, and stops loudly on a library built before M80. Eight
+  plants exit 0; `--auto` 72 plants, 0 stopped, no script errors.
+  `--pick=<name>` screenshots looked at (three plants).
+
+---
+
 **M79 is CLOSED (2026-11-19): the plant map has hands — valves, pumps,
 furnaces and pipes clicked, loops and trips worked from its panel
 (`docs/plans/plant-map-screen.md`, slice 2).** Asked as "what is next" after

@@ -147,9 +147,9 @@ cargo clippy -p refinery-godot-ext --features godot --all-targets -- -D warnings
 godot --headless --path . --editor --quit    # once, after cloning
 godot --path .                               # the menu: every screen and plant (Esc in a screen returns to it, F11 full screen)
 godot --headless --path . res://demo/plant.tscn -- --auto   # the M6.2 demo; ends at t=350
-godot --path . res://demo/map.tscn           # the plant map: any shipped plant drawn from its snapshot (the mouse inspects, M78; clicks and keys work it, M79)
-#   screenshot: --quit-after 4000 -- --plant=<stem> --shot=W:/temp/claude/<task>/x.png [--hover=<node or pipe> --scroll=<lines>]
-godot --headless --path . res://demo/map.tscn -- --hands --plant=<stem> [--hands-at=<tick>] [--break-at=<tick>]   # M79: valve, pump, furnace, pipes, loops, trips worked; every answer printed
+godot --path . res://demo/map.tscn           # the plant map: any shipped plant drawn from its snapshot (the mouse inspects, M78; clicks and keys work it, M79; M takes a loop's valve by hand, M80)
+#   screenshot: --quit-after 4000 -- --plant=<stem> --shot=W:/temp/claude/<task>/x.png [--hover=<node or pipe> --scroll=<lines> --pick=<valve/furnace/cooler>]
+godot --headless --path . res://demo/map.tscn -- --hands --plant=<stem> [--hands-at=<tick>] [--break-at=<tick>]   # M79: valve, pump, furnace, pipes, loops, trips worked; M80: a loop-held valve taken by hand; every answer printed
 godot --headless --path . res://demo/map.tscn -- --auto     # every plant loaded, laid out, run 200 ticks; nonzero if one stops
 godot --path . res://demo/furnace.tscn       # the M39 furnace screen (keys on screen)
 godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [--plant=burnout]
@@ -200,7 +200,7 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 ## Current milestone
 
 Work only on the current milestone unless asked. **Current: none open** — the user picks the next (C30's base side is still open; `docs/plans/` lists the review's plans).
-**Latest closed: M79 (2026-11-19)**: the plant map has hands (plan `plant-map-screen.md`, slice 2) — click a valve or furnace then Up/Down, click a pump on/off, P+click a pipe to hole/mend it; the panel over nothing lists loops and trips (Tab, A, Q/Z, R); every answer the engine's own, a failed tick recovered as on the pump screen; `--hands` tours a plant; `demo/map.gd` only, no Rust. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+**Latest closed: M80 (2026-11-19)**: a loop's report names the valve, cooler or furnace it moves (`actuates`, DESIGN §83; 21 loop plants' fingerprints moved, approved); on the plant map M takes a picked item from its loop or gives it back, a line under the headings says what the keys do to what is picked, the panel says what a click does. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

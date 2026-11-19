@@ -104,6 +104,13 @@ The commands are the engine's own JSON (`crates/core/src/snapshot.rs`,
   valve or furnace is a loop's actuator in AUTO; A (or Q/Z) is the way. The
   snapshot does not say which loop drives which actuator, so the map cannot
   offer "take this one over" on the picked item without an engine field.
+- **Then (M80, asked by the user)**: the engine field exists
+  (`actuates`, docs/DESIGN.md §83). M on a picked valve, furnace or cooler
+  puts its loop in MANUAL, M again back in AUTO; picking it picks that loop
+  for A and Q/Z. A line under the headings says what is picked and what the
+  keys do to it now; the panel over a node or pipe says what a click does
+  and which loop moves it. Coolers gained Up/Down. `--pick=<name>` for
+  screenshots; the `--hands` tour adds Up, M, Up, M on a loop-held item.
 
 ## Slice 3 — a layout a person can fix (no decision)
 
