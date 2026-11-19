@@ -42,7 +42,7 @@ var auto_run := false
 
 
 func _ready() -> void:
-	auto_run = "--auto" in OS.get_cmdline_user_args()
+	auto_run = Screen.arguments()["auto"]
 	Screen.chosen_plant(get_tree(), "")
 	Screen.fit(get_window())
 
@@ -230,17 +230,17 @@ const PUMP_POS := Vector2(300, 470)
 const VALVE_POS := Vector2(430, 470)
 const LEAK_POS := Vector2(620, 300)
 
-const SHELL := Color(0.42, 0.45, 0.50)
-const LIQUID := Color(0.20, 0.45, 0.75)
-const HOT := Color(0.90, 0.30, 0.15)
-const PIPE := Color(0.55, 0.58, 0.62)
-const FLAME := Color(1.0, 0.55, 0.10)
+const SHELL := Screen.SHELL
+const LIQUID := Screen.LIQUID
+const HOT := Screen.HOT
+const PIPE := Screen.PIPE
+const FLAME := Screen.FLAME
 const SPRAY := Color(0.45, 0.70, 0.95)
-const INK := Color(0.88, 0.90, 0.93)
+const INK := Screen.INK
 
 
 func _draw() -> void:
-	draw_rect(Rect2(Vector2.ZERO, get_viewport_rect().size), Color(0.09, 0.10, 0.12))
+	draw_rect(Rect2(Vector2.ZERO, get_viewport_rect().size), Screen.BACKGROUND)
 
 	if halted != "":
 		_text(Vector2(30, 40), "HALTED — %s" % halted, HOT)
@@ -255,7 +255,7 @@ func _draw() -> void:
 	_draw_fire()
 
 	_text(Vector2(30, 40), _readout(sim.tick_index()), INK)
-	_text(Vector2(30, 64), "P puncture    F fire    R repair + extinguish    Esc menu", PIPE)
+	Screen.legend(self, Vector2(30, 64), ["P puncture    F fire    R repair + extinguish"], PIPE)
 
 
 func _draw_tank(rect: Rect2, id: int, label: String) -> void:
@@ -335,7 +335,7 @@ func _draw_fire() -> void:
 
 
 func _text(at: Vector2, text: String, color: Color) -> void:
-	draw_string(ThemeDB.fallback_font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, color)
+	Screen.text(self, at, text, color)
 
 
 func _halt(reason: String) -> void:
