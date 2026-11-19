@@ -1030,7 +1030,7 @@ func _draw_panel() -> void:
 	for trip in _trips():
 		var tripped: bool = trip["state"]["status"] == "tripped"
 		var state: Dictionary = trip["state"]
-		_text(Vector2(PANEL_X, y), trip["name"], INK)
+		_text(Vector2(PANEL_X, y), trip["name"], INK, 16, 152.0)
 		_text(
 			Vector2(PANEL_X + 160, y),
 			"TRIPPED t=%d" % int(state["at_tick"]) if tripped else "armed",
@@ -1098,8 +1098,8 @@ func _flames(base_left: Vector2, width: float, height: float, count: int, color:
 		)
 
 
-func _text(at: Vector2, text: String, color: Color, size: int = 16) -> void:
-	Screen.text(self, at, text, color, size)
+func _text(at: Vector2, text: String, color: Color, size: int = 16, width: float = -1.0) -> void:
+	Screen.text(self, at, text, color, size, width)
 
 
 func _halt(reason: String) -> void:
