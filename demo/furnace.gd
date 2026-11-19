@@ -689,20 +689,19 @@ func _reset_label(trip: Dictionary) -> String:
 	# A restart is the trips' to give only when nothing bars it (M43): the
 	# heater's stop line in the FURNACE block says whether anything does.
 	if reset["mode"] == "manual_restart":
-		return "reset by hand, restarts unless barred%s" % _waits_for(trip)
+		return "reset by hand, restarts unless barred"
 	var under := "<" if trip["direction"] == "high" else ">"
-	return (
-		"resets itself %s %s, restarts unless barred%s"
-		% [under, _value_text(reset["reset_at"]), _waits_for(trip)]
-	)
+	return "resets itself %s %s, restarts unless barred" % [under, _value_text(reset["reset_at"])]
 
 
-## A trip's start permissives (M44), by name: the trips its restart waits for.
+## A trip's start permissives (M44), by name: the trips its restart waits for,
+## or "" for none. A line of its own under the reset's (M83): on one line the
+## two ran off the panel even drawn at the smallest size.
 func _waits_for(trip: Dictionary) -> String:
 	var names := PackedStringArray()
 	for id in trip.get("restart_permissives", []):
 		names.append(_trips()[int(id)]["name"])
-	return "" if names.is_empty() else "; waits for %s" % ", ".join(names)
+	return "" if names.is_empty() else "waits for %s" % ", ".join(names)
 
 
 ## The level fraction of a tank destination — plant.gd's rule, from the slate.
@@ -1055,6 +1054,9 @@ func _draw_panel() -> void:
 		)
 		y += 18
 		_text(Vector2(PANEL_X + 12, y), _reset_label(trip), DIM, 14)
+		if _waits_for(trip) != "":
+			y += 18
+			_text(Vector2(PANEL_X + 12, y), _waits_for(trip), DIM, 14)
 		y += 24
 
 	y += 14
