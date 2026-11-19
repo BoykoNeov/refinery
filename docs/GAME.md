@@ -77,7 +77,9 @@ still lacks is the point of a game — hands. No valve can be clicked, no pump
 stopped, no pipe punctured.
 
 **Eyes done by M78 (2026-11-15)**: the mouse over any node or pipe lists
-every number the plant reports for it; hands are the plan's slice 2.
+every number the plant reports for it. **Hands done by M79 (2026-11-19)**:
+valves, pumps, furnaces and pipes are clicked, loops and trips worked from the
+panel, every answer the engine's own; a layout a person can fix is slice 3.
 
 ### 2.4 Nothing asks anything of the player — `plans/objectives-and-alarms.md`
 

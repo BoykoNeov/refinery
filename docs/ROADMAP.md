@@ -11588,3 +11588,43 @@ working state) would read better with a unit; each needs its Rust type
 checked first.
 
 **M78 CLOSED** (2026-11-15; `docs/MILESTONES.md`).
+
+## M79 — the plant map has hands: valves, pumps, furnaces, pipes, loops and trips worked from it; plan `docs/plans/plant-map-screen.md` slice 2; CLOSED 2026-11-19
+
+Asked as "what is next" after M78 (2026-11-19). The user took the
+recommendation: the same plan's slice 2, which needs no decision. The map
+could be read but not touched.
+
+**Done** (`demo/map.gd`, one line of `demo/menu.gd`; no Rust changed): a
+click on a valve or a furnace picks it and Up/Down move it (a valve 5 %, a
+furnace 5 % of its firing, at least 0.5 MW); a click on a pump starts or
+stops it; P+click on a pipe makes a 0.001 m² hole or mends the one the map
+made. Over nothing, the panel lists the loops and trips; Tab, A, Q/Z and R
+work them. Nothing is checked in the script: every answer is the engine's,
+green or red on a message line at the bottom. A tick that cannot be solved
+is recovered as on the pump screen (M76): back to before the last accepted
+command, undone and named.
+
+**Two findings**: the snapshot reports a hole's flow but never its size, so
+whether P+click mends is the map's own record of the holes it made (or a
+leak flowing now). And a punctureable pipe is two edges after load; only
+the upstream half takes `puncture_pipe`, so a click on the other half is
+sent to it.
+
+**Verified by running**: `--auto` prints the same lines as before (72
+plants, 0 stopped). The new `--hands` tour, through the same calls the mouse
+makes, on nine plants: every answer the engine's, exit 0; on
+`furnace_coil_trip` at tick 100 the latched trip is reset; on
+`pump_gas_lock --break-at=230` tick 231 fails, the plant is put back to
+230 and the command undone. Screenshots looked at.
+
+**Seen**: on most plants with loops the first Up/Down on a valve or furnace
+is refused — it is a loop's actuator in AUTO (the engine says so and names
+the loop). A puts the loop in MANUAL. A "take this one over" key on the
+picked item needs to know which loop drives it, which the snapshot does not
+publish.
+
+**Open**: slice 3 (a layout a person can fix), slice 4 (one running plant,
+asked first). Saves on the map (F9).
+
+**M79 CLOSED** (2026-11-19; `docs/MILESTONES.md`).

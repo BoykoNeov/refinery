@@ -12,6 +12,29 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M79 is CLOSED (2026-11-19): the plant map has hands — valves, pumps,
+furnaces and pipes clicked, loops and trips worked from its panel
+(`docs/plans/plant-map-screen.md`, slice 2).** Asked as "what is next" after
+M78; the user took the recommendation (no decision needed).
+- **`demo/map.gd` only** (and the menu's line about it), no Rust. Click a
+  valve or furnace, then Up/Down; click a pump to start or stop it; P+click
+  a pipe to hole or mend it. Over nothing the panel lists loops and trips:
+  Tab picks, A auto/manual, Q/Z target, R resets the tripped.
+- Nothing pre-checked: every answer is the engine's own words, green taken,
+  red refused, on a message line at the bottom (the pipes' key moved up).
+  A failed tick recovers as on the pump screen (M76; DEFERRED F8 narrowed).
+- **Found**: a hole's size is not in the snapshot, so mend-or-hole is the
+  map's own record of its holes; a click on a punctureable pipe's
+  downstream half is sent to the upstream half, the one the engine takes.
+- `--hands [--hands-at=] [--break-at=]` tours a plant through the mouse's
+  own calls: nine plants, exit 0, a trip reset taken, a forced failure on
+  `pump_gas_lock` recovered. `--auto` unchanged (72 plants, 0 stopped).
+- **Seen**: most loop-driven valves and furnaces refuse Up/Down while their
+  loop is in AUTO — by design; A takes the loop to MANUAL. **Open**: slice 3
+  (hand layout), slice 4 (ask first), saves on the map (F9).
+
+---
+
 **M78 is CLOSED (2026-11-15): the plant map inspects — the mouse over a node
 or a pipe lists every number the plant reports for it
 (`docs/plans/plant-map-screen.md`, slice 1).** Asked as "what is next" after

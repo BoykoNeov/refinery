@@ -56,25 +56,53 @@ Known weak spots, seen in screenshots:
 - A pipe's `stream.pressure` is left out: every pipe reports atmospheric
   pressure there (DEFERRED F10).
 
-## Slice 2 — hands (no decision)
+## Slice 2 — hands (no decision) — DONE 2026-11-19 (M79)
 
 The commands are the engine's own JSON (`crates/core/src/snapshot.rs`,
 `enum Command`; examples in every `demo/*.gd` `_send`).
 
-- [ ] Click a **valve**: select it; Up/Down move its opening by 5 %
+- [x] Click a **valve**: select it; Up/Down move its opening by 5 %
       (`set_valve_opening`). Click a **pump**: toggle it (`set_pump_on`).
       Click a **furnace**: Up/Down its duty by 5 % of its current value, at
       least 0.5 MW (`set_furnace_duty`). Click a **pipe** with P held:
       puncture it 0.001 m² / repair it (`puncture_pipe`, area 0 repairs).
-- [ ] Every refusal is shown in the engine's own words on the message line
+- [x] Every refusal is shown in the engine's own words on the message line
       (bottom, red), every acceptance in green — as the other screens do.
       Do not pre-check anything in the script: send, and show what came back.
-- [ ] If `failed-tick-recovery.md` slice 1 has landed, a failed tick calls
+- [x] If `failed-tick-recovery.md` slice 1 has landed, a failed tick calls
       `recover()`; if not, it halts as now.
-- [ ] Add the control loops and trips as two lists in the panel when nothing
+- [x] Add the control loops and trips as two lists in the panel when nothing
       is hovered (the snapshot's `controls` and `trips`, the way
       `demo/reactor.gd` `_draw` lists them): Tab picks a loop, A toggles
       auto/manual, Q/Z move its target; R resets trips.
+
+**As built** (`demo/map.gd`, commit f015b43):
+- A picked valve or furnace has a yellow outline; the hover's sits inside it.
+  A valve steps on the 5 % grid, sent as it falls (105 % is the engine's to
+  refuse). A furnace step down that would cross zero lands on zero, so it
+  can be put out.
+- **P+click decides hole or mend from the map's own record** of the holes it
+  made: the snapshot reports a hole's flow, never its size, and a hole with
+  no pressure across it flows nothing. A leaking pipe the map did not hole
+  is mended too. A recovery forgets the holes it undid.
+- **A click on a punctureable pipe's downstream half means the same pipe**:
+  the loader splits it at `<pipe>__leak_point`, and only the upstream half
+  takes `puncture_pipe`; without this the visible half answered "declares
+  no leak path".
+- The message line is two lines at the bottom (a recovery says what it
+  undid and why); the pipes' key moved up beside the headings.
+- Q/Z steps: temperature 5 °C, level 0.25 m, pressure 0.1 bar, flow 5 %
+  (at least 0.25 kg/s); the panel's lists show each loop's target, last
+  measurement, output and cascade link, each trip's watched point, limit,
+  measurement and state.
+- **Added**: `--hands [--hands-at=<tick>] [--break-at=<tick>] --plant=<stem>`
+  tours a plant through the same calls the mouse and keys make and prints
+  every answer; `--break-at` sets the first supply to −270 °C (the pump
+  screen's break) to see the map recover.
+- **Seen**: on most plants with loops the first Up/Down is refused — the
+  valve or furnace is a loop's actuator in AUTO; A (or Q/Z) is the way. The
+  snapshot does not say which loop drives which actuator, so the map cannot
+  offer "take this one over" on the picked item without an engine field.
 
 ## Slice 3 — a layout a person can fix (no decision)
 
