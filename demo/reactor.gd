@@ -54,6 +54,8 @@
 #
 # Interactive:  godot --path . res://demo/reactor.tscn
 #               (keys listed on screen and in _input; 1 to 6 switch plants)
+#               Enter: the plant map, on this same running plant (M84; the
+#               map's Enter opens this screen on a plant it draws, as it stands)
 # Recorded:     godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
 #               ...runs that plant's scripted timeline (TIMELINES) and prints a
 #               `t=` line every PRINT_EVERY ticks plus one line per command and
@@ -279,7 +281,11 @@ const COOLING_STEP_W := 5.0e6
 const FLOW_STEP_KG_S := 0.25
 const LEVEL_STEP_M := 0.5
 
-@onready var sim: RefinerySim = $Sim
+## The one running plant (M84, demo/running.gd), and its simulator.
+@onready var running: Node = Screen.running(get_tree())
+@onready var sim: RefinerySim = running.sim
+## The tick the plant stood at when this screen loaded or took it over.
+var started_tick := 0
 
 var plant_key := "calm"
 var feed_id := -1
@@ -350,13 +356,17 @@ func _ready() -> void:
 	shots_dir = options["shots"]
 	plant_key = Screen.chosen_plant(get_tree(), plant_key)
 	Screen.fit(get_window(), Vector2i(1440, 810))
+	if _took_over():
+		return
 	if not PLANTS.has(plant_key):
 		_halt("no plant '%s' (calm | trip | quench | wall | hydrogen | h2quench)" % plant_key)
 		return
 	_load(plant_key)
 
 
-func _load(key: String) -> void:
+## Load the plant `key` fresh, or (`fresh` false) take over the plant running,
+## which is that plant (M84): the same names looked up, nothing loaded.
+func _load(key: String, fresh: bool = true) -> void:
 	plant_key = key
 	halted = ""
 	finished = false
@@ -371,7 +381,7 @@ func _load(key: String) -> void:
 	ticks_per_frame = plant["ticks_per_frame"]
 	max_ticks_per_frame = plant["max_ticks_per_frame"]
 
-	var err = JSON.parse_string(sim.load_scenario(plant["scenario"]))
+	var err = JSON.parse_string(running.load_scenario(plant["scenario"])) if fresh else null
 	if err != null:
 		_halt("load failed: %s" % err)
 		return
@@ -480,8 +490,13 @@ func _load(key: String) -> void:
 		_halt("this scenario has no 'vgo' component")
 		return
 
-	_say("loaded %s" % plant["scenario"], false)
-	print("reactor: loaded %s" % plant["scenario"])
+	started_tick = sim.tick_index()
+	if fresh:
+		_say("loaded %s" % plant["scenario"], false)
+		print("reactor: loaded %s" % plant["scenario"])
+	else:
+		_say("took over %s as it stands, t = %.1f s" % [plant["scenario"], float(snapshot["sim_time"])], false)
+		print("reactor: took over %s at tick %d" % [plant["scenario"], started_tick])
 	queue_redraw()
 
 
@@ -512,6 +527,9 @@ func _step(last: bool) -> bool:
 		_halt("tick %d: %s" % [sim.tick_index(), err["message"]])
 		return false
 	var tick := sim.tick_index()
+	if Screen.enter_due(started_tick, tick):
+		_to_map()
+		return false
 	if not (auto_run or last or tick % SAMPLE_TICKS == 0):
 		return true
 	start = Time.get_ticks_usec()
@@ -638,6 +656,9 @@ func _input(event: InputEvent) -> void:
 			_load("h2quench")
 		KEY_D:
 			_do("vent_toggle")
+		KEY_ENTER, KEY_KP_ENTER:
+			_to_map()
+			return
 		KEY_ESCAPE:
 			Screen.to_menu(get_tree())
 			return
@@ -1775,3 +1796,23 @@ func _halt(reason: String) -> void:
 	push_error("reactor: %s" % reason)
 	print("reactor: HALTED — %s" % reason)
 	queue_redraw()
+
+
+## Enter (M84): the map, on this same plant as it stands.
+func _to_map() -> void:
+	Screen.open_running(get_tree(), Screen.MAP)
+
+
+## Opened by Enter on the map (M84): take over the plant running, which must
+## be one of this screen's own. False when it was not opened so.
+func _took_over() -> bool:
+	if not Screen.chosen_running(get_tree()):
+		return false
+	auto_run = false
+	shots_dir = ""
+	var key := Screen.key_for(PLANTS, running.scenario)
+	if key == "":
+		_halt("the plant running (%s) is not one this screen draws" % running.scenario)
+		return true
+	_load(key, false)
+	return true

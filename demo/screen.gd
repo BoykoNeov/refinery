@@ -8,7 +8,8 @@
 #
 #   const Screen := preload("res://demo/screen.gd")
 #
-# Nothing here touches the simulator, and nothing here is physical.
+# Nothing here ticks the simulator (demo/running.gd holds the one running,
+# M84), and nothing here is physical.
 extends RefCounted
 
 const MENU := "res://demo/menu.tscn"
@@ -18,10 +19,61 @@ const MENU := "res://demo/menu.tscn"
 ## these coordinates on any monitor.
 const BASE_SIZE := Vector2i(1152, 648)
 
+const MAP := "res://demo/map.tscn"
+
 ## Where the menu leaves the plant it was asked for, for the screen it opens.
 const PLANT_META := "refinery_plant"
 ## Where the menu leaves a save to start from instead (M77).
 const SAVE_META := "refinery_save"
+## Set by Enter (M84): the screen opened takes over the plant running.
+const RUNNING_META := "refinery_running"
+
+## The screens, in the order a newcomer should meet them: the newest and
+## richest first (the menu lists them so). `script` is read for its PLANTS —
+## each plant's `scenario` is how Enter on the map finds the screen that draws
+## the plant running; a screen with no table names its one `row`, and its one
+## `scenario` when it draws one.
+const SCREENS := [
+	{
+		"name": "Distillation column",
+		"about": "a crude unit: furnace, column, side products — from a simple column to one that holds liquid",
+		"scene": "res://demo/column.tscn",
+		"script": "res://demo/column.gd",
+	},
+	{
+		"name": "Reactor",
+		"about": "a hydrocracker bed that makes its own heat: runaways, quenches, a wall that fails",
+		"scene": "res://demo/reactor.tscn",
+		"script": "res://demo/reactor.gd",
+	},
+	{
+		"name": "Pump",
+		"about": "a pump starved at its suction: cavitation, boiling, a gas lock to vent",
+		"scene": "res://demo/pump.tscn",
+		"script": "res://demo/pump.gd",
+	},
+	{
+		"name": "Furnace",
+		"about": "a fired heater and its protection: trips, burst tubes, who relights it",
+		"scene": "res://demo/furnace.tscn",
+		"script": "res://demo/furnace.gd",
+	},
+	{
+		"name": "Leaking line",
+		"about": "the first demo: puncture a pipe, light a fire, repair both",
+		"scene": "res://demo/plant.tscn",
+		"script": "",
+		"row": "A pump, a valve and a line between two tanks",
+		"scenario": "res://scenarios/leaking_line.toml",
+	},
+	{
+		"name": "Plant map",
+		"about": "any of the shipped plants, drawn from its own data — click its valves, pumps, furnaces and pipes",
+		"scene": MAP,
+		"script": "",
+		"row": "The plant running, or any plant in scenarios/ (Left/Right)",
+	},
+]
 
 ## The quick save: F5 writes it, F9 and the menu's Continue read it (M77).
 ## `user://` is Godot's folder for this game under the user's profile.
@@ -123,6 +175,68 @@ static func to_menu(tree: SceneTree) -> void:
 	tree.change_scene_to_file(MENU)
 
 
+## The one running plant (M84, demo/running.gd): its `sim`, its `scenario`.
+static func running(tree: SceneTree) -> Node:
+	return tree.root.get_node("Running")
+
+
+## Open `scene` on the plant running, as it stands (Enter, M84).
+static func open_running(tree: SceneTree, scene: String) -> void:
+	tree.root.set_meta(RUNNING_META, true)
+	tree.change_scene_to_file(scene)
+
+
+## Whether the screen was opened to take over the plant running. Read once.
+static func chosen_running(tree: SceneTree) -> bool:
+	if not tree.root.has_meta(RUNNING_META):
+		return false
+	tree.root.remove_meta(RUNNING_META)
+	return true
+
+
+## A screen's PLANTS table, key → its dictionary, in the file's order; {} for
+## a screen with none.
+static func plants_of(script_path: String) -> Dictionary:
+	if script_path == "":
+		return {}
+	var script: Script = load(script_path)
+	if script == null:
+		return {}
+	return script.get_script_constant_map().get("PLANTS", {})
+
+
+## The key in `plants` (a screen's PLANTS) whose file is `scenario`, or "".
+## The file itself, never the names in it: the crude units share their names.
+static func key_for(plants: Dictionary, scenario: String) -> String:
+	for key in plants:
+		if str(plants[key].get("scenario", "")) == scenario:
+			return key
+	return ""
+
+
+## The scene that draws the plant in `scenario` up close, or "" when only the
+## map does.
+static func screen_for(scenario: String) -> String:
+	for screen in SCREENS:
+		if screen.get("scenario", "") == scenario and scenario != "":
+			return screen["scene"]
+		if key_for(plants_of(screen["script"]), scenario) != "":
+			return screen["scene"]
+	return ""
+
+
+## `--enter=<tick>,<tick>,…` (M84): a screen presses Enter itself when the
+## plant reaches one of these ticks after the screen took it — the hand-over
+## between the map and a unit's screen, run without a person.
+static func enter_due(started_tick: int, tick: int) -> bool:
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--enter="):
+			for at in arg.trim_prefix("--enter=").split(","):
+				if int(at) == tick and tick > started_tick:
+					return true
+	return false
+
+
 ## Lay the screen out for `size` logical pixels, whatever the window is. A
 ## windowed window smaller than that is grown to it (never shrunk, never moved
 ## out of fullscreen); headless runs have no window to size.
@@ -162,14 +276,15 @@ static func text(canvas: CanvasItem, at: Vector2, line: String, color: Color, si
 
 
 ## The key legend at the bottom of a screen: `lines` drawn `step` apart from
-## `at` down, each fitted to `width` as `text` fits it, with "Esc menu" closing
-## the last — so a screen adds a key in one place and every screen has the way
-## out.
-static func legend(canvas: CanvasItem, at: Vector2, lines: Array, color: Color, size: int = 16, step: float = 24.0, width: float = -1.0) -> void:
+## `at` down, each fitted to `width` as `text` fits it, with `enter` (what
+## Enter does: on a unit's screen, back to the map, M84) and "Esc menu"
+## closing the last — so a screen adds a key in one place and every screen has
+## the way out.
+static func legend(canvas: CanvasItem, at: Vector2, lines: Array, color: Color, size: int = 16, step: float = 24.0, width: float = -1.0, enter: String = "Enter map") -> void:
 	for i in lines.size():
 		var line: String = lines[i]
 		if i == lines.size() - 1:
-			line += "   Esc menu"
+			line += "   %s   Esc menu" % enter
 		text(canvas, at + Vector2(0, step * i), line, color, size, width)
 
 

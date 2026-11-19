@@ -4,5 +4,3 @@
 
 [node name="Plant" type="Node2D"]
 script = ExtResource("1_plant")
-
-[node name="Sim" type="RefinerySim" parent="."]

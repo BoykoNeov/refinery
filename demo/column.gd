@@ -69,6 +69,8 @@
 # Interactive:  godot --path . res://demo/column.tscn
 #               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 switch plants,
 #               Esc goes to the menu, F11 full screen)
+#               Enter: the plant map, on this same running plant (M84; the
+#               map's Enter opens this screen on a plant it draws, as it stands)
 # Recorded:     godot --headless --path . res://demo/column.tscn --quit-after 20000 -- --auto [--plant=hot]
 #               ...runs that plant's scripted timeline (TIMELINES) and prints a
 #               `t=` line at a fixed interval plus one line per command.
@@ -534,7 +536,11 @@ const LOOP_FLOW_STEP := 0.25
 const LOOP_RETURN_STEP_K := 20.0
 const MAX_TICKS_PER_FRAME := 64
 
-@onready var sim: RefinerySim = $Sim
+## The one running plant (M84, demo/running.gd), and its simulator.
+@onready var running: Node = Screen.running(get_tree())
+@onready var sim: RefinerySim = running.sim
+## The tick the plant stood at when this screen loaded or took it over.
+var started_tick := 0
 
 var plant_key := "crude"
 var furnace_id := -1
@@ -586,13 +592,17 @@ func _ready() -> void:
 	shots_dir = options["shots"]
 	plant_key = Screen.chosen_plant(get_tree(), plant_key)
 	Screen.fit(get_window())
+	if _took_over():
+		return
 	if not PLANTS.has(plant_key):
 		_halt("no plant '%s' (crude | hot | overheated | stripped | cold | loops | trays | holdup | overfill)" % plant_key)
 		return
 	_load(plant_key)
 
 
-func _load(key: String) -> void:
+## Load the plant `key` fresh, or (`fresh` false) take over the plant running,
+## which is that plant (M84): the same names looked up, nothing loaded.
+func _load(key: String, fresh: bool = true) -> void:
 	plant_key = key
 	halted = ""
 	finished = false
@@ -605,7 +615,7 @@ func _load(key: String) -> void:
 	var plant: Dictionary = PLANTS[key]
 	ticks_per_frame = plant["ticks_per_frame"]
 
-	var err = JSON.parse_string(sim.load_scenario(plant["scenario"]))
+	var err = JSON.parse_string(running.load_scenario(plant["scenario"])) if fresh else null
 	if err != null:
 		_halt("load failed: %s" % err)
 		return
@@ -630,6 +640,11 @@ func _load(key: String) -> void:
 		if region == null:
 			_halt("the plant's region %s does not read" % plant["region"])
 			return
+	# The design is the plant as it was loaded (M84): a screen taking the plant
+	# over reads it there, so a duty moved since is not taken for the design.
+	var now := snapshot
+	if not running.as_loaded.is_empty():
+		snapshot = running.as_loaded
 	design_pumparounds = []
 	for pumparound in _pumparounds():
 		design_pumparounds.append(float(pumparound["duty"]))
@@ -638,8 +653,14 @@ func _load(key: String) -> void:
 	for pumparound_loop in _loop_settings():
 		design_loop_flows.append(float(pumparound_loop["flow"]))
 		design_loop_returns.append(float(pumparound_loop["return_temperature"]))
-	_say("loaded %s" % plant["scenario"], false)
-	print("column: loaded %s" % plant["scenario"])
+	snapshot = now
+	started_tick = sim.tick_index()
+	if fresh:
+		_say("loaded %s" % plant["scenario"], false)
+		print("column: loaded %s" % plant["scenario"])
+	else:
+		_say("took over %s as it stands, t = %.1f s" % [plant["scenario"], float(snapshot["sim_time"])], false)
+		print("column: took over %s at tick %d" % [plant["scenario"], started_tick])
 	queue_redraw()
 
 
@@ -665,6 +686,9 @@ func _step() -> bool:
 	snapshot = JSON.parse_string(sim.snapshot_json())
 	block_usec += Time.get_ticks_usec() - started
 	var tick := sim.tick_index()
+	if Screen.enter_due(started_tick, tick):
+		_to_map()
+		return false
 	_sample_levels()
 	_report_events(tick)
 
@@ -749,6 +773,9 @@ func _input(event: InputEvent) -> void:
 			_load("holdup")
 		KEY_9:
 			_load("overfill")
+		KEY_ENTER, KEY_KP_ENTER:
+			_to_map()
+			return
 		KEY_ESCAPE:
 			Screen.to_menu(get_tree())
 			return
@@ -2527,3 +2554,23 @@ func _halt(reason: String) -> void:
 	halted = reason
 	push_error("column: %s" % reason)
 	print("column: HALTED — %s" % reason)
+
+
+## Enter (M84): the map, on this same plant as it stands.
+func _to_map() -> void:
+	Screen.open_running(get_tree(), Screen.MAP)
+
+
+## Opened by Enter on the map (M84): take over the plant running, which must
+## be one of this screen's own. False when it was not opened so.
+func _took_over() -> bool:
+	if not Screen.chosen_running(get_tree()):
+		return false
+	auto_run = false
+	shots_dir = ""
+	var key := Screen.key_for(PLANTS, running.scenario)
+	if key == "":
+		_halt("the plant running (%s) is not one this screen draws" % running.scenario)
+		return true
+	_load(key, false)
+	return true

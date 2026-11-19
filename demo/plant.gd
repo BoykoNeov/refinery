@@ -6,7 +6,8 @@
 # numbers on screen came out of the engine, so this script computes nothing
 # physical — every quantity it draws is a field it read from a snapshot.
 #
-# Interactive:  open the project and press P / F / R (see _input).
+# Interactive:  open the project and press P / F / R (see _input); Enter
+#               opens the plant map on this same running plant (M84).
 # Recorded:     godot --headless --path . -- --auto
 #               ...which runs the scripted sequence below and prints a `t=` line
 #               every 50 ticks. Those lines are the observation in ROADMAP.md.
@@ -31,7 +32,11 @@ const AUTO_IGNITE := 200
 const AUTO_REPAIR := 300
 const AUTO_END := 350
 
-@onready var sim: RefinerySim = $Sim
+## The one running plant (M84, demo/running.gd), and its simulator.
+@onready var running: Node = Screen.running(get_tree())
+@onready var sim: RefinerySim = running.sim
+## The tick the plant stood at when this screen loaded or took it over.
+var started_tick := 0
 
 var supply_id := -1
 var receiving_id := -1
@@ -46,7 +51,12 @@ func _ready() -> void:
 	Screen.chosen_plant(get_tree(), "")
 	Screen.fit(get_window())
 
-	var err = JSON.parse_string(sim.load_scenario(SCENARIO))
+	# Opened by Enter on the map (M84): take over the plant running, which is
+	# this one — the map only opens this screen on it.
+	var fresh: bool = not (Screen.chosen_running(get_tree()) and running.scenario == SCENARIO)
+	if not fresh:
+		auto_run = false
+	var err = JSON.parse_string(running.load_scenario(SCENARIO)) if fresh else null
 	if err != null:
 		_halt("load failed: %s" % err)
 		return
@@ -58,7 +68,12 @@ func _ready() -> void:
 		_halt("this scenario does not have the names the scene expects")
 		return
 
-	print("plant: loaded %s" % SCENARIO)
+	started_tick = sim.tick_index()
+	if fresh:
+		print("plant: loaded %s" % SCENARIO)
+	else:
+		snapshot = JSON.parse_string(sim.snapshot_json())
+		print("plant: took over %s at tick %d" % [SCENARIO, started_tick])
 	print("plant: keys — P puncture, F fire, R repair and extinguish")
 
 
@@ -79,6 +94,9 @@ func _physics_process(_delta: float) -> void:
 	var tick := sim.tick_index()
 	if tick % 50 == 0:
 		print(_readout(tick))
+	if Screen.enter_due(started_tick, tick):
+		_to_map()
+		return
 
 	if auto_run:
 		match tick:
@@ -100,6 +118,8 @@ func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	match event.keycode:
+		KEY_ENTER, KEY_KP_ENTER:
+			_to_map()
 		KEY_ESCAPE:
 			Screen.to_menu(get_tree())
 		KEY_F11:
@@ -116,17 +136,22 @@ func _input(event: InputEvent) -> void:
 # --------------------------------------------------------------- commands
 
 func _puncture(area: float) -> void:
-	_send({"cmd": "puncture_pipe", "edge": fill_line_id, "area": area})
+	var command := {"cmd": "puncture_pipe", "edge": fill_line_id, "area": area}
+	if _send(command):
+		# Kept with the plant (M84), so P+click on the map mends this hole.
+		running.holes.append([JSON.stringify(command), fill_line_id, area])
 
 
 func _ignite(power: float) -> void:
 	_send({"cmd": "set_heat_input", "node": receiving_id, "power": power})
 
 
-func _send(command: Dictionary) -> void:
+func _send(command: Dictionary) -> bool:
 	var err = JSON.parse_string(sim.apply_command(JSON.stringify(command)))
 	if err != null:
 		push_error("refused: %s" % err["message"])
+		return false
+	return true
 
 
 # ---------------------------------------------------------------- reading
@@ -343,3 +368,8 @@ func _halt(reason: String) -> void:
 	push_error("plant: %s" % reason)
 	print("plant: HALTED — %s" % reason)
 	queue_redraw()
+
+
+## Enter (M84): the map, on this same plant as it stands.
+func _to_map() -> void:
+	Screen.open_running(get_tree(), Screen.MAP)

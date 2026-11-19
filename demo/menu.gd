@@ -9,7 +9,9 @@
 # M77: when a quick save exists (F5 on the pump screen), a Continue row heads
 # the list and opens its screen on it.
 #
-# Computes nothing and loads no simulator: it only chooses a scene.
+# Computes nothing and loads no plant: it only chooses a scene. A row that
+# names a plant starts it afresh; the map's row opens on the plant running
+# (M84), held still while the menu is up.
 #
 #   godot --path .                     this menu (the project's main scene)
 #   godot --headless --path . -- --auto
@@ -19,49 +21,9 @@ extends Node2D
 
 const Screen := preload("res://demo/screen.gd")
 
-## The screens, in the order a newcomer should meet them: the newest and
-## richest first. `script` is read for its PLANTS; a screen with no table
-## (the leaking line's one plant, the map of all of them) names its one `row`.
-const SCREENS := [
-	{
-		"name": "Distillation column",
-		"about": "a crude unit: furnace, column, side products — from a simple column to one that holds liquid",
-		"scene": "res://demo/column.tscn",
-		"script": "res://demo/column.gd",
-	},
-	{
-		"name": "Reactor",
-		"about": "a hydrocracker bed that makes its own heat: runaways, quenches, a wall that fails",
-		"scene": "res://demo/reactor.tscn",
-		"script": "res://demo/reactor.gd",
-	},
-	{
-		"name": "Pump",
-		"about": "a pump starved at its suction: cavitation, boiling, a gas lock to vent",
-		"scene": "res://demo/pump.tscn",
-		"script": "res://demo/pump.gd",
-	},
-	{
-		"name": "Furnace",
-		"about": "a fired heater and its protection: trips, burst tubes, who relights it",
-		"scene": "res://demo/furnace.tscn",
-		"script": "res://demo/furnace.gd",
-	},
-	{
-		"name": "Leaking line",
-		"about": "the first demo: puncture a pipe, light a fire, repair both",
-		"scene": "res://demo/plant.tscn",
-		"script": "",
-		"row": "A pump, a valve and a line between two tanks",
-	},
-	{
-		"name": "Plant map",
-		"about": "any of the shipped plants, drawn from its own data — click its valves, pumps, furnaces and pipes",
-		"scene": "res://demo/map.tscn",
-		"script": "",
-		"row": "Every plant in scenarios/, one after another (Left/Right)",
-	},
-]
+## The screens and their order: screen.gd's SCREENS (M84: Enter on the map
+## reads the same list).
+const SCREENS := Screen.SCREENS
 
 const BACKGROUND := Screen.BACKGROUND
 const INK := Screen.INK
@@ -129,14 +91,8 @@ func _shoot(path: String) -> void:
 	get_tree().quit()
 
 
-## A screen's PLANTS table, key → its dictionary, in the file's order.
 func _plants_of(script_path: String) -> Dictionary:
-	if script_path == "":
-		return {}
-	var script: Script = load(script_path)
-	if script == null:
-		return {}
-	return script.get_script_constant_map().get("PLANTS", {})
+	return Screen.plants_of(script_path)
 
 
 func _input(event: InputEvent) -> void:

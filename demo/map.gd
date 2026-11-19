@@ -37,6 +37,13 @@
 # have, or a place off the page, is named on the message line, and `--auto`
 # counts that plant as stopped, so a layout cannot go quietly stale.
 #
+# And it is HOME (M84, slice 4): the plant runs in demo/running.gd, not in
+# this scene, so Enter opens the screen that draws the plant running up close
+# — the column screen on a crude unit — on the same plant as it stands, and
+# Enter there comes back here; neither starts it again. A plant no other
+# screen draws says so on the message line. The menu's map row opens on the
+# plant running too; Left/Right, as before, load the next plant afresh.
+#
 # Same rule as every screen: nothing physical is computed here. A pipe's
 # width is its reported flow, its colour its reported temperature; a tank's
 # fill is the level the plant.gd demo derives from snapshot fields only. The
@@ -49,6 +56,7 @@
 #               click a pump: on/off   P+click a pipe: hole/mend
 #               Tab loop   A auto/manual   Q/Z target   R reset tripped trips
 #               Ctrl+drag a node: move it   Ctrl+S keep the layout (demo/layout/)
+#               Enter: the screen that draws this plant up close (M84)
 # Recorded:     godot --headless --path . res://demo/map.tscn -- --auto
 #               ...loads every plant in turn, runs it 200 ticks, prints one
 #               line each and a count: a smoke test of the map on all of them
@@ -72,6 +80,10 @@
 #               would, --save-layout then saves as Ctrl+S would, and
 #               --layout-dir=<dir> reads and writes the layout files there
 #               instead of demo/layout (a test that leaves the shipped ones be).
+# Hand-over:    --plant=<stem> --enter=<tick>,<tick>,… presses Enter at each of
+#               those ticks (M84): every screen reads it, so a run goes from
+#               the map to the unit's screen and back, each printing the tick
+#               it took the plant over at. Add --quit-after to end it.
 extends Node2D
 
 const Screen := preload("res://demo/screen.gd")
@@ -157,7 +169,11 @@ const FLOW_STEP_MIN_KG_S := 0.25
 const HANDS_TICKS := 20
 const HANDS_PAUSE := 10
 
-@onready var sim: RefinerySim = $Sim
+## The one running plant (M84, demo/running.gd), and its simulator.
+@onready var running: Node = Screen.running(get_tree())
+@onready var sim: RefinerySim = running.sim
+## The tick the plant stood at when this screen loaded or took it over.
+var started_tick := 0
 
 var plants: PackedStringArray = []
 var plant_index := 0
@@ -195,13 +211,11 @@ var selected_loop := 0
 ## The message line: the engine's last answer, and its colour.
 var message := ""
 var message_color := DIM
-## Every command text the engine took → what the message line called it, so a
-## recovery can say what it undid (pump.gd's record).
-var sent_what: Dictionary = {}
-## The punctures the engine took, in order: [command text, edge id, area].
-## The snapshot reports a hole's flow but not its size, and a hole with no
-## pressure across it flows nothing, so P+click asks this whether to mend.
-var holes: Array = []
+# What each command was in words (`running.said`), and the punctures the
+# engine took (`running.holes`: [command text, edge id, area]), are kept with
+# the plant (M84), so they outlast a visit to another screen. The snapshot
+# reports a hole's flow but not its size, and a hole with no pressure across
+# it flows nothing, so P+click asks `running.holes` whether to mend.
 ## `--hands`: the recorded tour instead of the mouse; `--break-at=<tick>`.
 var hands_run := false
 var break_at := -1
@@ -261,6 +275,21 @@ func _ready() -> void:
 		return
 	if asked != "" and plants.has(asked):
 		plant_index = plants.find(asked)
+	# Enter on another screen, or the menu's row with no plant named: the plant
+	# running, as it stands (M84). A run naming --plant= starts it afresh, and
+	# a recorded run's options are its first screen's, not this one's.
+	var chosen_running := Screen.chosen_running(get_tree())
+	var stem: String = running.scenario.get_file().trim_suffix(".toml")
+	if running.scenario == "%s/%s.toml" % [SCENARIOS, stem] and plants.has(stem) and (chosen_running or (asked == "" and not auto_run)):
+		auto_run = false
+		hands_run = false
+		shot_path = ""
+		hover_name = ""
+		pick_name = ""
+		drags = []
+		save_layout = false
+		_load(plants.find(stem), false)
+		return
 	if auto_run:
 		_run_all()
 		return
@@ -271,7 +300,9 @@ func _ready() -> void:
 			get_tree().quit(1 if halted != "" else 0)
 
 
-func _load(index: int) -> void:
+## Load plant `index` fresh, or (`fresh` false) take over the plant running,
+## which is that plant (M84): laid out as it stands, nothing loaded or ticked.
+func _load(index: int, fresh: bool = true) -> void:
 	plant_index = posmod(index, plants.size())
 	halted = ""
 	snapshot = {}
@@ -281,16 +312,21 @@ func _load(index: int) -> void:
 	selected = {}
 	selected_loop = 0
 	message = ""
-	sent_what = {}
-	holes = []
 	dragging = -1
 	dash_travel = {}
-	var err = JSON.parse_string(sim.load_scenario("%s/%s.toml" % [SCENARIOS, plants[plant_index]]))
-	if err != null:
-		_halt("load failed: %s" % err["message"])
-		return
-	if not _step():
-		return
+	if fresh:
+		var err = JSON.parse_string(running.load_scenario("%s/%s.toml" % [SCENARIOS, plants[plant_index]]))
+		if err != null:
+			_halt("load failed: %s" % err["message"])
+			return
+		started_tick = sim.tick_index()
+		if not _step():
+			return
+	else:
+		snapshot = JSON.parse_string(sim.snapshot_json())
+		_say("took over %s as it stands, t = %.1f s" % [plants[plant_index], float(snapshot["sim_time"])], DIM)
+		print("map: took over %s at tick %d (%d hole(s) on record)" % [plants[plant_index], sim.tick_index(), running.holes.size()])
+	started_tick = sim.tick_index()
 	_lay_out()
 	if not layout_problems.is_empty():
 		_say("layout %s: %s" % [_layout_path(), "; ".join(layout_problems)], BAD)
@@ -319,6 +355,9 @@ func _step() -> bool:
 	snapshot = JSON.parse_string(sim.snapshot_json())
 	if hands_run and sim.tick_index() == break_at:
 		_break()
+	if Screen.enter_due(started_tick, sim.tick_index()):
+		_closer()
+		return false
 	return true
 
 
@@ -336,7 +375,7 @@ func _recover(err: Dictionary) -> void:
 	snapshot = JSON.parse_string(sim.snapshot_json())
 	var undone := []
 	for text in answer["dropped"]:
-		undone.append(sent_what.get(text, text))
+		undone.append(running.said.get(text, text))
 		_forget_hole(text)
 	_say(
 		"the plant could not be solved after t = %.1f s — put back to t = %.1f s, undone: %s\n%s"
@@ -447,6 +486,9 @@ func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	match event.keycode:
+		KEY_ENTER, KEY_KP_ENTER:
+			_closer()
+			return
 		KEY_ESCAPE:
 			Screen.to_menu(get_tree())
 			return
@@ -518,7 +560,7 @@ func _click(target: Dictionary, puncture: bool) -> void:
 		var what := "mend %s" % label if area == 0.0 else "hole in %s, %s m²" % [label, _number(area)]
 		var command := {"cmd": "puncture_pipe", "edge": id, "area": area}
 		if _send(what, command):
-			holes.append([JSON.stringify(command), id, area])
+			running.holes.append([JSON.stringify(command), id, area])
 		return
 	if not target.has("node"):
 		selected = {}
@@ -718,6 +760,7 @@ func _step_target(loop: Dictionary, direction: float) -> void:
 ## puncture of it left a hole, or something is leaking out of it now.
 func _holed(edge: Dictionary) -> bool:
 	var id := int(edge["id"])
+	var holes: Array = running.holes
 	for i in range(holes.size() - 1, -1, -1):
 		if int(holes[i][1]) == id:
 			return float(holes[i][2]) > 0.0
@@ -726,6 +769,7 @@ func _holed(edge: Dictionary) -> bool:
 
 ## A recovery undid the puncture sent as `text`: the latest such is forgotten.
 func _forget_hole(text: String) -> void:
+	var holes: Array = running.holes
 	for i in range(holes.size() - 1, -1, -1):
 		if holes[i][0] == text:
 			holes.remove_at(i)
@@ -738,7 +782,7 @@ func _send(what: String, command: Dictionary) -> bool:
 	var text := JSON.stringify(command)
 	var err = JSON.parse_string(sim.apply_command(text))
 	if err == null:
-		sent_what[text] = what
+		running.said[text] = what
 		_say(what, GOOD)
 		# A command moves the kind at once; read it back so the map shows the
 		# new value before the next tick.
@@ -1169,8 +1213,8 @@ func _draw_legend(size: Vector2) -> void:
 	_text(Vector2(x + 486, 60), "450 °C", DIM, 12)
 	if message != "":
 		draw_multiline_string(ThemeDB.fallback_font, Vector2(30, size.y - 54.0), message, HORIZONTAL_ALIGNMENT_LEFT, size.x - 60.0, 13, 2, message_color)
-	var help := "Left/Right plant   Space pause   [ ] speed   click a valve/furnace/cooler: Up/Down, M by hand   click a pump: on/off   P+click a pipe: hole/mend   Tab A Q Z loops   R reset trips   Ctrl+drag move, Ctrl+S keep   F11"
-	Screen.legend(self, Vector2(30, size.y - 14.0), [help], DIM, 13, 24.0, size.x - 60.0)
+	var help := "Left/Right plant   Space pause   [ ] speed   click a valve/furnace/cooler: Up/Down, M by hand   click a pump: on/off   P+click a pipe: hole/mend   Tab A Q Z loops   R reset trips   Ctrl+drag/Ctrl+S layout"
+	Screen.legend(self, Vector2(30, size.y - 14.0), [help], DIM, 13, 24.0, size.x - 60.0, "Enter closer look")
 
 
 ## The largest flow on the map this tick [kg/s], never zero.
@@ -1776,3 +1820,15 @@ func _halt(reason: String) -> void:
 	halted = reason
 	print("map: HALTED — %s" % reason)
 	queue_redraw()
+
+
+## Enter (M84): the screen that draws the plant running up close, on the same
+## plant as it stands — or, when no screen but this one draws it, says so.
+func _closer() -> void:
+	var scene := Screen.screen_for(running.scenario)
+	if scene == "":
+		_say("only the map draws %s: no screen shows it closer" % plants[plant_index], WARN)
+		print("map: Enter — only the map draws %s" % plants[plant_index])
+		queue_redraw()
+		return
+	Screen.open_running(get_tree(), scene)

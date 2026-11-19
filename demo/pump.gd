@@ -41,6 +41,8 @@
 #
 # Interactive:  godot --path . res://demo/pump.tscn
 #               (keys listed on screen and in _input; 1 / 2 / 3 switch plants)
+#               Enter: the plant map, on this same running plant (M84; the
+#               map's Enter opens this screen on a plant it draws, as it stands)
 # Recorded:     godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock]
 #               ...runs that plant's scripted timeline (TIMELINES) and prints a
 #               `t=` line at a fixed interval plus one line per command. Those
@@ -186,7 +188,11 @@ const PRESSURE_STEP_PA := 1.0e4
 const TEMPERATURE_STEP_K := 5.0
 const MAX_TICKS_PER_FRAME := 64
 
-@onready var sim: RefinerySim = $Sim
+## The one running plant (M84, demo/running.gd), and its simulator.
+@onready var running: Node = Screen.running(get_tree())
+@onready var sim: RefinerySim = running.sim
+## The tick the plant stood at when this screen loaded or took it over.
+var started_tick := 0
 
 var plant_key := "limit"
 var source_id := -1
@@ -212,9 +218,6 @@ var seen_lamp := ""
 ## A command has moved the supply or the destination from the file's values;
 ## from then on the recorded lines carry them (M52).
 var moved_conditions := false
-## What each accepted command was, in words, by the JSON it was sent as — so a
-## recovery can say what it undid (M76).
-var sent_what: Dictionary = {}
 ## A recorded run's tick to break the plant at (--break-at), or -1.
 var break_at := -1
 ## The file F5 writes and F9 reads (M77): the quick save unless --save-file.
@@ -246,6 +249,8 @@ func _ready() -> void:
 		save_file = chosen
 	plant_key = Screen.chosen_plant(get_tree(), plant_key)
 	Screen.fit(get_window())
+	if _took_over():
+		return
 	if start_from != "":
 		_load_save(start_from)
 		return
@@ -255,17 +260,24 @@ func _ready() -> void:
 	_load(plant_key)
 
 
-func _load(key: String) -> void:
+## Load the plant `key` fresh, or (`fresh` false) take over the plant running,
+## which is that plant (M84): the same names looked up, nothing loaded.
+func _load(key: String, fresh: bool = true) -> void:
 	_reset(key)
 	var plant: Dictionary = PLANTS[key]
-	var err = JSON.parse_string(sim.load_scenario(plant["scenario"]))
+	var err = JSON.parse_string(running.load_scenario(plant["scenario"])) if fresh else null
 	if err != null:
 		_halt("load failed: %s" % err)
 		return
 	if not _resolve():
 		return
-	_say("loaded %s" % plant["scenario"], false)
-	print("pump: loaded %s" % plant["scenario"])
+	started_tick = sim.tick_index()
+	if fresh:
+		_say("loaded %s" % plant["scenario"], false)
+		print("pump: loaded %s" % plant["scenario"])
+	else:
+		_say("took over %s as it stands, t = %.1f s" % [plant["scenario"], float(snapshot["sim_time"])], false)
+		print("pump: took over %s at tick %d" % [plant["scenario"], started_tick])
 	queue_redraw()
 
 
@@ -278,7 +290,6 @@ func _reset(key: String) -> void:
 	trail = {}
 	seen_lamp = ""
 	moved_conditions = false
-	sent_what = {}
 
 
 ## The ids of the names the screen draws, on the plant just loaded. False (and
@@ -306,7 +317,7 @@ func _save() -> void:
 		"scene": SCENE,
 		"plant": plant_key,
 		"scenario": PLANTS[plant_key]["scenario"],
-		"said": sent_what,
+		"said": running.said,
 		"moved_conditions": moved_conditions,
 	}
 	var text: String = sim.save_json(JSON.stringify(note))
@@ -337,7 +348,8 @@ func _load_save(path: String) -> void:
 	if DisplayServer.get_name() != "headless":
 		await RenderingServer.frame_post_draw
 	var started := Time.get_ticks_msec()
-	var err = JSON.parse_string(sim.load_save(save["text"]))
+	var plant := str(save["note"]["plant"])
+	var err = JSON.parse_string(running.load_save(save["text"], PLANTS[plant]["scenario"], save["note"].get("said", {})))
 	var took := (Time.get_ticks_msec() - started) / 1000.0
 	loading = false
 	if err != null:
@@ -347,7 +359,7 @@ func _load_save(path: String) -> void:
 	_reset(str(note["plant"]))
 	if not _resolve():
 		return
-	sent_what = note.get("said", {})
+	started_tick = sim.tick_index()
 	moved_conditions = bool(note.get("moved_conditions", false))
 	_say("loaded the save: t = %.1f s, %d ticks replayed in %.1f s" % [float(snapshot["sim_time"]), sim.tick_index(), took], false)
 	print("pump: loaded save %s at t=%d (%.1f s to replay)" % [path, sim.tick_index(), took])
@@ -385,6 +397,9 @@ func _step() -> bool:
 	var tick := sim.tick_index()
 	_remember()
 	_report_events(tick)
+	if Screen.enter_due(started_tick, tick):
+		_to_map()
+		return false
 
 	if not auto_run:
 		return true
@@ -454,6 +469,9 @@ func _input(event: InputEvent) -> void:
 			_load("gaslock")
 		KEY_V:
 			_do("vent")
+		KEY_ENTER, KEY_KP_ENTER:
+			_to_map()
+			return
 		KEY_ESCAPE:
 			Screen.to_menu(get_tree())
 			return
@@ -573,7 +591,7 @@ func _send(what: String, command: Dictionary) -> bool:
 	var text := JSON.stringify(command)
 	var err = JSON.parse_string(sim.apply_command(text))
 	if err == null:
-		sent_what[text] = what
+		running.said[text] = what
 		_say(what, false)
 		if auto_run:
 			print("pump: t=%d  %s  %s" % [sim.tick_index(), what, text])
@@ -601,7 +619,7 @@ func _recover(err: Dictionary) -> void:
 	snapshot = JSON.parse_string(sim.snapshot_json())
 	var undone := []
 	for text in answer["dropped"]:
-		undone.append(sent_what.get(text, text))
+		undone.append(running.said.get(text, text))
 	_say(
 		"the plant could not be solved after t = %.1f s — put back to t = %.1f s, undone: %s
 %s"
@@ -1146,3 +1164,23 @@ func _halt(reason: String) -> void:
 	push_error("pump: %s" % reason)
 	print("pump: HALTED — %s" % reason)
 	queue_redraw()
+
+
+## Enter (M84): the map, on this same plant as it stands.
+func _to_map() -> void:
+	Screen.open_running(get_tree(), Screen.MAP)
+
+
+## Opened by Enter on the map (M84): take over the plant running, which must
+## be one of this screen's own. False when it was not opened so.
+func _took_over() -> bool:
+	if not Screen.chosen_running(get_tree()):
+		return false
+	auto_run = false
+	shots_dir = ""
+	var key := Screen.key_for(PLANTS, running.scenario)
+	if key == "":
+		_halt("the plant running (%s) is not one this screen draws" % running.scenario)
+		return true
+	_load(key, false)
+	return true

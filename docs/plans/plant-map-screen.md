@@ -132,7 +132,32 @@ CLAUDE.md, Conventions).
       Commit the sidecars. Screenshots before/after in the commit message.
       (Fifteen: the column screen has nine plants since M75's overfill.)
 
-## Slice 4 — one running plant, many screens (ASK FIRST)
+## Slice 4 — one running plant, many screens (ASK FIRST) — DONE 2026-11-20 (M84)
+
+**Asked 2026-11-19; the user chose (a)**, and said where it leads: one
+complex plant that shows how a change or a fault in one unit spreads through
+the others, with the units still explorable alone; a sandbox now, an
+operator's game later, a builder's much later.
+
+- [x] `demo/running.gd`, an autoload (`project.godot`, `Running`), owns the
+      one `RefinerySim` and the file it loaded; the scenes' own `Sim` nodes
+      are gone. Beside it, what a screen noted that the simulator does not
+      keep, so it outlasts a change of screen: each command in words
+      (`said`), the holes the map made (`holes`), the plant as loaded
+      (`as_loaded`, the column's design duties). A fresh load forgets them.
+- [x] Enter on the map opens the screen whose `PLANTS` names the running
+      plant's FILE (never its node names: the crude units share them), on
+      the plant as it stands; Enter there comes back. A plant only the map
+      draws says so. The menu's map row opens on the plant running.
+- [x] A menu row naming a plant, a screen's number keys, and every recorded
+      run load afresh as before: `--auto` lines unchanged on every screen.
+- [x] `--enter=<tick>,…` presses Enter at those ticks, on every screen — the
+      hand-over run without a person.
+
+**Not done, and what the user's aim needs next** (each its own milestone):
+a screen that finds ITS unit inside a bigger plant (the furnace screen on a
+crude unit's furnace), and a plant that joins the units, so one fault can be
+followed from screen to screen.
 
 Today each scene owns its own `RefinerySim` and loads its own file, so going
 from the map to the column screen restarts the plant. The game in

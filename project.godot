@@ -42,3 +42,10 @@ window/stretch/aspect="expand"
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/gdai-mcp-plugin-godot/plugin.cfg")
+
+[autoload]
+
+; The one running plant every screen shares (M84, demo/running.gd): the map
+; and a unit's screen are two views of the same simulator, so going between
+; them with Enter does not start the plant again.
+Running="*res://demo/running.gd"
