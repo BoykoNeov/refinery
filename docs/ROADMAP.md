@@ -11653,7 +11653,7 @@ on each, every answer the engine's), and `--auto` on all 72.
 
 **M80 CLOSED** (2026-11-19; `docs/MILESTONES.md`).
 
-## M81 — a layout a person can fix: Ctrl+drag a node on the map, Ctrl+S keeps it beside the plant; plan `docs/plans/plant-map-screen.md` slice 3; OPEN
+## M81 — a layout a person can fix: Ctrl+drag a node on the map, Ctrl+S keeps it beside the plant; plan `docs/plans/plant-map-screen.md` slice 3; CLOSED 2026-11-19
 
 Asked as "what is next" after M80 (2026-11-19). The user took the
 recommendation (option 1): the same plan's slice 3, which needs no decision.
@@ -11664,3 +11664,19 @@ page position), never the scenario file; the map uses it for every node it
 names and the computed place for the rest. Ctrl+drag moves a node, Ctrl+S
 writes the sidecar. The fifteen plants the column (9) and reactor (6)
 screens draw are placed by hand. No Rust.
+
+**Done** (`demo/map.gd`, `demo/layout/`): as scoped. A Ctrl+press is never
+a click; a file naming a node the plant lacks, or a place off the page, is
+named on the message line and fails `--auto`. `--drag=`, `--save-layout`,
+`--layout-dir=` script the same calls. The plan's "eight column-screen
+plants" were nine (M75 added overfill), so fifteen files.
+
+**Verified by running**: `--auto` 72 plants, 0 stopped, same lines apart
+from the by-hand counts; a broken file fails it; `--hands` on
+`pump_gas_lock`, `crude_unit_loops`, `hydrocracker_quench` exit 0; every
+placed plant screenshotted before and after and looked at. Not run:
+Ctrl+drag with a real mouse.
+
+**Open**: slice 4 (one running plant, many screens; ask first).
+
+**M81 CLOSED** (2026-11-19; `docs/MILESTONES.md`).

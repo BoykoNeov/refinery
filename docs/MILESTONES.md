@@ -12,6 +12,32 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M81 is CLOSED (2026-11-19): a layout a person can fix — Ctrl+drag a node
+on the map, Ctrl+S keeps it beside the plant
+(`docs/plans/plant-map-screen.md`, slice 3).** Asked as "what is next" after
+M80; the user took the recommendation (no decision needed).
+- **`demo/map.gd` and `demo/layout/`**, no Rust. `demo/layout/<plant>.json`
+  is node name → [x, y] on the page, one node a line; the map puts every
+  node it names there and the computed place stands for the rest. Never in
+  the plant file.
+- Ctrl+press picks a node up (never a click), the mouse moves it on the
+  page; the headings say a move is not kept until Ctrl+S writes every drawn
+  node's place. A folder that cannot be written is said so.
+- A file naming a node the plant lacks, or a place off the page, is named on
+  the message line and fails `--auto`: a layout cannot go quietly stale.
+  `--drag=`, `--save-layout`, `--layout-dir=` script the same calls.
+- **Fifteen plants placed by hand** (the plan said fourteen: the column
+  screen has nine since M75): the crude units' tanks fan to the right,
+  pumparounds and side draws are rows; the two-bed quench plant runs down a
+  diagonal; the single-bed plants are straight lines. Before/after
+  screenshots looked at, described in the commit.
+- `--auto` 72 plants, 0 stopped, the same lines apart from the by-hand
+  counts; `--hands` on three plants exit 0. **Not run**: Ctrl+drag with a
+  real mouse (the same calls ran through `--drag`). **Open**: slice 4 (one
+  running plant, asked first), saves on the map (F9).
+
+---
+
 **M80 is CLOSED (2026-11-19): a loop names the valve it moves, and the map
 takes it by hand with M (docs/DESIGN.md §83).** Asked by the user after
 M79: "add the option to override the controller", option (a) — the engine

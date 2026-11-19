@@ -200,8 +200,8 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M81** — a layout a person can fix (`docs/plans/plant-map-screen.md` slice 3; ROADMAP M81).
-**Latest closed: M80 (2026-11-19)**: a loop's report names the valve, cooler or furnace it moves (`actuates`, DESIGN §83; 21 loop plants' fingerprints moved, approved); on the plant map M takes a picked item from its loop or gives it back, a line under the headings says what the keys do to what is picked, the panel says what a click does. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none open** — the user picks the next (C30's base side is still open; `docs/plans/` lists the review's plans).
+**Latest closed: M81 (2026-11-19)**: a layout a person can fix — on the plant map Ctrl+drag moves a node and Ctrl+S keeps every node's place in `demo/layout/<plant>.json` (never the plant file); a stale file fails `--auto`; fifteen plants placed by hand. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 
