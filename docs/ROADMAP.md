@@ -11681,8 +11681,6 @@ Ctrl+drag with a real mouse.
 
 **M81 CLOSED** (2026-11-19; `docs/MILESTONES.md`).
 
-**M81 CLOSED** (2026-11-19; `docs/MILESTONES.md`).
-
 ## M82 — one kit under every screen; plan `docs/plans/screen-kit.md` steps 0–6; CLOSED 2026-11-19
 
 Asked as "what is next" after M81 (2026-11-19). The user took the
@@ -11706,3 +11704,5 @@ screen's picture (it has no screenshot option).
 **Open**: the furnace's permissive reset line is too long even at the
 smallest size; the plan's flow dashes and trend chart; the map plan's
 slice 4 (ask first).
+
+**M82 CLOSED** (2026-11-19; `docs/MILESTONES.md`).
