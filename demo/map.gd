@@ -8,12 +8,20 @@
 # here without this file changing.
 #
 # It is a first cut, on purpose (docs/plans/plant-map-screen.md has the rest):
-# it WATCHES. No keys reach the plant yet, the layout is computed rather than
-# drawn by a person, and a column or a reactor is one box — their insides are
-# what the hand-drawn screens are for. The mouse INSPECTS (M78, slice 1 of the
-# plan): over a node or a pipe, the panel at the right lists every number the
-# snapshot gives it, walked generically, so a field the engine adds appears
-# without this file changing.
+# the layout is computed rather than drawn by a person, and a column or a
+# reactor is one box — their insides are what the hand-drawn screens are for.
+# The mouse INSPECTS (M78, slice 1 of the plan): over a node or a pipe, the
+# panel at the right lists every number the snapshot gives it, walked
+# generically, so a field the engine adds appears without this file changing.
+#
+# And it has HANDS (M79, slice 2): a click on a valve or a furnace selects it
+# and Up/Down move it, a click on a pump starts or stops it, a click on a pipe
+# with P held makes a hole in it or mends the one the map made. With the mouse
+# over nothing the panel lists the plant's control loops and trips, and keys
+# work them. Nothing is checked here first: every command goes to the engine
+# and its answer — its own refusal, in its own words — is the message line. A
+# tick the engine cannot solve puts the plant back to just before the last
+# command it accepted and undoes that command (M76), as the pump screen does.
 #
 # Same rule as every screen: nothing physical is computed here. A pipe's
 # width is its reported flow, its colour its reported temperature; a tank's
@@ -23,6 +31,8 @@
 #
 # Interactive:  godot --path . res://demo/map.tscn      (or the menu's last row)
 #               Left/Right plant   Space pause   [ ] speed   Esc menu   mouse: inspect (wheel scrolls)
+#               click a valve/furnace: Up/Down   click a pump: on/off   P+click a pipe: hole/mend
+#               Tab loop   A auto/manual   Q/Z target   R reset tripped trips
 # Recorded:     godot --headless --path . res://demo/map.tscn -- --auto
 #               ...loads every plant in turn, runs it 200 ticks, prints one
 #               line each and a count: a smoke test of the map on all of them
@@ -31,6 +41,15 @@
 # Screenshot:   add --plant=<file stem> --shot=<file.png> to a windowed run;
 #               --hover=<node or pipe name> points at it as the mouse would,
 #               --scroll=<lines> scrolls its panel as the wheel would.
+# Hands:        godot --headless --path . res://demo/map.tscn -- --hands --plant=<stem>
+#               ...runs 20 ticks (--hands-at=<tick>: that many), then works the first valve, pump and furnace,
+#               a pipe or two and the loops and trips through the same calls
+#               the mouse and keys make, printing every answer; exits nonzero
+#               if the plant stopped. Add --break-at=<tick> to set the first
+#               supply to -270 °C at that tick (the pump screen's own break:
+#               on pump_gas_lock the next tick cannot be solved) and see the
+#               map recover. With --shot=<file.png> on a windowed run, the
+#               page is saved at tick 200 after the tour.
 extends Node2D
 
 const Screen := preload("res://demo/screen.gd")
@@ -90,6 +109,24 @@ const PERCENT_FIELDS := ["opening"]
 const SECOND_FIELDS := ["tau"]
 const METRE_FIELDS := ["h0", "height", "npsh_required", "diameter", "spacing", "weir_height"]
 
+## One Up/Down on a valve: 5 % of its travel, onto that grid.
+const VALVE_STEP := 0.05
+## One Up/Down on a furnace: this share of its firing, and at least this [W].
+const DUTY_SHARE := 0.05
+const DUTY_STEP_MIN_W := 5.0e5
+## The hole P+click makes in a pipe [m²]; a mend is area 0.
+const HOLE_M2 := 0.001
+## One Q/Z on a loop's target, by its variable: a temperature [K], a level
+## [m], a pressure [Pa]; a flow moves this share, and at least this [kg/s].
+const TEMPERATURE_STEP_K := 5.0
+const LEVEL_STEP_M := 0.25
+const PRESSURE_STEP_PA := 1.0e4
+const FLOW_SHARE := 0.05
+const FLOW_STEP_MIN_KG_S := 0.25
+## `--hands`: the ticks run before the tour, and between its steps.
+const HANDS_TICKS := 20
+const HANDS_PAUSE := 10
+
 @onready var sim: RefinerySim = $Sim
 
 var plants: PackedStringArray = []
@@ -114,6 +151,26 @@ var hover_name := ""
 var hover_scroll := 0
 ## How many of the panel's lines the mouse wheel has scrolled past.
 var panel_scroll := 0
+## What a click picked for Up/Down: {"node": id} of a valve or a furnace, or {}.
+## Apart from `hovered`, so it stays when the mouse moves on.
+var selected: Dictionary = {}
+## Which of the snapshot's `controls` Tab has picked (modulo how many).
+var selected_loop := 0
+## The message line: the engine's last answer, and its colour.
+var message := ""
+var message_color := DIM
+## Every command text the engine took → what the message line called it, so a
+## recovery can say what it undid (pump.gd's record).
+var sent_what: Dictionary = {}
+## The punctures the engine took, in order: [command text, edge id, area].
+## The snapshot reports a hole's flow but not its size, and a hole with no
+## pressure across it flows nothing, so P+click asks this whether to mend.
+var holes: Array = []
+## `--hands`: the recorded tour instead of the mouse; `--break-at=<tick>`.
+var hands_run := false
+var break_at := -1
+## `--hands-at=<tick>`: the tick the tour starts at (a trip that fires later).
+var hands_at := HANDS_TICKS
 
 
 func _ready() -> void:
@@ -134,6 +191,13 @@ func _ready() -> void:
 			hover_name = arg.trim_prefix("--hover=")
 		elif arg.begins_with("--scroll="):
 			hover_scroll = int(arg.trim_prefix("--scroll="))
+		elif arg == "--hands":
+			hands_run = true
+		elif arg.begins_with("--hands-at="):
+			hands_run = true
+			hands_at = int(arg.trim_prefix("--hands-at="))
+		elif arg.begins_with("--break-at="):
+			break_at = int(arg.trim_prefix("--break-at="))
 	if plants.is_empty():
 		_halt("no plant files in %s" % SCENARIOS)
 		return
@@ -143,6 +207,10 @@ func _ready() -> void:
 		_run_all()
 		return
 	_load(plant_index)
+	if hands_run:
+		_hands()
+		if shot_path == "":
+			get_tree().quit(1 if halted != "" else 0)
 
 
 func _load(index: int) -> void:
@@ -152,6 +220,11 @@ func _load(index: int) -> void:
 	places = {}
 	hovered = {}
 	panel_scroll = 0
+	selected = {}
+	selected_loop = 0
+	message = ""
+	sent_what = {}
+	holes = []
 	var err = JSON.parse_string(sim.load_scenario("%s/%s.toml" % [SCENARIOS, plants[plant_index]]))
 	if err != null:
 		_halt("load failed: %s" % err["message"])
@@ -165,14 +238,42 @@ func _load(index: int) -> void:
 	queue_redraw()
 
 
-## One engine tick. False when the plant stopped.
+## One engine tick. False when it could not be solved: the plant was then put
+## back (`_recover`) or, with nothing to undo, stopped.
 func _step() -> bool:
 	var err = JSON.parse_string(sim.tick())
 	if err != null:
-		_halt("tick %d: %s" % [sim.tick_index() + 1, err["message"]])
+		_recover(err)
 		return false
 	snapshot = JSON.parse_string(sim.snapshot_json())
+	if hands_run and sim.tick_index() == break_at:
+		_break()
 	return true
+
+
+## A tick could not be solved. The plant is put back as it stood just before
+## the last command the engine accepted, and that command is undone — however
+## many good ticks ran since (M76; pump.gd's `_recover`). With no command left
+## to undo the plant itself cannot be solved, and the map stops as before.
+func _recover(err: Dictionary) -> void:
+	var failed_after := float(snapshot.get("sim_time", 0.0))
+	var failed_tick := sim.tick_index() + 1
+	var answer = JSON.parse_string(sim.recover())
+	if answer.has("code"):
+		_halt("tick %d: %s" % [failed_tick, err["message"]])
+		return
+	snapshot = JSON.parse_string(sim.snapshot_json())
+	var undone := []
+	for text in answer["dropped"]:
+		undone.append(sent_what.get(text, text))
+		_forget_hole(text)
+	_say(
+		"the plant could not be solved after t = %.1f s — put back to t = %.1f s, undone: %s\n%s"
+			% [failed_after, float(snapshot["sim_time"]), ", ".join(undone), err["message"]],
+		BAD
+	)
+	print("map: RECOVERED — tick %d failed; put back to tick %d, undone: %s; %s" % [failed_tick, int(answer["rewound_to"]), ", ".join(undone), err["message"]])
+	queue_redraw()
 
 
 func _physics_process(_delta: float) -> void:
@@ -235,8 +336,16 @@ func _input(event: InputEvent) -> void:
 			panel_scroll = 0
 			queue_redraw()
 		return
-	if event is InputEventMouseButton and event.pressed and not hovered.is_empty():
-		# The wheel scrolls the panel: a column reports more than fits.
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		# A click on the plant (not on the panel) is a hand on what it hits.
+		var mouse := get_local_mouse_position()
+		if not places.is_empty() and halted == "" and not _panel_rect(get_viewport_rect().size).has_point(mouse):
+			_click(_hit(mouse), Input.is_key_pressed(KEY_P))
+			queue_redraw()
+		return
+	if event is InputEventMouseButton and event.pressed:
+		# The wheel scrolls the panel: a column reports more than fits, and
+		# so may a plant's loops and trips.
 		if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			panel_scroll += 3
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
@@ -261,7 +370,289 @@ func _input(event: InputEvent) -> void:
 			ticks_per_frame = maxi(1, ticks_per_frame / 2)
 		KEY_BRACKETRIGHT:
 			ticks_per_frame = mini(MAX_TICKS_PER_FRAME, ticks_per_frame * 2)
+		KEY_UP:
+			_act("up")
+		KEY_DOWN:
+			_act("down")
+		KEY_TAB:
+			_act("next_loop")
+		KEY_A:
+			_act("loop_mode")
+		KEY_Q:
+			_act("target_up")
+		KEY_Z:
+			_act("target_down")
+		KEY_R:
+			_act("reset")
 	queue_redraw()
+
+
+# ------------------------------------------------------------------ hands
+#
+# The mouse and the keys call these; so does `--hands`, so the recorded tour
+# goes through exactly what a person's clicks do. Nothing is checked before it
+# is sent: the engine refuses, in its own words, what it will not do.
+
+## A click on `target` ({"node": id}, {"edge": id} or {} for nothing), with P
+## held or not.
+func _click(target: Dictionary, puncture: bool) -> void:
+	if halted != "":
+		return
+	if target.has("edge"):
+		var edge := _entry("edges", int(target["edge"]))
+		if edge.is_empty():
+			return
+		# The loader splits a punctureable pipe at a junction it names
+		# `<pipe>__leak_point`; the upstream half keeps the pipe's name and is
+		# the one `puncture_pipe` takes. A click on the downstream half means
+		# the same pipe.
+		var start := _entry("nodes", int(edge["from"]))
+		if str(start.get("name", "")).ends_with("__leak_point"):
+			for other in snapshot["edges"]:
+				if int(other["to"]) == int(start["id"]):
+					edge = other
+					break
+		var label := str(edge["name"]).replace("_", " ")
+		if not puncture:
+			_say("%s: hold P and click to make a hole in it, or mend the one the map made" % label, DIM)
+			return
+		var id := int(edge["id"])
+		var area := 0.0 if _holed(edge) else HOLE_M2
+		var what := "mend %s" % label if area == 0.0 else "hole in %s, %s m²" % [label, _number(area)]
+		var command := {"cmd": "puncture_pipe", "edge": id, "area": area}
+		if _send(what, command):
+			holes.append([JSON.stringify(command), id, area])
+		return
+	if not target.has("node"):
+		selected = {}
+		return
+	var node := _entry("nodes", int(target["node"]))
+	if node.is_empty():
+		return
+	var label := str(node["name"]).replace("_", " ")
+	var type := _kind(node)
+	match type:
+		"valve", "furnace":
+			selected = {"node": int(node["id"])}
+			_say("%s picked — Up/Down move it" % label, INK)
+		"pump":
+			selected = {}
+			var on := not bool(node["kind"].get("on", true))
+			_send("%s %s" % ["start" if on else "stop", label], {"cmd": "set_pump_on", "node": int(node["id"]), "on": on})
+		_:
+			selected = {}
+			_say("%s: the map has no hand on a %s (its own screen may)" % [label, type.replace("_", " ")], DIM)
+
+
+## One key's action: "up"/"down" on what is picked, "next_loop", "loop_mode",
+## "target_up"/"target_down" on the picked loop, "reset" every tripped trip.
+func _act(action: String) -> void:
+	if halted != "" or snapshot.is_empty():
+		return
+	match action:
+		"up", "down":
+			var direction := 1.0 if action == "up" else -1.0
+			var node := _entry("nodes", int(selected.get("node", -1)))
+			if node.is_empty():
+				_say("click a valve or a furnace first: Up/Down move what is picked", DIM)
+				return
+			var label := str(node["name"]).replace("_", " ")
+			var kind: Dictionary = node["kind"]
+			if _kind(node) == "valve":
+				# On the 5 % grid, and sent as it falls: past 0 or 100 % the
+				# engine says why not.
+				var opening := snappedf(float(kind.get("opening", 0.0)) + direction * VALVE_STEP, VALVE_STEP)
+				_send("%s to %.0f %% open" % [label, opening * 100.0], {"cmd": "set_valve_opening", "node": int(node["id"]), "opening": opening})
+			else:
+				var duty := float(kind.get("duty", 0.0))
+				var next := duty + direction * maxf(duty * DUTY_SHARE, DUTY_STEP_MIN_W)
+				# A step down that would cross nothing lands on it, so the
+				# furnace can be put out; one from nothing is sent as it is.
+				if duty > 0.0 and next < 0.0:
+					next = 0.0
+				_send("fire %s at %.2f MW" % [label, next / 1.0e6], {"cmd": "set_furnace_duty", "node": int(node["id"]), "duty": next})
+		"next_loop":
+			var loops: Array = snapshot.get("controls", [])
+			if loops.is_empty():
+				_say("this plant has no control loops", DIM)
+				return
+			selected_loop = (selected_loop + 1) % loops.size()
+			_say("loop %s picked — A auto/manual, Q/Z its target" % str(loops[selected_loop]["name"]).replace("_", " "), INK)
+		"loop_mode":
+			var loop := _picked_loop()
+			if loop.is_empty():
+				return
+			var mode := "manual" if loop["mode"] == "auto" else "auto"
+			_send("%s to %s" % [str(loop["name"]).replace("_", " "), mode.to_upper()], {"cmd": "set_controller_mode", "loop_id": int(loop["id"]), "mode": mode})
+		"target_up", "target_down":
+			var loop := _picked_loop()
+			if loop.is_empty():
+				return
+			_step_target(loop, 1.0 if action == "target_up" else -1.0)
+		"reset":
+			var reset := 0
+			for trip in snapshot.get("trips", []):
+				if trip["state"]["status"] == "tripped":
+					_send("reset %s" % str(trip["name"]).replace("_", " "), {"cmd": "reset_trip", "trip_id": int(trip["id"])})
+					reset += 1
+			if reset == 0:
+				_say("reset: no trip on this plant has tripped", DIM)
+
+
+## The loop Tab has picked, or {} (said on the message line) when there is none.
+func _picked_loop() -> Dictionary:
+	var loops: Array = snapshot.get("controls", [])
+	if loops.is_empty():
+		_say("this plant has no control loops", DIM)
+		return {}
+	return loops[selected_loop % loops.size()]
+
+
+## A loop's target moved one key step, in the loop's own variable, and sent
+## tagged with it.
+func _step_target(loop: Dictionary, direction: float) -> void:
+	var setpoint: Dictionary = loop["setpoint"]
+	var label := str(loop["name"]).replace("_", " ")
+	var tagged := {"variable": setpoint["variable"]}
+	match setpoint["variable"]:
+		"temperature":
+			# Snapped in °C, so 362 °C steps to 365 and 360.
+			tagged["k"] = snappedf(float(setpoint["k"]) - 273.15 + direction * TEMPERATURE_STEP_K, TEMPERATURE_STEP_K) + 273.15
+		"level":
+			tagged["m"] = snappedf(float(setpoint["m"]) + direction * LEVEL_STEP_M, LEVEL_STEP_M)
+		"pressure":
+			tagged["pa"] = snappedf(float(setpoint["pa"]) + direction * PRESSURE_STEP_PA, PRESSURE_STEP_PA)
+		"flow":
+			var flow := float(setpoint["kg_per_s"])
+			tagged["kg_per_s"] = flow + direction * maxf(absf(flow) * FLOW_SHARE, FLOW_STEP_MIN_KG_S)
+		_:
+			_say("%s: the map has no step for a %s target" % [label, setpoint["variable"]], BAD)
+			return
+	_send("%s target to %s" % [label, _value_text(tagged)], {"cmd": "set_setpoint", "loop_id": int(loop["id"]), "value": tagged})
+
+
+## Whether P+click mends `edge` rather than holing it: the map's own last
+## puncture of it left a hole, or something is leaking out of it now.
+func _holed(edge: Dictionary) -> bool:
+	var id := int(edge["id"])
+	for i in range(holes.size() - 1, -1, -1):
+		if int(holes[i][1]) == id:
+			return float(holes[i][2]) > 0.0
+	return float(edge.get("leak_mass_flow", 0.0)) > 0.0
+
+
+## A recovery undid the puncture sent as `text`: the latest such is forgotten.
+func _forget_hole(text: String) -> void:
+	for i in range(holes.size() - 1, -1, -1):
+		if holes[i][0] == text:
+			holes.remove_at(i)
+			return
+
+
+## Send one command and put the engine's answer on the message line — its own
+## refusal when it says no (pump.gd's `_send`). True when the engine took it.
+func _send(what: String, command: Dictionary) -> bool:
+	var text := JSON.stringify(command)
+	var err = JSON.parse_string(sim.apply_command(text))
+	if err == null:
+		sent_what[text] = what
+		_say(what, GOOD)
+		# A command moves the kind at once; read it back so the map shows the
+		# new value before the next tick.
+		snapshot = JSON.parse_string(sim.snapshot_json())
+		return true
+	_say("%s: REFUSED — %s" % [what, err["message"]], BAD)
+	return false
+
+
+func _say(text: String, color: Color) -> void:
+	message = text
+	message_color = color
+	if hands_run:
+		print("map: t=%d  %s%s" % [sim.tick_index(), "" if color != BAD else "[red] ", text.replace("\n", " / ")])
+
+
+## `--hands`: 20 ticks, then the first valve, pump and furnace on the plant, a
+## pipe that cannot be holed and one that can, and the loops and trips, each
+## through `_click` and `_act`, with a few ticks between; then on to
+## `--break-at` if one was given, and 20 ticks more.
+func _hands() -> void:
+	if halted != "":
+		return
+	_run_ticks(hands_at - sim.tick_index())
+	print("map: hands on %s at tick %d" % [plants[plant_index], sim.tick_index()])
+	var first := {}
+	for node in snapshot["nodes"]:
+		var type := _kind(node)
+		if type in ["valve", "pump", "furnace"] and not first.has(type) and places.has(int(node["id"])):
+			first[type] = {"node": int(node["id"])}
+	if first.has("pump"):
+		_click(first["pump"], false)
+		_run_ticks(HANDS_PAUSE)
+		_click(first["pump"], false)
+	if first.has("furnace"):
+		_click(first["furnace"], false)
+		_act("up")
+		_act("down")
+	# A pipe the scenario made punctureable keeps its label on its upstream
+	# half, which ends at the junction the loader names `<pipe>__leak_point`.
+	var holeable := {}
+	var plain := {}
+	var downstream := {}
+	for edge in snapshot["edges"]:
+		if _pipe_path(edge).is_empty():
+			continue
+		var holes_here := str(_entry("nodes", int(edge["to"])).get("name", "")).ends_with("__leak_point")
+		if holes_here and holeable.is_empty():
+			holeable = {"edge": int(edge["id"])}
+		elif not holes_here and plain.is_empty():
+			plain = {"edge": int(edge["id"])}
+		if str(_entry("nodes", int(edge["from"])).get("name", "")).ends_with("__leak_point"):
+			downstream = {"edge": int(edge["id"])}
+	if not plain.is_empty():
+		_click(plain, false)
+		_click(plain, true)
+	if not holeable.is_empty():
+		_click(holeable, true)
+		_run_ticks(HANDS_PAUSE)
+		_click(holeable, true)
+	if not downstream.is_empty():
+		# The pipe's downstream half holes and mends the same pipe.
+		_click(downstream, true)
+		_click(downstream, true)
+	var loops: Array = snapshot.get("controls", [])
+	if loops.size() > 1:
+		_act("next_loop")
+	_act("loop_mode")
+	_act("loop_mode")
+	_act("target_up")
+	_act("target_down")
+	_act("reset")
+	if first.has("valve"):
+		_click(first["valve"], false)
+		_act("up")
+		_act("down")
+		_act("down")
+	if break_at > sim.tick_index():
+		_run_ticks(break_at - sim.tick_index())
+	_run_ticks(HANDS_TICKS)
+	print("map: hands done at tick %d, %s" % [sim.tick_index(), "ok" if halted == "" else halted])
+
+
+func _run_ticks(count: int) -> void:
+	for i in maxi(0, count):
+		if halted != "":
+			return
+		_step()
+
+
+## `--break-at`: the first supply set to -270 °C, through `_send` like any
+## command — pump.gd's break, which the gas-locked pump cannot survive.
+func _break() -> void:
+	for node in snapshot["nodes"]:
+		if _kind(node) == "source":
+			_send("%s to -270 °C" % str(node["name"]).replace("_", " "), {"cmd": "set_source_temperature", "node": int(node["id"]), "temperature": 3.15})
+			return
 
 
 # ----------------------------------------------------------------- layout
@@ -407,21 +798,33 @@ func _draw() -> void:
 	for node in snapshot["nodes"]:
 		if places.has(int(node["id"])):
 			_draw_node(node, places[int(node["id"])])
-			if hovered.get("node", -1) == int(node["id"]):
+			if selected.get("node", -1) == int(node["id"]):
+				# What Up/Down move, in a warmer colour; the hover's outline
+				# then sits just inside it, so both read at once and neither
+				# reaches the name under the node.
 				var extent := _extent(_kind(node)) + Vector2(5, 5)
+				draw_rect(Rect2(places[int(node["id"])] - extent, extent * 2.0), WARN, false, 2.0)
+			if hovered.get("node", -1) == int(node["id"]):
+				var grow := 2.0 if selected.get("node", -1) == int(node["id"]) else 5.0
+				var extent := _extent(_kind(node)) + Vector2(grow, grow)
 				draw_rect(Rect2(places[int(node["id"])] - extent, extent * 2.0), INK, false, 1.5)
 	_draw_panel(size)
 	_draw_legend(size)
 
 
+## The pipes' key at the top right of the headings, the message line and the
+## keys at the bottom. The message line is the engine's last answer: green
+## taken, red refused (two lines at most: a recovery's says what it undid).
 func _draw_legend(size: Vector2) -> void:
-	var y := size.y - 44.0
-	_text(Vector2(30, y), "pipes: width = flow, colour = temperature", DIM, 13)
+	var x := size.x - 560.0
+	_text(Vector2(x, 60), "pipes: width = flow, colour = temperature", DIM, 13)
 	for i in 60:
-		draw_rect(Rect2(Vector2(330 + i * 3.0, y - 10), Vector2(3, 10)), COOL.lerp(HOT, i / 59.0))
-	_text(Vector2(300, y), "20", DIM, 12)
-	_text(Vector2(516, y), "450 °C", DIM, 12)
-	_text(Vector2(30, size.y - 20.0), "Left/Right plant   Space pause   [ ] speed   F11 full screen   Esc menu   mouse: inspect, wheel scrolls   (this map watches: the plant's keys are on its own screen)", DIM, 13)
+		draw_rect(Rect2(Vector2(x + 300 + i * 3.0, 50), Vector2(3, 10)), COOL.lerp(HOT, i / 59.0))
+	_text(Vector2(x + 272, 60), "20", DIM, 12)
+	_text(Vector2(x + 486, 60), "450 °C", DIM, 12)
+	if message != "":
+		draw_multiline_string(ThemeDB.fallback_font, Vector2(30, size.y - 54.0), message, HORIZONTAL_ALIGNMENT_LEFT, size.x - 60.0, 13, 2, message_color)
+	_text(Vector2(30, size.y - 14.0), "Left/Right plant   Space pause   [ ] speed   click a valve or furnace, then Up/Down   click a pump: on/off   P+click a pipe: hole/mend   mouse: inspect, wheel scrolls   F11 full screen   Esc menu", DIM, 13)
 
 
 func _warmth(kelvin: float) -> Color:
@@ -659,16 +1062,15 @@ func _tank_fraction(node: Dictionary) -> float:
 # ------------------------------------------------------------------ panel
 
 ## The panel at the right: what the mouse is over, every number the snapshot
-## gives it, as many lines as fit above the legend and then how many did not.
+## gives it — or, over nothing, the plant's loops and trips — as many lines as
+## fit above the legend and then how many did not.
 func _draw_panel(size: Vector2) -> void:
 	var left := _panel_rect(size).position.x + 10.0
 	var bottom := size.y - 66.0
 	draw_rect(_panel_rect(size), BODY.darkened(0.25))
 	var lines := _inspect_lines(hovered) if not hovered.is_empty() else []
 	if lines.is_empty():
-		var hint := "Point at a node or a pipe to read every number the plant reports for it."
-		draw_multiline_string(ThemeDB.fallback_font, Vector2(left, PANEL_TOP), hint, HORIZONTAL_ALIGNMENT_LEFT, PANEL_WIDTH, 12, 3, DIM)
-		return
+		lines = _overview_lines()
 	# The title stays; the wheel scrolls the rest (`panel_scroll`), a line
 	# saying how many are above and below where any are hidden.
 	var room := int((bottom - PANEL_TOP) / PANEL_LINE)
@@ -761,6 +1163,75 @@ func _inspect_lines(target: Dictionary) -> Array:
 				rest[key] = edge[key]
 		_walk(rest, 1, lines)
 	return lines
+
+
+## The panel over nothing: what is picked, then every control loop (target,
+## what it last measured, its output) and every trip (what it watches, its
+## limit, its state), the snapshot's `controls` and `trips` as
+## demo/reactor.gd lists them; the keys that work them in the headings.
+func _overview_lines() -> Array:
+	var lines: Array = [["the plant's loops and trips", "", INK, 0]]
+	lines.append(["point at a node or a pipe to read it", "", DIM, 0])
+	var picked := _entry("nodes", int(selected.get("node", -1)))
+	if not picked.is_empty():
+		lines.append(["picked (Up/Down)", str(picked["name"]).replace("_", " "), WARN, 0])
+	lines.append(["LOOPS — Tab picks, A auto/manual, Q/Z target", "", DIM, 0])
+	var loops: Array = snapshot.get("controls", [])
+	if loops.is_empty():
+		lines.append(["none on this plant", "", DIM, 1])
+	for n in loops.size():
+		var loop: Dictionary = loops[n]
+		var mine := n == selected_loop % loops.size()
+		lines.append([("> " if mine else "") + str(loop["name"]).replace("_", " "), str(loop["mode"]).to_upper(), WARN if mine else INK, 0])
+		lines.append(["target", _value_text(loop["setpoint"]), INK, 1])
+		lines.append(["measured", _value_text(loop.get("measurement")), INK, 1])
+		lines.append(["output", "%s %%" % _number(float(loop["output"]) * 100.0), INK, 1])
+		if loop.has("drives"):
+			lines.append(["sets the target of", str(loops[int(loop["drives"])]["name"]).replace("_", " "), INK, 1])
+	lines.append(["TRIPS — R resets the tripped", "", DIM, 0])
+	var trips: Array = snapshot.get("trips", [])
+	if trips.is_empty():
+		lines.append(["none on this plant", "", DIM, 1])
+	for trip in trips:
+		var state: Dictionary = trip["state"]
+		var tripped: bool = state["status"] == "tripped"
+		var label := "armed"
+		if tripped:
+			label = "TRIPPED at tick %d%s" % [int(state["at_tick"]), " by hand" if state.get("by_hand", false) else ""]
+		lines.append([str(trip["name"]).replace("_", " "), label, BAD if tripped else INK, 0])
+		lines.append(["watches", _watched(trip["watches"]), INK, 1])
+		lines.append(["trips at", "%s %s" % ["≥" if trip["direction"] == "high" else "≤", _value_text(trip["limit"])], INK, 1])
+		lines.append(["measured", _value_text(trip.get("measurement")), INK, 1])
+	return lines
+
+
+## A loop's or a trip's `watches` — {"node": i}, {"pipe": i} or {"coil": i} —
+## as the name it indexes.
+func _watched(watches: Dictionary) -> String:
+	if watches.has("node"):
+		return str(_entry("nodes", int(watches["node"])).get("name", "?")).replace("_", " ")
+	if watches.has("pipe"):
+		return str(_entry("edges", int(watches["pipe"])).get("name", "?")).replace("_", " ")
+	if watches.has("coil"):
+		return "coil %d" % (int(watches["coil"]) + 1)
+	return "?"
+
+
+## A tagged value (a setpoint, a measurement, a limit) in its own unit; null
+## — a loop with nothing to act on yet — is "unknown", never zero.
+func _value_text(value) -> String:
+	if value == null:
+		return "unknown"
+	match str(value.get("variable", "")):
+		"temperature":
+			return "%s °C" % _number(float(value["k"]) - 273.15)
+		"level":
+			return "%s m" % _number(float(value["m"]))
+		"pressure":
+			return "%s bar" % _number(float(value["pa"]) / 1.0e5)
+		"flow":
+			return "%s kg/s" % _number(float(value["kg_per_s"]))
+	return str(value)
 
 
 ## This tick's entry in `snapshot[list]` with this id, or {}.

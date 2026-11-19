@@ -56,7 +56,7 @@ const SCREENS := [
 	},
 	{
 		"name": "Plant map",
-		"about": "any of the shipped plants, drawn from its own data — it watches, it has no keys yet",
+		"about": "any of the shipped plants, drawn from its own data — click its valves, pumps, furnaces and pipes",
 		"scene": "res://demo/map.tscn",
 		"script": "",
 		"row": "Every plant in scenarios/, one after another (Left/Right)",
