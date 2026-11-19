@@ -570,13 +570,10 @@ var block_usec := 0
 
 
 func _ready() -> void:
-	for arg in OS.get_cmdline_user_args():
-		if arg == "--auto":
-			auto_run = true
-		elif arg.begins_with("--plant="):
-			plant_key = arg.trim_prefix("--plant=")
-		elif arg.begins_with("--shots="):
-			shots_dir = arg.trim_prefix("--shots=")
+	var options := Screen.arguments()
+	auto_run = options["auto"]
+	plant_key = options.get("plant", plant_key)
+	shots_dir = options["shots"]
 	plant_key = Screen.chosen_plant(get_tree(), plant_key)
 	Screen.fit(get_window())
 	if not PLANTS.has(plant_key):
@@ -695,12 +692,7 @@ func _report_events(tick: int) -> void:
 func _shoot(tick: int) -> void:
 	shooting = true
 	queue_redraw()
-	await RenderingServer.frame_post_draw
-	var path := "%s/column_%s_t%04d.png" % [shots_dir, plant_key, tick]
-	var image := get_viewport().get_texture().get_image()
-	if image != null:
-		image.save_png(path)
-		print("column: saved %s" % path)
+	await Screen.shoot(self, "column", "%s/column_%s_t%04d.png" % [shots_dir, plant_key, tick])
 	shooting = false
 
 
@@ -1744,19 +1736,19 @@ const PANEL_X := 800.0
 ## percentage would round to nothing (M67.1's floor is a millionth).
 const CUT_STOPPED := 0.005
 
-const BACKGROUND := Color(0.09, 0.10, 0.12)
-const SHELL := Color(0.42, 0.45, 0.50)
-const PIPE := Color(0.55, 0.58, 0.62)
-const COOL := Color(0.25, 0.50, 0.85)
-const HOT := Color(0.90, 0.30, 0.15)
-const FLAME := Color(1.0, 0.55, 0.10)
+const BACKGROUND := Screen.BACKGROUND
+const SHELL := Screen.SHELL
+const PIPE := Screen.PIPE
+const COOL := Screen.COOL
+const HOT := Screen.HOT
+const FLAME := Screen.FLAME
 const VAPOUR := Color(0.85, 0.85, 0.95, 0.55)
 const COOLER := Color(0.40, 0.75, 0.95)
-const INK := Color(0.88, 0.90, 0.93)
-const DIM := Color(0.60, 0.63, 0.68)
-const GOOD := Color(0.35, 0.80, 0.45)
-const BAD := Color(0.95, 0.30, 0.25)
-const WARN := Color(0.95, 0.78, 0.30)
+const INK := Screen.INK
+const DIM := Screen.DIM
+const GOOD := Screen.GOOD
+const BAD := Screen.BAD
+const WARN := Screen.WARN
 ## One colour per cut of the slate, lightest first.
 const CUT_COLORS := [
 	Color(0.95, 0.90, 0.45),
@@ -1812,13 +1804,10 @@ func _draw() -> void:
 	elif _has_loops():
 		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   Space pause   [ ] speed"
 	# Both legends stop short of the panel, whose last lines reach this low.
-	var legend_width := PANEL_X - 30.0 - 24.0
-	_text(Vector2(30, 621), keys, DIM, 16, legend_width)
-	_text(
-		Vector2(30, 641),
-		"1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup   9 overfill   Esc menu",
-		DIM, 16, legend_width
-	)
+	Screen.legend(self, Vector2(30, 621), [
+		keys,
+		"1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup   9 overfill",
+	], DIM, 16, 20.0, PANEL_X - 30.0 - 24.0)
 	if halted != "":
 		draw_multiline_string(
 			ThemeDB.fallback_font, Vector2(30, 90), "HALTED — %s" % halted, HORIZONTAL_ALIGNMENT_LEFT,
@@ -2459,8 +2448,7 @@ func _draw_holdup_panel(y: float) -> float:
 ## or `width` where something is drawn beside it — is drawn smaller rather than
 ## over its neighbour or off the screen.
 func _text(at: Vector2, text: String, color: Color, size: int = 16, width: float = -1.0) -> void:
-	var room := width if width > 0.0 else get_viewport_rect().size.x - at.x - 8.0
-	draw_string(ThemeDB.fallback_font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, Screen.fitting_size(text, room, size), color)
+	Screen.text(self, at, text, color, size, width)
 
 
 func _halt(reason: String) -> void:
