@@ -11680,3 +11680,29 @@ Ctrl+drag with a real mouse.
 **Open**: slice 4 (one running plant, many screens; ask first).
 
 **M81 CLOSED** (2026-11-19; `docs/MILESTONES.md`).
+
+**M81 CLOSED** (2026-11-19; `docs/MILESTONES.md`).
+
+## M82 — one kit under every screen; plan `docs/plans/screen-kit.md` steps 0–6; CLOSED 2026-11-19
+
+Asked as "what is next" after M81 (2026-11-19). The user took the
+recommendation: the shared screen kit, which needs no decision. The palette,
+`Screen.text`, `Screen.legend`, `Screen.arguments` and `Screen.shoot` move
+into `demo/screen.gd`; every screen calls them, one commit per screen. No
+Rust.
+
+**Done**: pump, furnace, reactor, column, map, menu and the M6.2 plant
+screen, each keeping its own options and its own order of the menu's plant
+against `--plant=`. 9 046 lines → 9 048 (screens −66, kit +68).
+
+**Verified by running**, against a record taken first: every screen's
+`--auto` lines on every plant (plus the pump's break, save and continue and
+the map's `--hands` on three plants) the same, timings masked; windowed
+screenshots compared pixel by pixel — reactor, column, map and menu
+identical; pump and furnace only where a side-panel line that ran off the
+window is now drawn smaller. Not run: keys pressed by hand; the plant
+screen's picture (it has no screenshot option).
+
+**Open**: the furnace's permissive reset line is too long even at the
+smallest size; the plan's flow dashes and trend chart; the map plan's
+slice 4 (ask first).
