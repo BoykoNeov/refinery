@@ -656,7 +656,7 @@ func _load(key: String, fresh: bool = true) -> void:
 	snapshot = now
 	started_tick = sim.tick_index()
 	if fresh:
-		_say("loaded %s" % plant["scenario"], false)
+		_say("started %s from the beginning" % plant["scenario"], false)
 		print("column: loaded %s" % plant["scenario"])
 	else:
 		_say("took over %s as it stands, t = %.1f s" % [plant["scenario"], float(snapshot["sim_time"])], false)
@@ -688,6 +688,9 @@ func _step() -> bool:
 	var tick := sim.tick_index()
 	if Screen.enter_due(started_tick, tick):
 		_to_map()
+		return false
+	if Screen.escape_due(started_tick, tick):
+		Screen.to_menu(get_tree())
 		return false
 	_sample_levels()
 	_report_events(tick)
@@ -1873,7 +1876,7 @@ func _draw() -> void:
 	# Both legends stop short of the panel, whose last lines reach this low.
 	Screen.legend(self, Vector2(30, 621), [
 		keys,
-		"1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup   9 overfill",
+		"start over:  1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup   9 overfill",
 	], DIM, 16, 20.0, PANEL_X - 30.0 - 24.0)
 	if halted != "":
 		draw_multiline_string(

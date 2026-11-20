@@ -273,7 +273,7 @@ func _load(key: String, fresh: bool = true) -> void:
 		return
 	started_tick = sim.tick_index()
 	if fresh:
-		_say("loaded %s" % plant["scenario"], false)
+		_say("started %s from the beginning" % plant["scenario"], false)
 		print("pump: loaded %s" % plant["scenario"])
 	else:
 		_say("took over %s as it stands, t = %.1f s" % [plant["scenario"], float(snapshot["sim_time"])], false)
@@ -399,6 +399,9 @@ func _step() -> bool:
 	_report_events(tick)
 	if Screen.enter_due(started_tick, tick):
 		_to_map()
+		return false
+	if Screen.escape_due(started_tick, tick):
+		Screen.to_menu(get_tree())
 		return false
 
 	if not auto_run:
@@ -880,8 +883,8 @@ func _draw() -> void:
 		get_viewport_rect().size.x - 60, 15, 2, BAD if message_bad else GOOD
 	)
 	Screen.legend(self, Vector2(30, 600), [
-		"Up/Down valve   K pump on/off   W/S supply pressure   E/D supply temperature   R/F destination pressure   F5 save   F9 load",
-		"C clear trail   V vent   Space pause   [ ] speed   1 long suction (M50)   2 no suction model (M11)   3 gas lock (M54)",
+		"Up/Down valve   K pump on/off   W/S supply pressure   E/D supply temperature   R/F destination pressure   F5 save   F9 back to the save",
+		"C clear trail   V vent   Space pause   [ ] speed   start over:  1 long suction (M50)   2 no suction model (M11)   3 gas lock (M54)",
 	], DIM)
 	if halted != "":
 		_text(Vector2(30, 90), "HALTED — %s" % halted, BAD)

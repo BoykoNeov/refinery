@@ -492,7 +492,7 @@ func _load(key: String, fresh: bool = true) -> void:
 
 	started_tick = sim.tick_index()
 	if fresh:
-		_say("loaded %s" % plant["scenario"], false)
+		_say("started %s from the beginning" % plant["scenario"], false)
 		print("reactor: loaded %s" % plant["scenario"])
 	else:
 		_say("took over %s as it stands, t = %.1f s" % [plant["scenario"], float(snapshot["sim_time"])], false)
@@ -529,6 +529,9 @@ func _step(last: bool) -> bool:
 	var tick := sim.tick_index()
 	if Screen.enter_due(started_tick, tick):
 		_to_map()
+		return false
+	if Screen.escape_due(started_tick, tick):
+		Screen.to_menu(get_tree())
 		return false
 	if not (auto_run or last or tick % SAMPLE_TICKS == 0):
 		return true
@@ -1259,7 +1262,7 @@ func _draw() -> void:
 	)
 	Screen.legend(self, Vector2(30, 768), [
 		"W/S feed temperature   Up/Down feed valve   F/V preheater firing   C/X product cooler   D hydrogen vent   Tab pick loop   A auto/manual   Q/Z loop target",
-		"E emergency stop   R reset trips   P patch holes   M repair wall   T clear charts   Space pause   [ ] speed   1 calm  2 trip  3 quench  4 wall  5 hydrogen  6 h2 quench",
+		"E emergency stop   R reset trips   P patch holes   M repair wall   T clear charts   Space pause   [ ] speed   start over:  1 calm  2 trip  3 quench  4 wall  5 hydrogen  6 h2 quench",
 	], DIM, 14, 22.0)
 	if halted != "":
 		_text(Vector2(30, 90), "HALTED — %s" % halted, BAD)

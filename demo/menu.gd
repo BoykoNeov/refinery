@@ -9,9 +9,16 @@
 # M77: when a quick save exists (F5 on the pump screen), a Continue row heads
 # the list and opens its screen on it.
 #
-# Computes nothing and loads no plant: it only chooses a scene. A row that
-# names a plant starts it afresh; the map's row opens on the plant running
-# (M84), held still while the menu is up.
+# Computes nothing and loads no plant: it only chooses a scene. The plant
+# running (M84) is held still while the menu is up, and the menu says plainly
+# which rows keep it and which start over:
+#   - "The plant running" heads the list when a plant is running: one row for
+#     its own screen, one for the map; both carry on with it as it stands.
+#     The row for the screen Esc came from is the one chosen, so Esc then
+#     Enter is a round trip.
+#   - The map's own row carries on with it too (Left/Right there start over).
+#   - Every row naming a plant, and the quick save, start over; the running
+#     plant's own row says so beside it.
 #
 #   godot --path .                     this menu (the project's main scene)
 #   godot --headless --path . -- --auto
@@ -30,6 +37,8 @@ const INK := Screen.INK
 const DIM := Screen.DIM
 const ACCENT := Screen.FLAME
 const BAND := Color(0.16, 0.18, 0.22)
+const GOOD := Screen.GOOD
+const WARN := Screen.WARN
 
 const LEFT := 40.0
 const TOP := 66.0
@@ -39,11 +48,18 @@ const HEADING := 21.0
 ## Continue row (M77) does not push the last screen off the window.
 const BOTTOM := 638.0
 
-## One entry per line the menu can open: {scene, plant, label, y}.
+## One entry per line the menu can open: {scene, plant, label, y}, with
+## "running": true on a row that carries on with the plant running and a
+## "note" drawn beside a row (what it does to the plant running).
 var rows: Array = []
 ## Each screen's heading: {name, about, y}.
 var headings: Array = []
 var selected := 0
+## Whether a plant is running behind the menu (M84): the menu then says which
+## rows keep it.
+var is_running := false
+## Beside the row that names the plant running: choosing it loses the run.
+const RESTARTS := "starts this plant over — your changes are lost"
 ## The height of a row as drawn: ROW, or less when the list is squeezed.
 var row_step := ROW
 
@@ -56,11 +72,36 @@ func _ready() -> void:
 	Screen.fit(get_window())
 	if options["shot"] != "":
 		_shoot.call_deferred(options["shot"])
+	elif Screen.escaping() and Screen.running(get_tree()).scenario != "":
+		# A recorded round trip (`--escape=`): Enter on the row chosen.
+		_open.call_deferred()
+	var came_from := Screen.chosen_from(get_tree())
+	var running_scenario: String = Screen.running(get_tree()).scenario
+	is_running = running_scenario != ""
 	var y := TOP
+	if is_running:
+		var title := _title_of(running_scenario)
+		var at := _running_time()
+		var screen_scene := Screen.screen_for(running_scenario)
+		y += HEADING
+		headings.append({"name": "The plant running", "about": "%s, t = %s" % [title, at], "y": y})
+		y += 4.0
+		if screen_scene != "":
+			y += ROW
+			rows.append({"scene": screen_scene, "plant": "", "running": true, "label": "Carry on, on the %s screen" % _screen_name(screen_scene), "y": y})
+		y += ROW
+		rows.append({"scene": Screen.MAP, "plant": "", "running": true, "label": "Carry on, on the plant map", "y": y})
+		selected = 0
+		for i in rows.size():
+			if rows[i]["scene"] == came_from:
+				selected = i
 	var save: Dictionary = Screen.read_save(Screen.QUICK_SAVE)
 	if not save.is_empty() and save["note"].has("scene"):
 		y += HEADING
-		headings.append({"name": "Continue", "about": "where you left off (F5 saves, on the pump screen)", "y": y})
+		var about := "back to the moment F5 was pressed on the pump screen"
+		if is_running:
+			about += " — the plant running is dropped"
+		headings.append({"name": "Quick save", "about": about, "y": y})
 		y += 4.0 + ROW
 		rows.append({"scene": str(save["note"]["scene"]), "plant": "", "save": Screen.QUICK_SAVE, "label": _save_label(save), "y": y})
 	for screen in SCREENS:
@@ -70,10 +111,22 @@ func _ready() -> void:
 		var plants := _plants_of(screen["script"])
 		if plants.is_empty():
 			y += ROW
-			rows.append({"scene": screen["scene"], "plant": "", "label": screen["row"], "y": y})
+			var row := {"scene": screen["scene"], "plant": "", "label": screen["row"], "y": y}
+			if screen["scene"] == Screen.MAP and is_running:
+				# The map opens on the plant running (M84): no plant named.
+				row["label"] = "The plant running, as you left it; Left/Right there start another plant over"
+				row["running"] = true
+			elif screen["scene"] == Screen.MAP:
+				row["label"] = "Any plant in scenarios/ (Left/Right there to choose)"
+			elif is_running and screen.get("scenario", "") == running_scenario:
+				row["note"] = RESTARTS
+			rows.append(row)
 		for key in plants:
 			y += ROW
-			rows.append({"scene": screen["scene"], "plant": key, "label": str(plants[key].get("title", key)), "y": y})
+			var row := {"scene": screen["scene"], "plant": key, "label": str(plants[key].get("title", key)), "y": y}
+			if is_running and str(plants[key].get("scenario", "")) == running_scenario:
+				row["note"] = RESTARTS
+			rows.append(row)
 	if y > BOTTOM:
 		var squeeze := (BOTTOM - TOP) / (y - TOP)
 		row_step = ROW * squeeze
@@ -93,6 +146,35 @@ func _shoot(path: String) -> void:
 
 func _plants_of(script_path: String) -> Dictionary:
 	return Screen.plants_of(script_path)
+
+
+## The plant in `scenario` by the name the menu lists it under: its screen's
+## title for it, the leaking line's row, else the file's stem.
+func _title_of(scenario: String) -> String:
+	for screen in SCREENS:
+		if screen.get("scenario", "") == scenario:
+			return str(screen["row"])
+		var plants := _plants_of(screen["script"])
+		var key := Screen.key_for(plants, scenario)
+		if key != "":
+			return str(plants[key].get("title", key))
+	return scenario.get_file().trim_suffix(".toml")
+
+
+## The menu's heading for the screen `scene`, lower case: "distillation column".
+func _screen_name(scene: String) -> String:
+	for screen in SCREENS:
+		if screen["scene"] == scene:
+			return str(screen["name"]).to_lower()
+	return scene.get_file().get_basename()
+
+
+## How far the plant running has got, in plant time: "1234 s".
+func _running_time() -> String:
+	var snapshot = JSON.parse_string(Screen.running(get_tree()).sim.snapshot_json())
+	if not (snapshot is Dictionary):
+		return "?"
+	return "%.0f s" % float(snapshot.get("sim_time", 0.0))
 
 
 func _input(event: InputEvent) -> void:
@@ -155,15 +237,21 @@ func _open() -> void:
 	if row.has("save"):
 		Screen.open_save(get_tree(), row["scene"], row["save"])
 		return
+	if row.get("running", false):
+		Screen.open_running(get_tree(), row["scene"])
+		return
 	Screen.open(get_tree(), row["scene"], row["plant"])
 
 
 func _draw() -> void:
 	var size := get_viewport_rect().size
 	draw_rect(Rect2(Vector2.ZERO, size), BACKGROUND)
-	_text(Vector2(LEFT, 44), "Refinery", INK, 28)
-	_text(Vector2(LEFT + 150, 44), "pick a plant to run", DIM, 16)
-	_text(Vector2(LEFT, 68), "Up / Down or the mouse to choose    Enter to open    Esc inside a screen comes back here    F11 full screen", DIM, 13)
+	_text(Vector2(LEFT, 40), "Refinery", INK, 28)
+	if is_running:
+		_text(Vector2(LEFT + 150, 40), "green rows carry on with the plant running (it waits while you are here); every other row starts its plant from the beginning", DIM, 15)
+	else:
+		_text(Vector2(LEFT + 150, 40), "pick a plant to run", DIM, 16)
+	_text(Vector2(LEFT, 62), "Up / Down or the mouse to choose    Enter to open    Esc inside a screen comes back here    F11 full screen", DIM, 13)
 
 	for heading in headings:
 		var y: float = heading["y"]
@@ -178,7 +266,13 @@ func _draw() -> void:
 		if chosen:
 			draw_rect(Rect2(Vector2(LEFT - 10, y - row_step + 4.0), Vector2(size.x - 2 * (LEFT - 10), row_step)), BAND)
 			draw_rect(Rect2(Vector2(LEFT - 10, y - row_step + 4.0), Vector2(3, row_step)), ACCENT)
-		_text(Vector2(LEFT + 14, y), row["label"], INK if chosen else DIM, 14)
+		var label_color := INK if chosen else DIM
+		if row.get("running", false):
+			label_color = GOOD if chosen else GOOD.darkened(0.25)
+		_text(Vector2(LEFT + 14, y), row["label"], label_color, 14)
+		if row.has("note"):
+			var label_width := ThemeDB.fallback_font.get_string_size(row["label"], HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
+			_text(Vector2(LEFT + 14 + label_width + 16, y), "← " + row["note"], WARN, 13)
 
 
 func _text(at: Vector2, text: String, color: Color, size: int = 16) -> void:

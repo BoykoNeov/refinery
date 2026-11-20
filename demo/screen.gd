@@ -27,6 +27,9 @@ const PLANT_META := "refinery_plant"
 const SAVE_META := "refinery_save"
 ## Set by Enter (M84): the screen opened takes over the plant running.
 const RUNNING_META := "refinery_running"
+## Set by Esc: the scene the menu was opened from, so its "carry on" row for
+## that screen is the one chosen and Enter goes straight back.
+const FROM_META := "refinery_from"
 
 ## The screens, in the order a newcomer should meet them: the newest and
 ## richest first (the menu lists them so). `script` is read for its PLANTS —
@@ -171,8 +174,21 @@ static func read_save(path: String) -> Dictionary:
 	return {"text": text, "tick": int(save.get("tick", 0)), "note": save["frontend"]}
 
 
+## Esc: the menu, the plant running held still behind it. The menu's first
+## rows carry on with it; every row naming a plant starts that plant over.
 static func to_menu(tree: SceneTree) -> void:
+	if tree.current_scene != null:
+		tree.root.set_meta(FROM_META, tree.current_scene.scene_file_path)
 	tree.change_scene_to_file(MENU)
+
+
+## The scene Esc left for the menu, or "". Read once.
+static func chosen_from(tree: SceneTree) -> String:
+	if not tree.root.has_meta(FROM_META):
+		return ""
+	var path := str(tree.root.get_meta(FROM_META))
+	tree.root.remove_meta(FROM_META)
+	return path
 
 
 ## The one running plant (M84, demo/running.gd): its `sim`, its `scenario`.
@@ -229,11 +245,32 @@ static func screen_for(scenario: String) -> String:
 ## plant reaches one of these ticks after the screen took it — the hand-over
 ## between the map and a unit's screen, run without a person.
 static func enter_due(started_tick: int, tick: int) -> bool:
+	return _due("--enter=", started_tick, tick)
+
+
+## `--escape=<tick>,<tick>,…`: a screen presses Esc itself at these ticks, as
+## `enter_due` presses Enter; the menu it opens then presses Enter on the row
+## chosen for it (carry on, on the screen just left) — or, with `--shot=`,
+## saves its picture and quits. The round trip through the menu, run without
+## a person.
+static func escape_due(started_tick: int, tick: int) -> bool:
+	return _due("--escape=", started_tick, tick)
+
+
+static func _due(option: String, started_tick: int, tick: int) -> bool:
 	for arg in OS.get_cmdline_user_args():
-		if arg.begins_with("--enter="):
-			for at in arg.trim_prefix("--enter=").split(","):
+		if arg.begins_with(option):
+			for at in arg.trim_prefix(option).split(","):
 				if int(at) == tick and tick > started_tick:
 					return true
+	return false
+
+
+## Whether this run was given `--escape=` (the menu's cue to press Enter).
+static func escaping() -> bool:
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--escape="):
+			return true
 	return false
 
 
@@ -277,10 +314,10 @@ static func text(canvas: CanvasItem, at: Vector2, line: String, color: Color, si
 
 ## The key legend at the bottom of a screen: `lines` drawn `step` apart from
 ## `at` down, each fitted to `width` as `text` fits it, with `enter` (what
-## Enter does: on a unit's screen, back to the map, M84) and "Esc menu"
-## closing the last — so a screen adds a key in one place and every screen has
+## Enter does: on a unit's screen, back to the map on the same plant, M84)
+## and "Esc menu" closing the last — so a screen adds a key in one place and every screen has
 ## the way out.
-static func legend(canvas: CanvasItem, at: Vector2, lines: Array, color: Color, size: int = 16, step: float = 24.0, width: float = -1.0, enter: String = "Enter map") -> void:
+static func legend(canvas: CanvasItem, at: Vector2, lines: Array, color: Color, size: int = 16, step: float = 24.0, width: float = -1.0, enter: String = "Enter map, same plant") -> void:
 	for i in lines.size():
 		var line: String = lines[i]
 		if i == lines.size() - 1:

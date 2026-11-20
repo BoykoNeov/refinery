@@ -254,7 +254,7 @@ func _load(key: String, fresh: bool = true) -> void:
 	snapshot = JSON.parse_string(sim.snapshot_json())
 	started_tick = sim.tick_index()
 	if fresh:
-		_say("loaded %s" % plant["scenario"], false)
+		_say("started %s from the beginning" % plant["scenario"], false)
 		print("furnace: loaded %s" % plant["scenario"])
 	else:
 		_say("took over %s as it stands, t = %.1f s" % [plant["scenario"], float(snapshot["sim_time"])], false)
@@ -285,6 +285,9 @@ func _step() -> bool:
 	_report_events(tick)
 	if Screen.enter_due(started_tick, tick):
 		_to_map()
+		return false
+	if Screen.escape_due(started_tick, tick):
+		Screen.to_menu(get_tree())
 		return false
 
 	if not auto_run:
@@ -818,7 +821,7 @@ func _draw() -> void:
 	)
 	Screen.legend(self, Vector2(30, 600), [
 		"E emergency stop   R reset trips   A loop auto/manual   W/S setpoint   Up/Down fuel",
-		"P patch   N new tubes   K pump   Space pause   [ ] speed   1 trip   2 burn-out   3 self-reset   4 burst   5 pump trip",
+		"P patch   N new tubes   K pump   Space pause   [ ] speed   start over:  1 trip   2 burn-out   3 self-reset   4 burst   5 pump trip",
 	], DIM)
 	if halted != "":
 		_text(Vector2(30, 90), "HALTED — %s" % halted, BAD)

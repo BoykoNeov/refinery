@@ -146,6 +146,8 @@ cargo clippy -p refinery-godot-ext --features godot --all-targets -- -D warnings
 ```
 godot --headless --path . --editor --quit    # once, after cloning
 godot --path .                               # the menu: every screen and plant (Esc in a screen returns to it, F11 full screen)
+#   the plant running waits behind the menu: its green rows (and the map's row) carry on with it, every other row and a screen's number keys start a plant over
+#   menu round trip, scripted: <screen> -- --escape=<tick>,…  (Esc pressed at those ticks; the menu presses Enter on the green row for that screen, or with --shot= saves a picture)
 godot --headless --path . res://demo/plant.tscn -- --auto   # the M6.2 demo; ends at t=350
 godot --path . res://demo/map.tscn           # the plant map: any shipped plant drawn from its snapshot (the mouse inspects, M78; clicks and keys work it, M79; M takes a loop's valve by hand, M80; Ctrl+drag moves a node, Ctrl+S keeps it in demo/layout/<plant>.json, M81; Enter opens the screen that draws the plant running, on the same running plant, and Enter there comes back, M84)
 #   screenshot: --quit-after 4000 -- --plant=<stem> --shot=W:/temp/claude/<task>/x.png [--hover=<node or pipe> --scroll=<lines> --pick=<valve/furnace/cooler>]

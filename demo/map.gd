@@ -358,6 +358,9 @@ func _step() -> bool:
 	if Screen.enter_due(started_tick, sim.tick_index()):
 		_closer()
 		return false
+	if Screen.escape_due(started_tick, sim.tick_index()):
+		Screen.to_menu(get_tree())
+		return false
 	return true
 
 
@@ -1212,9 +1215,12 @@ func _draw_legend(size: Vector2) -> void:
 	_text(Vector2(x + 272, 60), "20", DIM, 12)
 	_text(Vector2(x + 486, 60), "450 °C", DIM, 12)
 	if message != "":
-		draw_multiline_string(ThemeDB.fallback_font, Vector2(30, size.y - 54.0), message, HORIZONTAL_ALIGNMENT_LEFT, size.x - 60.0, 13, 2, message_color)
-	var help := "Left/Right plant   Space pause   [ ] speed   click a valve/furnace/cooler: Up/Down, M by hand   click a pump: on/off   P+click a pipe: hole/mend   Tab A Q Z loops   R reset trips   Ctrl+drag/Ctrl+S layout"
-	Screen.legend(self, Vector2(30, size.y - 14.0), [help], DIM, 13, 24.0, size.x - 60.0, "Enter closer look")
+		draw_multiline_string(ThemeDB.fallback_font, Vector2(30, size.y - 60.0), message, HORIZONTAL_ALIGNMENT_LEFT, size.x - 60.0, 13, 2, message_color)
+	# Two lines: the plant's controls, then the keys that move between plants
+	# and screens — what keeps the plant running and what starts one over.
+	var controls := "click a valve/furnace/cooler: Up/Down, M by hand   click a pump: on/off   P+click a pipe: hole/mend   Tab A Q Z loops   R reset trips   Ctrl+drag/Ctrl+S layout"
+	var moves := "Space pause   [ ] speed   Left/Right start another plant over"
+	Screen.legend(self, Vector2(30, size.y - 30.0), [controls, moves], DIM, 13, 16.0, size.x - 60.0, "Enter closer look, same plant")
 
 
 ## The largest flow on the map this tick [kg/s], never zero.

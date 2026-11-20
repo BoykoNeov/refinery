@@ -97,6 +97,9 @@ func _physics_process(_delta: float) -> void:
 	if Screen.enter_due(started_tick, tick):
 		_to_map()
 		return
+	if Screen.escape_due(started_tick, tick):
+		Screen.to_menu(get_tree())
+		return
 
 	if auto_run:
 		match tick:
