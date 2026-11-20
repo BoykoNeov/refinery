@@ -187,4 +187,12 @@ impl RefinerySim {
     fn load_save(&mut self, save_json: GString) -> GString {
         GString::from(&self.session.load_save(&save_json.to_string()))
     }
+
+    /// What the last save loaded noticed: "" when nothing, or that its plant
+    /// came out different from when it was saved (the simulation changed
+    /// since). `load_save` still answers `null` for such a save.
+    #[func]
+    fn load_note(&self) -> GString {
+        GString::from(&self.session.load_note())
+    }
 }

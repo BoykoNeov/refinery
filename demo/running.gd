@@ -37,6 +37,11 @@ var holes: Array = []
 ## that takes the plant over later reads its design from, so a setting moved
 ## since is not mistaken for the design. {} after a save is loaded.
 var as_loaded: Dictionary = {}
+## What loading the last save noticed (the bridge's `load_note`): "" when
+## nothing, or that its plant came out different from when it was saved —
+## the simulation changed since; the save loads anyway. Forgotten on a fresh
+## load.
+var load_note := ""
 
 
 func _init() -> void:
@@ -64,6 +69,7 @@ func load_save(text: String, path: String, said_then: Dictionary) -> String:
 		_forget()
 		scenario = path
 		said.merge(said_then)
+		load_note = sim.load_note()
 	return answer
 
 
@@ -72,3 +78,4 @@ func _forget() -> void:
 	said.clear()
 	holes.clear()
 	as_loaded = {}
+	load_note = ""

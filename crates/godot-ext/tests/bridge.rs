@@ -2141,9 +2141,22 @@ fn a_save_loads_as_the_same_plant() {
         serde_json::from_str::<Value>(NOTE).unwrap()
     );
 
+    let fingerprint = value["fingerprint"]
+        .as_str()
+        .expect("a save has a fingerprint");
+    assert!(
+        fingerprint.starts_with("fnv1a64:") && fingerprint.len() == 8 + 16,
+        "{fingerprint}"
+    );
+
     let mut again = loaded_from(&save);
     assert_eq!(again.tick_index(), 300);
     assert_eq!(again.snapshot_json(), sim.snapshot_json());
+    assert_eq!(
+        again.load_note(),
+        "",
+        "a save loaded as it was has nothing to say"
+    );
 
     let more = valve_json(valve, 0.35);
     assert_eq!(sim.apply_command_json(&more), "null");
@@ -2258,6 +2271,8 @@ fn a_save_holds_a_command_sent_since_the_last_tick() {
     assert_eq!(sim.apply_command_json(&valve_json(valve, 0.2)), "null");
     let mut again = loaded_from(&save_of(&sim));
     assert_eq!(again.snapshot_json(), sim.snapshot_json());
+    // The fingerprint is taken with that command in, and so is the replay's.
+    assert_eq!(again.load_note(), "");
     for _ in 0..60 {
         assert_eq!(again.tick(), "null");
     }
@@ -2267,7 +2282,9 @@ fn a_save_holds_a_command_sent_since_the_last_tick() {
 }
 
 /// The plant file inside the save is the truth, not the file it came from: a
-/// save whose source was changed by one number loads as the changed plant.
+/// save whose source was changed by one number loads as the changed plant —
+/// and, its fingerprint being the unchanged plant's, says it came out
+/// different.
 #[test]
 fn a_save_is_its_own_plant_file() {
     let src = scenario_src(LEAKY);
@@ -2289,6 +2306,64 @@ fn a_save_is_its_own_plant_file() {
         again.snapshot_json(),
         run_with(&src, &[], 20).snapshot_json()
     );
+    assert!(
+        again.load_note().contains("came out different"),
+        "{}",
+        again.load_note()
+    );
+}
+
+/// A save whose plant replays to other numbers than it was saved with — what a
+/// changed engine does, here a fingerprint changed by hand — still loads, as
+/// the plant the replay made, and `load_note` says it came out different and
+/// names the engines. Refusing it would lose every save at every physics
+/// change. A refused save after it leaves the note; a fresh plant clears it.
+#[test]
+fn a_save_that_replays_differently_loads_with_a_note() {
+    let src = scenario_src(LEAKY);
+    let valve = loaded(&src).node_id("discharge_valve");
+    let sim = run_with(&src, &leaky_commands(valve), 300);
+    let mut value: Value = serde_json::from_str(&save_of(&sim)).unwrap();
+    value["fingerprint"] = Value::from("fnv1a64:0000000000000000");
+
+    let mut again = loaded_from(&value.to_string());
+    assert_eq!(again.snapshot_json(), sim.snapshot_json());
+    let note = again.load_note();
+    assert!(
+        note.contains("came out different") && note.contains(env!("CARGO_PKG_VERSION")),
+        "{note}"
+    );
+
+    assert_eq!(
+        outcome_code(&again.load_save("not json")).as_deref(),
+        Some("bad_save")
+    );
+    assert_eq!(
+        again.load_note(),
+        note,
+        "a refused save keeps the last note"
+    );
+    assert_eq!(again.load_scenario(&src), "null");
+    assert_eq!(again.load_note(), "", "a fresh plant clears the note");
+}
+
+/// A save made before saves carried a fingerprint (no `fingerprint` field) is
+/// still format 1 and loads as it always did, with nothing to say.
+#[test]
+fn a_save_without_a_fingerprint_still_loads() {
+    let src = scenario_src(LEAKY);
+    let valve = loaded(&src).node_id("discharge_valve");
+    let sim = run_with(&src, &leaky_commands(valve), 300);
+    let mut value: Value = serde_json::from_str(&save_of(&sim)).unwrap();
+    assert!(value
+        .as_object_mut()
+        .unwrap()
+        .remove("fingerprint")
+        .is_some());
+
+    let again = loaded_from(&value.to_string());
+    assert_eq!(again.snapshot_json(), sim.snapshot_json());
+    assert_eq!(again.load_note(), "");
 }
 
 /// Every way a save can be wrong has its own code, and none of them touches the

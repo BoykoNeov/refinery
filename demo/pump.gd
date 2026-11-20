@@ -363,6 +363,10 @@ func _load_save(path: String) -> void:
 	moved_conditions = bool(note.get("moved_conditions", false))
 	_say("loaded the save: t = %.1f s, %d ticks replayed in %.1f s" % [float(snapshot["sim_time"]), sim.tick_index(), took], false)
 	print("pump: loaded save %s at t=%d (%.1f s to replay)" % [path, sim.tick_index(), took])
+	if running.load_note != "":
+		# Loaded, but not as it was saved: the simulation changed since.
+		_say("loaded the save, but %s" % running.load_note, true)
+		print("pump: save note: %s" % running.load_note)
 	queue_redraw()
 
 

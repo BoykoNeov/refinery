@@ -32350,7 +32350,8 @@ loads; a refused save leaves it running and says why). `--save-at=<tick>`,
 120 and continued in a second process, the gas-lock plant prints the same 19
 lines after 120; broken at 230, recovered, saved at 240 and continued, the
 same. The trail of readings the screen drew is not saved. The menu heads its
-list with "Continue" when the quick save exists, naming its plant by the
+list with "Continue" when the quick save exists (since 2026-11-20 headed
+"Quick save", saying it drops the plant running), naming its plant by the
 screen's own title, and squeezes its rows when the list would pass the
 window's foot.
 
@@ -32362,6 +32363,34 @@ the last tick is in it; the source in the save is the plant; every bad save
 by its code, the running plant untouched; a note that is not JSON refused;
 `save_json` before a load is `not_loaded`. Mutation pass, 12 mutants, 12
 killed. The godot-feature clippy is clean on the two new binding lines.
+
+**A plant that comes out different (2026-11-20, asked as "make sure save/load
+keeps working if a plant changes").** An edited plant file was already safe
+(the source in the save is the plant); a changed plant format already refused
+with `save_diverged`. What slipped through: a changed engine whose replay
+still accepts and refuses every command as before, and fails the same ticks,
+but ends on other numbers — loaded silently as a different plant. A save now
+carries `fingerprint`, FNV-1a 64 (the corpus's hash, copied: `cli` is not a
+dependency) of the plant's snapshot JSON when saved, as `fnv1a64:` and 16 hex
+digits. After the replay `from_save` takes the loaded plant's and, when they
+differ, still loads it — the saved plant file and actions, on this engine;
+refusing would lose every save at every physics change — and returns a note,
+which `Session::load_note()` / the binding's `load_note()` hand the screen
+(`load_save` still answers `null`; a fresh plant clears the note, a refused
+save keeps it). `demo/running.gd` keeps it as `load_note`; the pump screen
+draws "loaded the save, but …" in red and prints `pump: save note: …`.
+**Still format 1**: the field is optional (`#[serde(default)]`), so a save
+made before it loads unchecked, as always — a new format number would have
+refused every earlier save, which `SAVE_FORMAT`'s comment now says. Gates:
+`fingerprint` written, and no note on a straight load or with a command sent
+since the last tick; a hand-changed fingerprint loads with the note naming
+the engine; a save without the field loads quietly; the changed-source save
+now notes; FNV-1a's published vectors (`bridge::tests`). Mutation pass: 7
+mutants, 7 killed (a length-only hash was missed until the vectors were
+added). **Not covered**: a save whose embedded plant this engine no longer
+reads is still refused, and only a committed old save loaded by a test would
+see that before a player does; a save whose plant lacks a name a screen now
+looks up loads, and the screen halts saying the names do not match.
 
 ## 83. A loop names the equipment it moves (M80) — so a screen can take it by hand
 

@@ -308,7 +308,11 @@ pub struct Recovery {
 }
 
 /// The save format [`Bridge::save_json`] writes and [`Bridge::from_save`]
-/// reads. A change to [`SaveFile`]'s shape is a new number.
+/// reads. A change to [`SaveFile`]'s shape that an older save cannot be read
+/// as is a new number — and [`Bridge::from_save`] refuses every other number,
+/// so a new one loses every save made before it. A field a save may lack
+/// (`#[serde(default)]`, like `fingerprint`) keeps the number: a save without
+/// it is still a whole save of this format.
 const SAVE_FORMAT: u64 = 1;
 
 /// The engine a save was made by: the workspace version. Written, and named
@@ -329,6 +333,28 @@ struct SaveFile {
     /// The tick index the save stands at.
     tick: u64,
     record: Vec<SavedEntry>,
+    /// The plant as saved, as [`snapshot_fingerprint`] of its snapshot. After
+    /// the replay the loaded plant's is compared with it: a different one is
+    /// an engine (or plant format) that changed since the save, and the save
+    /// still loads, with a note saying so. Saves made before this field
+    /// existed have none and load unchecked, as they always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<String>,
+}
+
+/// A plant's snapshot JSON as a short fingerprint: `fnv1a64:` and 16 hex
+/// digits. FNV-1a 64 is the corpus's hash too (crates/cli, `Fnv1a64`): a
+/// fingerprint of "did these bytes change", the same on every platform and
+/// every Rust release — std's `DefaultHasher` is neither promised.
+fn snapshot_fingerprint(snapshot_json: &str) -> String {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for &byte in snapshot_json.as_bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    format!("fnv1a64:{hash:016x}")
 }
 
 /// One [`Logged`] in a save. `tick` is its `at_tick`: it acted before tick
@@ -630,6 +656,7 @@ impl Bridge {
             scenario_source: self.source.clone(),
             tick: self.tick_index(),
             record: self.record.iter().map(SavedEntry::from).collect(),
+            fingerprint: Some(snapshot_fingerprint(&self.snapshot_json())),
         };
         // Strings, numbers and a `Value`; serde has nothing to fail on.
         serde_json::to_string(&save).map_err(|err| BridgeError::BadSave(err.to_string()))
@@ -639,7 +666,14 @@ impl Bridge {
     /// path — a plant file edited since must not change what the save means)
     /// and its record replayed to its tick, exactly as [`Bridge::rewind`]
     /// replays. Takes as long as the ticks took.
-    pub fn from_save(json: &str) -> Result<Bridge, BridgeError> {
+    ///
+    /// Beside the plant, what the load noticed, for the screen to say: "" when
+    /// nothing, or — the save's fingerprint not matching the plant replayed —
+    /// that the plant came out different from when it was saved. That is
+    /// loaded, not refused: it is the saved plant file with the saved actions,
+    /// replayed on this engine, and refusing would lose every save whenever
+    /// the physics change.
+    pub fn from_save(json: &str) -> Result<(Bridge, String), BridgeError> {
         // The format first, from the bare JSON: a save of another format is
         // `save_format` whatever else its shape is.
         let value: serde_json::Value = serde_json::from_str(json).map_err(|err| {
@@ -689,14 +723,23 @@ impl Bridge {
                 save.engine
             )
         };
-        Bridge::rebuild(&save.scenario_source, save.tick, &record).map_err(|err| {
+        let bridge = Bridge::rebuild(&save.scenario_source, save.tick, &record).map_err(|err| {
             BridgeError::SaveDiverged(match err {
                 BridgeError::ReplayDiverged(how) => {
                     format!("this save does not load as the plant it was ({engines}): {how}")
                 }
                 other => format!("the plant in this save does not load ({engines}): {other}"),
             })
-        })
+        })?;
+        let note = match &save.fingerprint {
+            Some(saved) if *saved != snapshot_fingerprint(&bridge.snapshot_json()) => format!(
+                "the plant came out different from when it was saved ({engines}): the \
+                 same plant and the same actions, replayed, but the simulation has \
+                 changed since, so its numbers may differ"
+            ),
+            _ => String::new(),
+        };
+        Ok((bridge, note))
     }
 
     /// Parse, validate and apply one command; [`Bridge::apply_command_json`]
@@ -826,6 +869,9 @@ pub fn outcome_json(result: Result<(), BridgeError>) -> String {
 #[derive(Default)]
 pub struct Session {
     bridge: Option<Bridge>,
+    /// What the last save loaded noticed ([`Bridge::from_save`]); "" when it
+    /// noticed nothing, or since a plant was loaded fresh.
+    load_note: String,
 }
 
 impl Session {
@@ -845,6 +891,7 @@ impl Session {
         match Bridge::load(toml_src) {
             Ok(bridge) => {
                 self.bridge = Some(bridge);
+                self.load_note.clear();
                 outcome_json(Ok(()))
             }
             Err(err) => outcome_json(Err(err)),
@@ -972,14 +1019,26 @@ impl Session {
     /// message}`: `bad_save`, `save_format`, `save_diverged`. Like
     /// [`Session::load_scenario`], a refused save leaves the running plant
     /// untouched.
+    ///
+    /// A save that loads but whose plant came out different from when it was
+    /// saved is still `null`; [`Session::load_note`] then says so.
     pub fn load_save(&mut self, json: &str) -> String {
         match Bridge::from_save(json) {
-            Ok(bridge) => {
+            Ok((bridge, note)) => {
                 self.bridge = Some(bridge);
+                self.load_note = note;
                 outcome_json(Ok(()))
             }
             Err(err) => outcome_json(Err(err)),
         }
+    }
+
+    /// What the last save loaded noticed, for the screen to say: "" when
+    /// nothing, or that its plant came out different from when it was saved
+    /// (an engine changed since). A refused save leaves the last note; a fresh
+    /// plant clears it.
+    pub fn load_note(&self) -> String {
+        self.load_note.clone()
     }
 
     /// The tick index after the last tick that succeeded — a failed tick does
@@ -996,5 +1055,21 @@ fn names_json(names: Option<Vec<String>>) -> String {
     match names {
         Some(names) => serde_json::to_string(&names).unwrap_or_else(|_| "null".to_string()),
         None => "null".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::snapshot_fingerprint;
+
+    /// The fingerprint is FNV-1a 64 itself, not merely some hash: the published
+    /// test vectors (Fowler, Noll and Vo's FNV test suite, `fnv1a64` of "",
+    /// "a" and "foobar"). A save's fingerprint must mean the same bytes on
+    /// every build that reads it.
+    #[test]
+    fn the_fingerprint_is_fnv1a_64() {
+        assert_eq!(snapshot_fingerprint(""), "fnv1a64:cbf29ce484222325");
+        assert_eq!(snapshot_fingerprint("a"), "fnv1a64:af63dc4c8601ec8c");
+        assert_eq!(snapshot_fingerprint("foobar"), "fnv1a64:85944171f73967e8");
     }
 }
