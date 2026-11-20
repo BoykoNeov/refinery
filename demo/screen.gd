@@ -452,9 +452,21 @@ static func dash_speed(share: float) -> float:
 ## the line, moved `travel` px on from the upstream end. A screen that adds
 ## `dash_speed` × the frame's seconds to `travel` each frame the plant runs
 ## makes them run the way the flow does. A dash is carried round a corner,
-## not cut at it.
-static func pipe(canvas: CanvasItem, points: PackedVector2Array, color: Color, width: float, travel: float = NAN) -> void:
-	canvas.draw_polyline(points, color, width)
+## not cut at it. `casing` > 0 (M85, the map) draws a border of BACKGROUND
+## that wide either side first, so a pipe drawn over another cuts a gap in it,
+## and squares each corner off (a wide line alone leaves a notch there).
+static func pipe(canvas: CanvasItem, points: PackedVector2Array, color: Color, width: float, travel: float = NAN, casing: float = 0.0) -> void:
+	if casing > 0.0:
+		canvas.draw_polyline(points, BACKGROUND, width + 2.0 * casing)
+		for i in range(1, points.size() - 1):
+			var outer := Vector2.ONE * (width * 0.5 + casing)
+			canvas.draw_rect(Rect2(points[i] - outer, outer * 2.0), BACKGROUND)
+		canvas.draw_polyline(points, color, width)
+		for i in range(1, points.size() - 1):
+			var inner := Vector2.ONE * (width * 0.5)
+			canvas.draw_rect(Rect2(points[i] - inner, inner * 2.0), color)
+	else:
+		canvas.draw_polyline(points, color, width)
 	if is_nan(travel) or points.size() < 2:
 		return
 	# How far along the pipe each of its points is [px].

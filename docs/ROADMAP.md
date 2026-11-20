@@ -11768,3 +11768,45 @@ screen that finds its unit inside a bigger plant (the furnace screen on a
 crude unit's furnace), and a plant that joins the units.
 
 **M84 CLOSED** (2026-11-20; `docs/MILESTONES.md`).
+
+## M85 — the map's pipes read: right angles, crossings with a gap, a flange at each end; OPEN (paused 2026-11-20, next session carries on)
+
+Asked by the user (2026-11-20): where pipes cross, make clear which line is
+which; pipes at straight lines and right angles, as in a real plant; then
+(mid-way) mark clearly where each pipe starts and ends. The style was left to
+us. No Rust; the hand-drawn screens (furnace, pump, column, reactor) were
+looked at and already draw right angles — untouched.
+
+**Done** (first commit):
+- `demo/route.gd` (new): routes every pipe at right angles. A pipe leaves and
+  enters a node by a side, through a short stub; between them it runs straight,
+  one corner, or a Z through a channel tried every 10 px. Priced by length and
+  bends, and dearly for running through a node, a name, or along another pipe;
+  crossing one costs a little. Pass 1 picks each end's side, the pipes on one
+  side are spread along it in the order their far ends sit, pass 2 routes on
+  those ports, and one more round lays each pipe that meets anything again
+  round all the others. ~0.2 s at load on the largest plant (crude_unit_steam).
+- `demo/map.gd`: routes at load and when a dragged node is let go (a quick
+  sketch while dragging); every pipe has a dark border (`Screen.pipe`'s new
+  `casing`, off by default) so the one on top — forward lines over recycles —
+  cuts a gap where two cross; a flange (short bar) where a pipe joins equipment,
+  none on a junction; the pipe drawn on into its node; arrow and number on the
+  longest run (they were on the middle segment, which a routed path can make a
+  short step); the half-step height stagger between layout columns dropped.
+  A **column or reactor is drawn as tall as what is piped to it** (the user
+  liked it), so a crude unit's five tanks meet it in straight pipes.
+- `demo/layout/crude_unit_loops.json` redone: each pumparound a row (cooler,
+  pump) under the feed, so its loop reads as a nested rectangle.
+
+**Verified**: `map --auto` (72 plants, 0 stopped), `--hands` on
+crude_unit_loops and the `--enter=40,120,200` hand-over print the same lines
+as before the change (timings masked). Screenshots looked at: crude_unit,
+crude_unit_loops, fcc_plant, pump_gas_lock, crude_unit_steam.
+
+**Left for the next session**:
+- Look at all 72 plants on the map (screenshot each:
+  `godot --path . res://demo/map.tscn --quit-after 400 -- --plant=<stem> --shot=W:/temp/claude/<task>/<stem>.png`).
+- Hand layouts for the crowded plants that have none — crude_unit_steam first:
+  its computed layout puts nodes on each other's names (not the routing's doing).
+- Check the other 14 layout files still read well with the taller towers.
+- Then close M85 (box in MILESTONES, this section, CLAUDE.md line).

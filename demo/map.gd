@@ -44,6 +44,14 @@
 # screen draws says so on the message line. The menu's map row opens on the
 # plant running too; Left/Right, as before, load the next plant afresh.
 #
+# And its pipes READ (M85): each runs at right angles, the way a plant's do,
+# routed round the other nodes and their names and not along another pipe
+# (demo/route.gd), at load and when a dragged node is let go. Where two must
+# cross, the one on top — the forward line over a recycle — cuts a gap in the
+# other with its dark border; where a pipe joins a node, a flange marks the
+# spot; its arrow and number sit on its longest run. A column or a reactor is
+# drawn as tall as what is piped to it, so each draw meets it level.
+#
 # Same rule as every screen: nothing physical is computed here. A pipe's
 # width is its reported flow, its colour its reported temperature; a tank's
 # fill is the level the plant.gd demo derives from snapshot fields only. The
@@ -87,6 +95,7 @@
 extends Node2D
 
 const Screen := preload("res://demo/screen.gd")
+const Route := preload("res://demo/route.gd")
 
 const SCENARIOS := "res://scenarios"
 const MAX_TICKS_PER_FRAME := 64
@@ -108,6 +117,17 @@ const IDLE := Color(0.30, 0.32, 0.36)
 ## The temperatures a pipe's colour runs between [K]: 20 °C to 450 °C.
 const COLD_K := 293.15
 const HOT_K := 723.15
+
+## Where a pipe may be routed (M85): the page between the headings and the
+## message line, left of the panel's backing.
+const ROUTED := Rect2(24, 96, 836, 474)
+## A tower (column, reactor) reaches this far above its highest neighbour and
+## below its lowest [px], and no lower than TOWER_FLOOR (its name under it).
+const TOWER_OVERHANG := 14.0
+const TOWER_FLOOR := 532.0
+## The dark border each pipe is drawn with, either side [px]: where two cross,
+## the one on top cuts a gap that wide in the one under it.
+const CASING := 2.5
 
 ## More nodes than this in one column of the layout and it is drawn as two.
 const CROWDED := 5
@@ -185,6 +205,14 @@ var auto_run := false
 var shot_path := ""
 ## Node id → where it is drawn. Absent for a node the map hides.
 var places: Dictionary = {}
+## Pipe id → its corners, from its upstream node to its downstream one (M85,
+## demo/route.gd): routed at load and when a dragged node is let go. Absent for
+## a pipe with an end the map hides.
+var routes: Dictionary = {}
+## Pipe id → true for a pipe back to a node at or left of where it starts (a
+## recycle, a reflux, a pumparound's draw): drawn first, so the forward pipes
+## cross OVER them.
+var backward: Dictionary = {}
 ## The largest flow on the map this tick [kg/s]: pipe widths are shares of it.
 var largest_flow := 1.0
 ## Pipe id → how far its dashes have moved along it [px] (M83). Moved each
@@ -307,6 +335,8 @@ func _load(index: int, fresh: bool = true) -> void:
 	halted = ""
 	snapshot = {}
 	places = {}
+	routes = {}
+	backward = {}
 	hovered = {}
 	panel_scroll = 0
 	selected = {}
@@ -1016,12 +1046,13 @@ func _lay_out() -> void:
 				# (No shipped plant has a crowded right-most column, 2026-11-15:
 				# a guard for the plant files to come.)
 				x += minf(96.0, step * 0.45) * (-1.0 if d == deepest and deepest > 0 else 1.0)
-			# Neighbouring columns sit half a step apart in height, so a
-			# straight run of pipe does not hide the names under it.
-			var stagger := 14.0 if d % 2 == 1 and keyed.size() == 1 else 0.0
-			places[id] = Vector2(x, AREA.position.y + AREA.size.y * fraction + stagger)
+			# Level with each other where they can be: a pipe between two
+			# nodes at one height runs straight (M85; the half-step stagger
+			# that kept a slanted line off the names would be a jog in it now).
+			places[id] = Vector2(x, AREA.position.y + AREA.size.y * fraction)
 	# Last, so the computed order of the nodes it does not name is unchanged.
 	_apply_layout()
+	_route_pipes()
 
 
 # ------------------------------------------------------- a layout by hand
@@ -1096,6 +1127,7 @@ func _drag_end() -> void:
 		return
 	var node := _entry("nodes", dragging)
 	dragging = -1
+	_route_pipes()
 	_say("moved %s — Ctrl+S keeps the layout (%s); Left/Right drops it" % [node.get("name", "?"), _layout_path()], WARN)
 
 
@@ -1185,8 +1217,14 @@ func _draw() -> void:
 		return
 
 	largest_flow = _largest_flow()
+	# The pipes back first, the forward ones over them: where two cross, the
+	# one on top cuts a gap in the other with its dark border (`_draw_pipe`).
 	for edge in snapshot["edges"]:
-		_draw_pipe(edge)
+		if backward.has(int(edge["id"])):
+			_draw_pipe(edge)
+	for edge in snapshot["edges"]:
+		if not backward.has(int(edge["id"])):
+			_draw_pipe(edge)
 	for node in snapshot["nodes"]:
 		if places.has(int(node["id"])):
 			_draw_node(node, places[int(node["id"])])
@@ -1194,12 +1232,10 @@ func _draw() -> void:
 				# What Up/Down move, in a warmer colour; the hover's outline
 				# then sits just inside it, so both read at once and neither
 				# reaches the name under the node.
-				var extent := _extent(_kind(node)) + Vector2(5, 5)
-				draw_rect(Rect2(places[int(node["id"])] - extent, extent * 2.0), WARN, false, 2.0)
+				draw_rect(_box(int(node["id"])).grow(5.0), WARN, false, 2.0)
 			if hovered.get("node", -1) == int(node["id"]):
 				var grow := 2.0 if selected.get("node", -1) == int(node["id"]) else 5.0
-				var extent := _extent(_kind(node)) + Vector2(grow, grow)
-				draw_rect(Rect2(places[int(node["id"])] - extent, extent * 2.0), INK, false, 1.5)
+				draw_rect(_box(int(node["id"])).grow(grow), INK, false, 1.5)
 	_draw_panel(size)
 	_draw_legend(size)
 
@@ -1264,34 +1300,48 @@ func _draw_pipe(edge: Dictionary) -> void:
 			draw_line(at, at + Vector2(cos(angle), sin(angle)) * 26.0, WARN, 2.0)
 		_text(at + Vector2(-30, -34), "%.2f kg/s out" % absf(flow), WARN, 11)
 		return
-	var a: Vector2 = places[from]
-	var b: Vector2 = places[to]
 	var color := _warmth(float(edge["stream"]["temperature"])) if running else IDLE
 	var width := 1.5 + 6.5 * sqrt(absf(flow) / largest_flow) if running else 1.5
 	var path := _pipe_path(edge)
+	# Drawn on into each node, level with its middle, so the pipe meets the
+	# shape drawn over it rather than stopping at the box round it.
+	var drawn := path.duplicate()
+	if path.size() >= 2:
+		drawn[0] = _into(path[0], path[1], places[from])
+		drawn[drawn.size() - 1] = _into(path[path.size() - 1], path[path.size() - 2], places[to])
 	if hovered.get("edge", -1) == int(edge["id"]):
-		draw_polyline(path, INK, width + 6.0)
-	Screen.pipe(self, path, color, width, float(dash_travel.get(int(edge["id"]), 0.0)) if running else NAN)
-	if running:
-		var index := path.size() / 2
-		var start: Vector2 = path[index - 1]
-		var end: Vector2 = path[index]
-		var mid := (start + end) * 0.5
-		var along := (end - start).normalized() * (1.0 if flow > 0.0 else -1.0)
+		draw_polyline(drawn, INK, width + 2.0 * CASING + 4.0)
+		for corner in range(1, drawn.size() - 1):
+			var half := Vector2.ONE * (width * 0.5 + CASING + 2.0)
+			draw_rect(Rect2(drawn[corner] - half, half * 2.0), INK)
+	Screen.pipe(self, drawn, color, width, float(dash_travel.get(int(edge["id"]), 0.0)) if running else NAN, CASING)
+	# A flange where it joins equipment; a junction is a tee in the pipe itself.
+	if path.size() >= 2:
+		if _kind(_entry("nodes", from)) != "junction":
+			_flange(path[0], path[1], color, width)
+		if _kind(_entry("nodes", to)) != "junction":
+			_flange(path[path.size() - 1], path[path.size() - 2], color, width)
+	# On the middle of the pipe's longest run: always on its drawn line (M85).
+	var middle := Route.middle(path)
+	var mid: Vector2 = middle[0]
+	if running and middle[1] != Vector2.ZERO:
+		var along: Vector2 = middle[1] * (1.0 if flow > 0.0 else -1.0)
 		var across := Vector2(-along.y, along.x)
 		draw_colored_polygon(PackedVector2Array([mid + along * 9.0, mid - along * 5.0 + across * 6.0, mid - along * 5.0 - across * 6.0]), color)
-		_text(mid + Vector2(-18, -9), "%.1f" % absf(flow), DIM, 10)
+		# The number above a level run, right of an upright one.
+		var number := "%.1f" % absf(flow)
+		var offset := Vector2(-18, -9) if absf(along.x) > 0.5 else Vector2(8, 4)
+		_text(mid + offset, number, DIM, 10)
 	if float(edge.get("leak_mass_flow", 0.0)) > 0.0:
-		var mid := (a + b) * 0.5
 		for i in 5:
 			var angle := deg_to_rad(60.0 + i * 15.0)
 			draw_line(mid, mid + Vector2(cos(angle), sin(angle)) * 22.0, WARN, 2.0)
 		_text(mid + Vector2(-26, 38), "leak %.2f kg/s" % float(edge["leak_mass_flow"]), WARN, 11)
 
 
-## Where a pipe between two drawn nodes runs: straight from its upstream node
-## to its downstream one, or — back to a node at or left of where it starts (a
-## recycle, a reflux, a pumparound's return) — round underneath, not through.
+## Where a pipe between two drawn nodes runs (M85): its routed corners, at
+## right angles, round the other nodes and their names (`_route_pipes`). While
+## a node is dragged, its own pipes are a quick sketch until it is let go.
 ## Empty for a pipe with an end the map hides. Drawing and the mouse both use
 ## this, so a pipe is found where it is seen.
 func _pipe_path(edge: Dictionary) -> PackedVector2Array:
@@ -1299,12 +1349,131 @@ func _pipe_path(edge: Dictionary) -> PackedVector2Array:
 	var to := int(edge["to"])
 	if not places.has(from) or not places.has(to):
 		return PackedVector2Array()
-	var a: Vector2 = places[from]
-	var b: Vector2 = places[to]
-	if b.x <= a.x + 1.0:
-		var drop := maxf(a.y, b.y) + 46.0 + 5.0 * (int(edge["id"]) % 5)
-		return PackedVector2Array([a, Vector2(a.x, drop), Vector2(b.x, drop), b])
-	return PackedVector2Array([a, b])
+	if dragging >= 0 and (from == dragging or to == dragging) or not routes.has(int(edge["id"])):
+		return Route.sketch(_box(from), _box(to))
+	return routes[int(edge["id"])]
+
+
+## A pipe's end `port` (on its node's box, the pipe running on to `next`)
+## carried back into the node, as far as level with the node's middle `centre`.
+func _into(port: Vector2, next: Vector2, centre: Vector2) -> Vector2:
+	var out := (next - port).normalized()
+	return port - out * maxf(0.0, (port - centre).dot(out))
+
+
+## Where a pipe joins its node (M85): a flange, a short bar across the pipe
+## just outside the box, a little wider than the pipe and outlined dark, so
+## each end shows which node it is on and where on it.
+func _flange(port: Vector2, next: Vector2, color: Color, width: float) -> void:
+	var out := (next - port).normalized()
+	if out == Vector2.ZERO:
+		return
+	var across := Vector2(-out.y, out.x)
+	var half_length := width * 0.5 + 4.0
+	var at := port + out * 3.0
+	var bar := PackedVector2Array([at - across * half_length, at + across * half_length])
+	draw_line(bar[0] - across, bar[1] + across, BACKGROUND, 5.0)
+	draw_line(bar[0], bar[1], color.lightened(0.35), 3.0)
+
+
+## The box a drawn node takes on the page [px]: its kind's size round its
+## place — but a column or a reactor (M85) runs from above its highest
+## neighbour to below its lowest, as a real tower stands taller than what is
+## piped to it, so each draw and return can meet it level, in a straight pipe.
+func _box(id: int) -> Rect2:
+	var node := _entry("nodes", id)
+	var extent := _extent(_kind(node))
+	var box := Rect2(places[id] - extent, extent * 2.0)
+	if not _kind(node) in ["column", "reactor"]:
+		return box
+	var top := box.position.y
+	var bottom := box.end.y
+	for edge in snapshot.get("edges", []):
+		var other := -1
+		if int(edge["from"]) == id:
+			other = int(edge["to"])
+		elif int(edge["to"]) == id:
+			other = int(edge["from"])
+		if other >= 0 and other != id and places.has(other):
+			top = minf(top, places[other].y - TOWER_OVERHANG)
+			bottom = maxf(bottom, places[other].y + TOWER_OVERHANG)
+	top = maxf(top, PLACEABLE.position.y)
+	bottom = minf(bottom, TOWER_FLOOR)
+	return Rect2(box.position.x, top, box.size.x, maxf(bottom - top, extent.y * 2.0))
+
+
+## How far under a node's place its name is written [px] (its reading 13 px
+## under that): under the box, however tall a tower has grown.
+func _label_y(node: Dictionary) -> float:
+	var type := _kind(node)
+	if type in ["column", "reactor"]:
+		var id := int(node["id"])
+		return _box(id).end.y - places[id].y + 16.0
+	return _label_offset(type)
+
+
+## Every drawn pipe routed (demo/route.gd), the forward ones first, the
+## shortest first among them, so a plant's main line gets the straight runs
+## and the recycles take the lanes round the outside.
+func _route_pipes() -> void:
+	routes = {}
+	backward = {}
+	var boxes := {}
+	var labels: Array = []
+	for node in snapshot.get("nodes", []):
+		var id := int(node["id"])
+		if not places.has(id):
+			continue
+		boxes[id] = _box(id)
+		labels.append_array(_label_boxes(node, places[id]))
+	var keyed: Array = []
+	for edge in snapshot.get("edges", []):
+		var from := int(edge["from"])
+		var to := int(edge["to"])
+		if not boxes.has(from) or not boxes.has(to) or from == to:
+			continue
+		var a: Vector2 = places[from]
+		var b: Vector2 = places[to]
+		var back := b.x <= a.x + 1.0
+		if back:
+			backward[int(edge["id"])] = true
+		keyed.append([1 if back else 0, absf(b.x - a.x) + absf(b.y - a.y), int(edge["id"]), from, to])
+	keyed.sort()
+	var pipes: Array = keyed.map(func(k): return [k[2], k[3], k[4]])
+	routes = Route.route(boxes, labels, pipes, ROUTED)
+
+
+## Where a node's name and its reading are written under it: the boxes a pipe
+## keeps off where it can, each [node id, Rect2]. The reading's width is a guess (it changes as the
+## plant runs); the name's is measured.
+func _label_boxes(node: Dictionary, at: Vector2) -> Array:
+	var name := str(node["name"])
+	if _kind(node) == "junction" and name.ends_with("__leak_point"):
+		return []
+	var font := ThemeDB.fallback_font
+	var y := at.y + _label_y(node)
+	var name_width := font.get_string_size(name.replace("_", " "), HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
+	var reading_width := 100.0
+	var id := int(node["id"])
+	return [
+		[id, Rect2(at.x - name_width * 0.5 - 2.0, y - 11.0, name_width + 4.0, 14.0)],
+		[id, Rect2(at.x - reading_width * 0.5, y + 3.0, reading_width, 13.0)],
+	]
+
+
+## How far under a node of `type` its name is written [px]; its reading 13 px
+## under that. A tower's depends on how tall it is drawn (`_label_y`).
+func _label_offset(type: String) -> float:
+	match type:
+		"tank", "vessel":
+			return 34.0
+		"valve", "relief_valve", "check_valve":
+			return 24.0
+		"junction":
+			return 18.0
+		"furnace":
+			return 38.0
+	return 30.0
 
 
 ## Half the width and height a node of `type` is drawn [px]: what the mouse
@@ -1337,11 +1506,11 @@ func _hit(point: Vector2) -> Dictionary:
 		var id := int(node["id"])
 		if not places.has(id):
 			continue
-		var offset: Vector2 = (point - places[id]).abs()
-		var extent := _extent(_kind(node))
-		if offset.x <= extent.x and offset.y <= extent.y and offset.length() < best_distance:
+		var box := _box(id)
+		var distance := point.distance_to(box.get_center())
+		if box.grow(0.5).has_point(point) and distance < best_distance:
 			best = {"node": id}
-			best_distance = offset.length()
+			best_distance = distance
 	if not best.is_empty():
 		return best
 	for edge in snapshot.get("edges", []):
@@ -1354,8 +1523,8 @@ func _hit(point: Vector2) -> Dictionary:
 	return best
 
 
-## `--hover=<name>`: the named node's place, or the middle of the named pipe's
-## middle run, sent through `_hit` as the mouse's would be.
+## `--hover=<name>`: the named node's place, or the middle of the named
+## pipe's longest run, sent through `_hit` as the mouse's would be.
 func _hover_named(wanted: String) -> void:
 	for node in snapshot["nodes"]:
 		if str(node["name"]) == wanted and places.has(int(node["id"])):
@@ -1364,8 +1533,7 @@ func _hover_named(wanted: String) -> void:
 	for edge in snapshot["edges"]:
 		var path := _pipe_path(edge)
 		if str(edge["name"]) == wanted and path.size() >= 2:
-			var index := path.size() / 2
-			hovered = _hit((path[index - 1] + path[index]) * 0.5)
+			hovered = _hit(Route.middle(path)[0])
 			return
 	print("map: --hover=%s names no drawn node or pipe" % wanted)
 
@@ -1377,7 +1545,9 @@ func _draw_node(node: Dictionary, at: Vector2) -> void:
 	var type := _kind(node)
 	var label := str(node["name"])
 	var reading := "%.2f bar  %.0f °C" % [float(node["pressure_pa"]) / 1.0e5, float(node["temperature_k"]) - 273.15]
-	var label_y := 30.0
+	var label_y := _label_y(node)
+	# Where a fire's flames stand: over the node (a tower's top, not its middle).
+	var top_y := at.y - label_y
 	match type:
 		"source", "sink":
 			draw_circle(at, 11, COOL if type == "source" else BODY)
@@ -1391,7 +1561,6 @@ func _draw_node(node: Dictionary, at: Vector2) -> void:
 			draw_rect(rect, SHELL, false, 2.0)
 			if type == "tank":
 				reading = "%.0f %%  %.0f °C" % [level * 100.0, float(node["temperature_k"]) - 273.15]
-			label_y = 34.0
 		"pump":
 			var on := bool(kind.get("on", true))
 			draw_circle(at, 12, GOOD.darkened(0.4) if on else BODY)
@@ -1406,13 +1575,11 @@ func _draw_node(node: Dictionary, at: Vector2) -> void:
 			draw_colored_polygon(PackedVector2Array([at, at + Vector2(-11, -8), at + Vector2(-11, 8)]), color)
 			draw_colored_polygon(PackedVector2Array([at, at + Vector2(11, -8), at + Vector2(11, 8)]), color)
 			reading = "%.0f %% open" % (opening * 100.0) if type == "valve" else type.replace("_", " ")
-			label_y = 24.0
 		"junction":
 			draw_circle(at, 3.5, SHELL)
 			# A punctureable pipe's midpoint is plumbing, not equipment.
 			if label.ends_with("__leak_point"):
 				return
-			label_y = 18.0
 		"furnace":
 			var rect := Rect2(at - Vector2(22, 22), Vector2(44, 44))
 			draw_rect(rect, BODY)
@@ -1423,7 +1590,6 @@ func _draw_node(node: Dictionary, at: Vector2) -> void:
 					var x := at.x - 12.0 + i * 12.0
 					draw_colored_polygon(PackedVector2Array([Vector2(x - 5, rect.end.y - 2), Vector2(x, rect.end.y - 24), Vector2(x + 5, rect.end.y - 2)]), FLAME)
 			reading = "%.1f MW  out %.0f °C" % [duty / 1.0e6, float(node["temperature_k"]) - 273.15]
-			label_y = 38.0
 		"cooler", "water_cooler", "heat_exchanger", "coil_cell":
 			draw_circle(at, 13, BODY)
 			draw_arc(at, 13, 0.0, TAU, 32, COOL, 2.0)
@@ -1433,14 +1599,16 @@ func _draw_node(node: Dictionary, at: Vector2) -> void:
 			if kind.has("duty"):
 				reading = "%.1f MW off  %.0f °C" % [float(kind["duty"]) / 1.0e6, float(node["temperature_k"]) - 273.15]
 		"column", "reactor":
-			var rect := Rect2(at - Vector2(18, 60), Vector2(36, 120))
+			var rect := _box(int(node["id"]))
+			top_y = rect.position.y - 16.0
 			draw_rect(rect, _warmth(float(node["temperature_k"])).darkened(0.35))
 			if type == "column":
-				for i in 5:
-					var y := rect.position.y + rect.size.y * (i + 1) / 6.0
+				# A tray line every ~20 px, however tall it is drawn.
+				var trays := maxi(5, roundi(rect.size.y / 20.0) - 1)
+				for i in trays:
+					var y := rect.position.y + rect.size.y * (i + 1) / (trays + 1.0)
 					draw_line(Vector2(rect.position.x + 4, y), Vector2(rect.end.x - 4, y), SHELL, 1.0)
 			draw_rect(rect, SHELL, false, 2.5)
-			label_y = 76.0
 		_:
 			draw_rect(Rect2(at - Vector2(14, 14), Vector2(28, 28)), BODY)
 			draw_rect(Rect2(at - Vector2(14, 14), Vector2(28, 28)), SHELL, false, 2.0)
@@ -1449,7 +1617,7 @@ func _draw_node(node: Dictionary, at: Vector2) -> void:
 		# A fire on the node: the engine's own heat source (CLAUDE.md, damage).
 		for i in 3:
 			var x := at.x - 14.0 + i * 14.0
-			draw_colored_polygon(PackedVector2Array([Vector2(x - 7, at.y - label_y + 6), Vector2(x, at.y - label_y - 18), Vector2(x + 7, at.y - label_y + 6)]), FLAME)
+			draw_colored_polygon(PackedVector2Array([Vector2(x - 7, top_y + 6), Vector2(x, top_y - 18), Vector2(x + 7, top_y + 6)]), FLAME)
 	_centred(at + Vector2(0, label_y), label.replace("_", " "), INK, 11)
 	_centred(at + Vector2(0, label_y + 13), reading, DIM, 10)
 

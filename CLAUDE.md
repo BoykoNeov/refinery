@@ -203,7 +203,7 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none open** — the user picks the next (C30's base side is still open; `docs/plans/` lists the review's plans; the user's aim, 2026-11-19: one complex plant that shows a fault spreading — next would be a screen finding its unit inside a bigger plant, and a plant joining the units).
+Work only on the current milestone unless asked. **Current: M85 (open, paused 2026-11-20)** — the map's pipes at right angles, crossings with a gap, a flange at each end, towers as tall as what is piped to them; first commit landed, what is left is at the end of its `docs/ROADMAP.md` section (look at all 72 plants, hand layouts for the crowded ones, crude_unit_steam first). After it, the user picks the next (C30's base side is still open; `docs/plans/` lists the review's plans; the user's aim, 2026-11-19: one complex plant that shows a fault spreading — next would be a screen finding its unit inside a bigger plant, and a plant joining the units).
 **Latest closed: M84 (2026-11-20)**: one running plant behind every screen — `demo/running.gd` holds the simulator; Enter on the map opens the screen that draws the running plant, as it stands, and Enter there comes back. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
