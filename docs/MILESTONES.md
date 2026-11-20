@@ -12,6 +12,38 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M85 is CLOSED (2026-11-20): the map's pipes read — right angles,
+crossings with a gap, a flange at each end, towers as tall as what is piped
+to them.** Asked by the user (2026-11-20): make clear which line is
+which where pipes cross, run them straight and at right angles as in a real
+plant, and mark where each pipe starts and ends; the style left to us.
+No Rust; the hand-drawn unit screens already drew right angles, untouched.
+- **`demo/route.gd`** (new) routes every pipe at right angles: out of a
+  node's side through a short stub, straight, one corner or a Z through a
+  channel tried every 10 px, priced by length and bends and dearly for
+  running through a node, a name or along another pipe; ports spread along
+  a shared side; one more round re-lays any pipe that meets something.
+  ~0.2 s at load on the largest plant.
+- **`demo/map.gd`**: every pipe has a dark border, so the one on top cuts a
+  gap where two cross; a flange where a pipe meets equipment (none on a
+  junction); arrow and number on the longest straight run; a column or
+  reactor drawn as tall as what is piped to it (the user liked it).
+- **Layouts**: all 72 plants screenshotted (38 looked at by eye, the other
+  34 one straight row). Hand layouts added or redone for the crowded crude
+  units (steam, boiling, wet, wetter, empty; stripped and cold touched up),
+  the hydrogen loops (hydrogen, leak, makeup, wall, quench), the quench
+  hydrocracker (a staircase before) and the twin relief vessels — 24 layout
+  files now, up from 15.
+- **Checked**: `map --auto` 72 plants, 0 stopped, no stale layout file;
+  `--hands` on `crude_unit_loops` and the `--enter=40,120,200` hand-over
+  print the same lines as before the routing (timings masked).
+  **Left as is**: one hop into the mix junction on
+  `hydrocracker_hydrogen_quench`; the furnace coil's cells still zig-zag
+  (it reads as a coil). **Not run**: dragging a node by hand in a live
+  window since the routing.
+
+---
+
 **M84 is CLOSED (2026-11-20): one running plant behind every screen
 (`docs/plans/plant-map-screen.md` slice 4).** Asked as "what is next" after
 M83; the user took the furnace's trip-name fix first, then option (a), one

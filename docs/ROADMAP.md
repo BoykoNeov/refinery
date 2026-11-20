@@ -11769,7 +11769,7 @@ crude unit's furnace), and a plant that joins the units.
 
 **M84 CLOSED** (2026-11-20; `docs/MILESTONES.md`).
 
-## M85 — the map's pipes read: right angles, crossings with a gap, a flange at each end; OPEN (paused 2026-11-20, next session carries on)
+## M85 — the map's pipes read: right angles, crossings with a gap, a flange at each end; CLOSED 2026-11-20
 
 Asked by the user (2026-11-20): where pipes cross, make clear which line is
 which; pipes at straight lines and right angles, as in a real plant; then
@@ -11803,10 +11803,35 @@ crude_unit_loops and the `--enter=40,120,200` hand-over print the same lines
 as before the change (timings masked). Screenshots looked at: crude_unit,
 crude_unit_loops, fcc_plant, pump_gas_lock, crude_unit_steam.
 
-**Left for the next session**:
-- Look at all 72 plants on the map (screenshot each:
-  `godot --path . res://demo/map.tscn --quit-after 400 -- --plant=<stem> --shot=W:/temp/claude/<task>/<stem>.png`).
-- Hand layouts for the crowded plants that have none — crude_unit_steam first:
-  its computed layout puts nodes on each other's names (not the routing's doing).
-- Check the other 14 layout files still read well with the taller towers.
-- Then close M85 (box in MILESTONES, this section, CLAUDE.md line).
+**Second commit** (layouts only, no code): all 72 plants screenshotted on the
+map; 38 looked at by eye, the other 34 are one straight row of nodes (checked
+from their computed places — nothing to cross). Hand layouts where it read
+badly, each tried in a scratch `--layout-dir` first:
+- `crude_unit_steam`, `_boiling`, `_wet`, `_wetter` (had none: names on
+  names) from `crude_unit_stripped`'s layout; in all of them and in
+  `_stripped` and `_cold`, the sour water tank goes left of the column (its
+  name sat on the naphtha line) and the transfer line's leak point low
+  (y 548), so the column reaches down to it and the feed meets the column's
+  side instead of climbing through its name.
+- `crude_unit_empty` (had none) = `crude_unit_loops`' layout (same nodes).
+- `hydrocracker_hydrogen_wall` levelled (heater, pass and gas cooler were at
+  the old half-step); `hydrocracker_hydrogen`, `_hydrogen_leak`, `_makeup`
+  (had none) from it; the gas cooler lowered to y 400 in all four, so the
+  recycle runs out of the cooler's side and reads as a rectangle.
+- `hydrocracker_hydrogen_quench`: loop row respaced on the 10 px grid, the
+  separator row lowered to 470 so the return runs between the rows (it took
+  the long way under, through the separator's name). One hop is left, into
+  the mix junction.
+- `hydrocracker_quench` redone: it was a diagonal staircase (every pipe a Z);
+  now the feed, both beds and the cooler in one row, down the right to the
+  drum, the quench line back left and straight up into `mix`.
+- `relief_twin_vessels` (had none): `psv2` beside the flare, not above it,
+  so its outlet does not run down through its own name.
+
+**Verified**: `map --auto` — 72 plants, 0 stopped, no stale layout file; the
+changed plants re-screenshotted from `demo/layout` and looked at.
+
+**Learned**: a pipe dropped out of a node's bottom runs through that node's
+name (names sit under nodes); lay a chain so its pipes leave by a side.
+Positions off the 10 px channel grid, or two nodes ~50 px apart, can turn a
+straight run into a hop — space level neighbours ~60 px or more.
