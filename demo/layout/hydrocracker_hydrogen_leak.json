@@ -1,0 +1,22 @@
+{
+	"bed": [233, 220],
+	"compressor": [315, 330],
+	"cw_return": [760, 130],
+	"cw_side": [660, 130],
+	"cw_supply": [560, 130],
+	"feed_valve": [152, 220],
+	"flare": [397, 440],
+	"gas_cooler": [800, 400],
+	"gas_heater": [478, 330],
+	"loop_valve": [397, 330],
+	"makeup": [70, 440],
+	"makeup_valve": [152, 440],
+	"pass": [642, 330],
+	"product": [397, 220],
+	"product_line__leak_point": [315, 220],
+	"reactor_gas_line__leak_point": [560, 330],
+	"reactor_gas_outlet__leak_point": [723, 330],
+	"separator": [233, 440],
+	"vent_valve": [315, 440],
+	"vgo_feed": [70, 220]
+}
