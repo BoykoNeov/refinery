@@ -30,6 +30,12 @@
 # Deterministic: the same boxes and pipes give the same corners, every load
 # (the candidates are generated and compared in a fixed order, ties kept by
 # who came first).
+#
+# CHANGING THIS FILE? The hand layouts in demo/layout/ were tuned against it
+# as it stands (M85): nodes nudged until their pipes ran straight, and a few
+# px either way could turn a straight run into a hop. No test sees an ugly
+# pipe — `map --auto` only checks every plant loads and runs. After any change
+# here, screenshot every plant (the `--shot=` line in CLAUDE.md) and look.
 extends RefCounted
 
 ## A port's stub: how far a pipe runs straight out of a side before it may turn [px].
