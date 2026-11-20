@@ -11804,14 +11804,14 @@ as before the change (timings masked). Screenshots looked at: crude_unit,
 crude_unit_loops, fcc_plant, pump_gas_lock, crude_unit_steam.
 
 **Second commit** (layouts only, no code): all 72 plants screenshotted on the
-map; 38 looked at by eye, the other 34 are one straight row of nodes (checked
-from their computed places — nothing to cross). Hand layouts where it read
-badly, each tried in a scratch `--layout-dir` first:
+map and every one looked at (the changed plants in their final layout).
+Hand layouts where it read badly, each tried in a scratch `--layout-dir`
+first:
 - `crude_unit_steam`, `_boiling`, `_wet`, `_wetter` (had none: names on
-  names) from `crude_unit_stripped`'s layout; in all of them and in
-  `_stripped` and `_cold`, the sour water tank goes left of the column (its
-  name sat on the naphtha line) and the transfer line's leak point low
-  (y 548), so the column reaches down to it and the feed meets the column's
+  names) from `crude_unit_stripped`'s layout; in these and in `_stripped`
+  and `_cold`, the sour water tank goes left of the column (its name sat on
+  the naphtha line; `_boiling` has none) and the transfer line's leak point
+  low (y 548), so the column reaches down to it and the feed meets the column's
   side instead of climbing through its name.
 - `crude_unit_empty` (had none) = `crude_unit_loops`' layout (same nodes).
 - `hydrocracker_hydrogen_wall` levelled (heater, pass and gas cooler were at

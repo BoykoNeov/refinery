@@ -28,8 +28,7 @@ No Rust; the hand-drawn unit screens already drew right angles, untouched.
   gap where two cross; a flange where a pipe meets equipment (none on a
   junction); arrow and number on the longest straight run; a column or
   reactor drawn as tall as what is piped to it (the user liked it).
-- **Layouts**: all 72 plants screenshotted (38 looked at by eye, the other
-  34 one straight row). Hand layouts added or redone for the crowded crude
+- **Layouts**: all 72 plants screenshotted and looked at. Hand layouts added or redone for the crowded crude
   units (steam, boiling, wet, wetter, empty; stripped and cold touched up),
   the hydrogen loops (hydrogen, leak, makeup, wall, quench), the quench
   hydrocracker (a staircase before) and the twin relief vessels — 24 layout
