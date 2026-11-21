@@ -49,6 +49,14 @@ criterion = "0.5"
 [profile.release]
 lto = "thin"
 
+# Debug info cut to file and line numbers: panics and backtraces still name
+# the source line, but the full variable/type tables (most of the .pdb files
+# on Windows, tens of GB of `target/` over time) are dropped. The `test` and
+# `godot` profiles inherit this from `dev`. Code generation is unchanged, so
+# every result is the same number.
+[profile.dev]
+debug = "line-tables-only"
+
 # Property tests and Newton iterations are slow in debug; optimize deps.
 [profile.dev.package."*"]
 opt-level = 2
