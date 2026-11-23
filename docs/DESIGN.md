@@ -32644,6 +32644,11 @@ cooler). At full lift (Kv 400, band 0.015 bar) the valve's inlet and the
 cooler stand where a hand march puts them, to 1e-9: the pump's curve less
 the line's friction, then `(ρ_rel/Cv² + k)·Q²` (ISA-75.01, Darcy–Weisbach),
 2.9–8.7 kPa across the disc; and every draw is the plain plant's to the bit.
+The same on the boiling crude unit (the line flash on), each edge at its
+upstream pressure's density, to 1e-9 — but there the product is far from
+boiling at the disc (about 6 bar after the pump), so a disc whose product
+flashes through it, the case the doubling bracket exists for, is still
+untested.
 Inside the band (Kv 2000, band 0.3 bar) the disc sits 13–20 % up and its
 drive is the root `S = (ρ_rel/(Cv·φ(S))² + k)·Q²`, to 1e-9. A stopped
 kerosene pump under a raised tank behind its check valve, half of the 40 m
@@ -32651,7 +32656,8 @@ climbed in the pipe right after the disc, delivers nothing, no pipe of its
 line running back, the diesel taking its share; the shut disc holds that
 pipe's `ρ·g·Δz` exactly, at the kerosene the line held a tick before (the
 stop changes what the column draws there, 804.8 → 793.1 kg/m³, and a line
-is read a tick late, §67.13); restarted, released. 72 of 72 plants
+is read a tick late, §67.13); restarted, released — on both solvers (the game solver marches its lines
+through the same `march_draw_lines`). 72 of 72 plants
 byte-identical on both solvers. Mutation pass, five mutants, all killed:
 the band skipped (always full lift); the static head dropped at no flow
 (killed only once the disc's outlet pipe climbs — a flat metre hides it);

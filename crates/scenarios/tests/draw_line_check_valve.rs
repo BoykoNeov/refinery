@@ -13,6 +13,7 @@ use crate::product_line_reference::{
 };
 use crate::short_draw_line::{flow, needs_pump, set_pump, shares, tick, worst_imbalance};
 use refinery_core::graph::NodeKind;
+use refinery_core::snapshot::EdgeSnapshot;
 use refinery_core::traits::STOPPED_DRAW_SHARE;
 use refinery_core::units::G;
 use refinery_core::Engine;
@@ -70,15 +71,22 @@ fn disc(engine: &Engine, product: &str) -> (f64, f64) {
     }
 }
 
-/// The check valve's inlet, by hand from the column: the suction's friction
-/// and fall to the pump, its curve, the discharge's friction (as
-/// `a_product_line_stands_where_its_march_puts_it` checks), at the draw's last
-/// flow `mass_flow` [kg/s] and density `rho` [kg/m³].
-fn check_inlet(engine: &Engine, product: &str, rho: f64, mass_flow: f64) -> f64 {
-    let pump = 1.8e5 - pipe_drop(engine, &format!("{product}_suction"), rho, mass_flow);
+/// The check valve's inlet [Pa] and the density there [kg/m³], by hand from
+/// the column: the suction's friction and fall to the pump, its curve, the
+/// discharge's friction (as `a_product_line_stands_where_its_march_puts_it`
+/// checks), at the draw's last flow `mass_flow` [kg/s], each edge at the
+/// density `drawn` flows at at its upstream end — a liquid's everywhere, or
+/// the line flash's mixture where it boils there.
+fn check_inlet(engine: &Engine, product: &str, drawn: &EdgeSnapshot, mass_flow: f64) -> (f64, f64) {
+    let slate = &engine.slate;
+    let column = 1.8e5;
+    let rho = density(slate, engine, drawn, column);
+    let pump = column - pipe_drop(engine, &format!("{product}_suction"), rho, mass_flow);
+    let rho = density(slate, engine, drawn, pump);
     let q = mass_flow / rho;
     let rise = rho * G * (PUMP_HEAD_M - PUMP_A * q * q.abs());
-    pump + rise - pipe_drop(engine, &format!("{product}_discharge"), rho, mass_flow)
+    let inlet = pump + rise - pipe_drop(engine, &format!("{product}_discharge"), rho, mass_flow);
+    (inlet, density(slate, engine, drawn, inlet))
 }
 
 /// **A check valve on a product line stands where its march puts it, at full
@@ -90,10 +98,22 @@ fn check_inlet(engine: &Engine, product: &str, rho: f64, mass_flow: f64) -> f64 
 /// its lines' pressures while they deliver.
 #[test]
 fn a_check_valve_on_a_product_line_stands_where_its_march_puts_it() {
-    let plain = crude_unit_lines(false);
+    full_lift(false);
+}
+
+/// **The same on a plant that boils** (the line flash on, M53): each edge of
+/// the line at the density its draw flows at at that edge's upstream
+/// pressure — the disc's compile at its inlet's, shut and lifting — to the
+/// same tolerance.
+#[test]
+fn a_check_valve_on_a_boiling_plant_stands_where_its_march_puts_it() {
+    full_lift(true);
+}
+
+fn full_lift(flashing: bool) {
+    let plain = crude_unit_lines(flashing);
     let mut engine = build(&with_check_valves(&plain, &ALL, 400.0, 0.015)).unwrap();
     let mut without = build(&plain).unwrap();
-    let slate = engine.slate.clone();
     const TOLERANCE: f64 = 1e-9;
     run(&mut engine, 150);
     run(&mut without, 150);
@@ -104,12 +124,15 @@ fn a_check_valve_on_a_product_line_stands_where_its_march_puts_it() {
     let other = without.snapshot();
     for (product, _, _) in LINES {
         let suction = format!("{product}_suction");
-        // The march reads the draw as the previous tick left it, flow and
-        // composition both: on this plant the gas oil's is still moving at
-        // tick 150, by 1e-8 of its density a tick.
+        // The draw's LAST flow, the previous tick's. Its state: on the plant
+        // that does not boil, as the previous tick left it (on this plant
+        // the gas oil's is still moving at tick 150, by 1e-8 of its density
+        // a tick); on the boiling plant, this tick's own sweep, which it
+        // re-solves on (M55.0) — `a_product_line_stands_where_its_march_puts_it`'s
+        // reading.
         let mass_flow = edge(&before, &suction).stream.mass_flow.value();
-        let rho = density(&slate, &engine, edge(&before, &suction), 1.8e5);
-        let inlet = check_inlet(&engine, product, rho, mass_flow);
+        let drawn = edge(if flashing { &now } else { &before }, &suction);
+        let (inlet, rho) = check_inlet(&engine, product, drawn, mass_flow);
         let published = node(&now, &format!("{product}_check")).pressure_pa;
         assert!(
             (published - inlet).abs() < TOLERANCE * inlet,
@@ -197,15 +220,27 @@ fn a_disc_inside_its_band_reads_its_lift_off_its_own_drive() {
 /// no flow would let the line reach its tank. Stopped, the line delivers
 /// nothing — the disc shut, no pipe of it running backwards — and the diesel
 /// takes the kerosene's share, every component's books closing at the
-/// column; started, the kerosene takes its share again.
+/// column; started, the kerosene takes its share again. On the Newton solver.
 #[test]
 fn a_stopped_pump_behind_a_check_valve_stops_its_product() {
-    let src = with_check_valves(
-        &needs_pump(&crude_unit_lines(false), "kerosene"),
-        &ALL,
-        400.0,
-        0.015,
+    stopped_pump("newton");
+}
+
+/// **The same on the game solver** (`flow = "simple"`): it marches its
+/// lines through the same `march_draw_lines`.
+#[test]
+fn a_stopped_pump_behind_a_check_valve_stops_its_product_on_the_game_solver() {
+    stopped_pump("simple");
+}
+
+fn stopped_pump(solver: &str) {
+    let plain = crude_unit_lines(false);
+    let chosen = plain.replace("flow = \"newton\"", &format!("flow = \"{solver}\""));
+    assert!(
+        solver == "newton" || chosen != plain,
+        "the solver was not swapped"
     );
+    let src = with_check_valves(&needs_pump(&chosen, "kerosene"), &ALL, 400.0, 0.015);
     let rundown =
         "to = \"kerosene_tank\"\nlength_m = 100.0\ndiameter_m = 0.15\nelevation_change_m = 40";
     let outlet = "name = \"kerosene_check_outlet\"\nfrom = \"kerosene_check\"\nto = \"kerosene_cooler\"\nlength_m = 1.0\ndiameter_m = 0.15";
