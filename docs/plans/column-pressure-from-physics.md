@@ -183,6 +183,12 @@ overfill plant's numbers. Put the answers to the user before any slice.
 
 ## 5. Forks: ask the user, in plain words, then wait
 
+**ANSWERED by the user, 2026-11-23:** A (i), a `[fidelity]` key with a CLI
+override; B yes, the pressure may fall below the setpoint; C as recommended,
+Level 1b first, then the probe 2.0, then decide (leaning to the gas-only
+vent); D new plant files only ("no point implementing something where it
+won't be used"). The text below is kept as it was put.
+
 **A. How a level is switched.** Two ways:
 - (i) A key under `[fidelity]`, e.g. `column_pressure = "held" | "limit" |
   "controlled"`, backed by a trait in `core` with its implementations in
@@ -235,7 +241,7 @@ which CLAUDE.md requires anyway.
 
 ## Checklist
 
-- [ ] Forks A–D answered by the user
+- [x] Forks A–D answered by the user (2026-11-23, §5)
 - [ ] 1b.1 the controller
 - [ ] 1b.2 the cooling water
 - [ ] 1b.3 the plant, the screen key, the measured table
