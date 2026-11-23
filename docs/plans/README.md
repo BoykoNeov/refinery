@@ -23,6 +23,7 @@ change and no decision.
 | 5 | [plant-map-screen.md](plant-map-screen.md) — slices 1–4 DONE (M78, M79, M81, M84; M80 takes a loop's valve by hand) | `demo/map.gd`, every screen | a day per slice | — |
 | 6 | [screen-kit.md](screen-kit.md) — steps 0–6 DONE (M82); flow dashes and trend chart DONE (M83) | `demo/*.gd` | two days | no |
 | 7 | [objectives-and-alarms.md](objectives-and-alarms.md) — ANSWERED 2026-11-19: a sandbox now (A), an operator's game later (B), a builder's much later (C) | everything | — | B's pieces when the user opens them |
+| 8 | [column-pressure-from-physics.md](column-pressure-from-physics.md) — asked 2026-11-23: the column's pressure a state held by a controller, levels switchable | `core`, `solvers`, a new plant | several milestones | yes, forks A–D |
 
 ## Rules for whoever carries one out
 
