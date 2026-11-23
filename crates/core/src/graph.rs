@@ -779,10 +779,11 @@ pub struct ColumnDraw {
     /// specification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draw_ratio: Option<f64>,
-    /// The draw's LINE when it runs through pumps and coolers to its store
-    /// (M62.4b, docs/DESIGN.md §67.13): its pipes in order from the column,
-    /// every one carrying the draw. Empty — and absent from the wire — on a
-    /// draw whose `outlet` is its store, which keeps its single pipe.
+    /// The draw's LINE when it runs through pumps, coolers and check valves
+    /// (M86.3) to its store (M62.4b, docs/DESIGN.md §67.13, §84.3): its pipes
+    /// in order from the column, every one carrying the draw. Empty — and
+    /// absent from the wire — on a draw whose `outlet` is its store, which
+    /// keeps its single pipe.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub line: Vec<EdgeId>,
     /// The condenser's WATER draw (M62.5, docs/DESIGN.md §67.17): the free
@@ -3134,10 +3135,11 @@ impl PlantGraph {
         })
     }
 
-    /// Every column draw that runs through a LINE of pumps and coolers to its
-    /// store (M62.4b, docs/DESIGN.md §67.13): the column, the draw's index on
-    /// it, and the line's pipes in order from the column. Ascending by column,
-    /// then by draw; empty on every plant whose draws end at their stores.
+    /// Every column draw that runs through a LINE of pumps, coolers and check
+    /// valves to its store (M62.4b, M86.3; docs/DESIGN.md §67.13, §84.3): the
+    /// column, the draw's index on it, and the line's pipes in order from the
+    /// column. Ascending by column, then by draw; empty on every plant whose
+    /// draws end at their stores.
     pub fn draw_lines(&self) -> Vec<(NodeId, usize, &[EdgeId])> {
         let mut lines = Vec::new();
         for id in self.node_ids() {

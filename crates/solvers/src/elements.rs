@@ -353,6 +353,13 @@ impl QuadraticBranch {
         }
     }
 
+    /// The branch's pressure drop [Pa] at volumetric flow `q` [m³/s]: its own
+    /// law, `Δp = alpha·Q·|Q| + beta` — `flow`'s inverse, exactly.
+    #[inline]
+    pub fn drop_at(&self, q: f64) -> f64 {
+        self.alpha * q * q.abs() + self.beta
+    }
+
     /// Volumetric flow from branch pressure drop, C¹-smooth through zero.
     /// Invert `dp − beta = alpha·Q·|Q|` ⇒
     /// `Q = smooth_signed_sqrt(dp − beta, eps)/sqrt(alpha)`.

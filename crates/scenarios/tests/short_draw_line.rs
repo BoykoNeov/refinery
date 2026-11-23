@@ -21,7 +21,7 @@ const OIL: [&str; 5] = ["naphtha", "kerosene", "diesel", "gas_oil", "residue"];
 /// `src` with `product`'s tank 40 m above its cooler, not 15: only its pump
 /// lifts the product there, so with the pump stopped its line delivers
 /// nothing.
-fn needs_pump(src: &str, product: &str) -> String {
+pub(crate) fn needs_pump(src: &str, product: &str) -> String {
     let old = format!(
         "name = \"{product}_rundown\"\nfrom = \"{product}_cooler\"\nto = \"{product}_tank\"\n\
          length_m = 100.0\ndiameter_m = 0.15\nelevation_change_m = 15"
@@ -34,7 +34,7 @@ fn needs_pump(src: &str, product: &str) -> String {
     )
 }
 
-fn tick(engine: &mut Engine, ticks: u32) -> Snapshot {
+pub(crate) fn tick(engine: &mut Engine, ticks: u32) -> Snapshot {
     for t in 1..=ticks {
         engine
             .tick()
@@ -43,7 +43,7 @@ fn tick(engine: &mut Engine, ticks: u32) -> Snapshot {
     engine.snapshot()
 }
 
-fn set_pump(engine: &mut Engine, product: &str, on: bool) {
+pub(crate) fn set_pump(engine: &mut Engine, product: &str, on: bool) {
     let node = engine
         .graph
         .find_node(&format!("{product}_pump"))
@@ -51,7 +51,7 @@ fn set_pump(engine: &mut Engine, product: &str, on: bool) {
     engine.apply(Command::SetPumpOn { node, on }).unwrap();
 }
 
-fn flow(s: &Snapshot, name: &str) -> f64 {
+pub(crate) fn flow(s: &Snapshot, name: &str) -> f64 {
     s.edges
         .iter()
         .find(|e| e.name == name)
@@ -72,7 +72,7 @@ fn oil_fed(engine: &Engine, s: &Snapshot) -> f64 {
 }
 
 /// Each oil draw's share of the oil fed [-].
-fn shares(engine: &Engine, s: &Snapshot) -> Vec<f64> {
+pub(crate) fn shares(engine: &Engine, s: &Snapshot) -> Vec<f64> {
     let oil = oil_fed(engine, s);
     OIL.iter()
         .map(|p| flow(s, &format!("{p}_suction")) / oil)
@@ -81,7 +81,7 @@ fn shares(engine: &Engine, s: &Snapshot) -> Vec<f64> {
 
 /// The column's worst per-component imbalance, a share of its feed [-]: a
 /// column that holds no liquid sends out what comes in, every component.
-fn worst_imbalance(engine: &Engine, s: &Snapshot) -> f64 {
+pub(crate) fn worst_imbalance(engine: &Engine, s: &Snapshot) -> f64 {
     let into: Vec<&str> = vec!["transfer_line"];
     let mut out: Vec<String> = OIL.iter().map(|p| format!("{p}_suction")).collect();
     if s.edges.iter().any(|e| e.name == "water_draw") {

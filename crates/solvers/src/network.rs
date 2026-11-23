@@ -4910,7 +4910,7 @@ fn march_line(
     for (k, &eid) in line.iter().enumerate() {
         let (src, tgt) = graph.endpoints(eid);
         let pipe = graph.pipe(eid);
-        let (rho, branch, pump) = if k == 0 {
+        let drop = if k == 0 {
             // The draw itself: its separation's composition and temperature.
             let (composition, temperature) =
                 drawn_state(graph, previous_states, eid).ok_or_else(|| {
@@ -4928,8 +4928,18 @@ fn march_line(
                 pipe.diameter.value(),
                 rho,
             );
-            let branch = QuadraticBranch::pipe(k_pipe, rho * G * pipe.elevation_change.value());
-            (rho, branch, None)
+            QuadraticBranch::pipe(k_pipe, rho * G * pipe.elevation_change.value())
+                .drop_at(mass_flow / rho)
+        } else if let NodeKind::CheckValve { full_open, .. } = &graph.node(src).kind {
+            check_valve_drop(
+                graph,
+                slate,
+                previous_states,
+                flash,
+                eid,
+                (here, mass_flow),
+                full_open.value(),
+            )?
         } else {
             let pressures = BTreeMap::from([(src, here), (tgt, here)]);
             let compiled = compile_edge_at(
@@ -4942,23 +4952,19 @@ fn march_line(
                 src,
                 None,
             )?;
-            (compiled.rho, compiled.branch, compiled.pump_two_phase)
+            let q = mass_flow / compiled.rho;
+            if let Some(t) = compiled.pump_two_phase {
+                marched.pump_two_phase.push((
+                    src,
+                    PumpTwoPhaseState {
+                        void_fraction: t.void_fraction,
+                        head_multiplier: t.head_multiplier,
+                        pressure_rise: Pascal(-t.pump_branch.drop_at(q)),
+                    },
+                ));
+            }
+            compiled.branch.drop_at(q)
         };
-        // Δp = α·Q|Q| + β, the branch's own law (`QuadraticBranch::flow`).
-        let q = mass_flow / rho;
-        let drop = branch.alpha * q * q.abs() + branch.beta;
-        if let Some(t) = pump {
-            marched.pump_two_phase.push((
-                src,
-                PumpTwoPhaseState {
-                    void_fraction: t.void_fraction,
-                    head_multiplier: t.head_multiplier,
-                    pressure_rise: Pascal(
-                        -(t.pump_branch.alpha * q * q.abs() + t.pump_branch.beta),
-                    ),
-                },
-            ));
-        }
         let next = here - drop;
         if !next.is_finite() {
             return Err(SimError::Numerical(format!(
@@ -4986,4 +4992,96 @@ fn march_line(
         marched.store = (tgt, store);
     }
     Ok(marched)
+}
+
+/// Bisection steps on a check valve's drive inside its band (M86.3): 2^-60
+/// of the bracket, under an `f64`'s spacing at its root.
+const CHECK_DRIVE_BISECTIONS: u32 = 60;
+
+/// Doublings allowed to bracket a check valve's drive past full lift before
+/// the march gives up (M86.3): `2^64` times the band is no line's drop.
+const CHECK_DRIVE_DOUBLINGS: u32 = 64;
+
+/// The pressure drop [Pa] across a check valve's outlet edge on a draw line,
+/// the disc and the pipe it discharges through as the one branch the network
+/// folds them into, when the line carries `mass_flow` [kg/s] forward from the
+/// valve's inlet at `inlet` [Pa] (M86.3, docs/DESIGN.md §84.3).
+///
+/// The network reads the disc's lift off the forward drive across that
+/// branch, `S = Δp − β` (M30, docs/DESIGN.md §33), and the branch's
+/// resistance `α` off the lift. At a prescribed flow the drive is therefore
+/// the root of `S = α(S)·Q²`. `α` falls as the disc lifts, from `+∞` shut, so
+/// `α(S)·Q² − S` falls from `+∞` and its root is unique. Past full lift a
+/// liquid's `α` stops moving, so the root is tried there first, `S =
+/// α_full·Q²`, kept where a compile at it agrees; anywhere else (inside the
+/// band, or a valve whose flashing reads its outlet's pressure) it is
+/// bracketed and bisected.
+///
+/// At no flow the disc is shut and the edge holds its static head alone,
+/// `β`. Nothing runs back through it: that is the check valve, which a line
+/// without one only behaves as (§84.2).
+fn check_valve_drop(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    flash: LineFlash<'_>,
+    eid: EdgeId,
+    (inlet, mass_flow): (f64, f64),
+    full_open: f64,
+) -> Result<f64, SimError> {
+    let (src, tgt) = graph.endpoints(eid);
+    // The edge compiled with its outlet where drive `drive` [Pa] over static
+    // head `beta` [Pa] puts it, so the disc reads that drive.
+    let at_drive = |drive: f64, beta: f64| -> Result<CompiledEdge, SimError> {
+        let pressures = BTreeMap::from([(src, inlet), (tgt, inlet - beta - drive)]);
+        compile_edge_at(
+            graph,
+            eid,
+            slate,
+            previous_states,
+            &pressures,
+            flash,
+            src,
+            None,
+        )
+    };
+    // The static head and the density are the inlet's, whatever the drive.
+    let first = at_drive(0.0, 0.0)?;
+    let beta = first.branch.beta;
+    if mass_flow <= 0.0 {
+        return Ok(beta);
+    }
+    let q = mass_flow / first.rho;
+    let q2 = q * q;
+    // `α(S)·Q² − S`: positive while the drive is short of what the flow needs.
+    let excess = |drive: f64| -> Result<f64, SimError> {
+        Ok(at_drive(drive, beta)?.branch.alpha * q2 - drive)
+    };
+    let full = at_drive(full_open, beta)?.branch.alpha;
+    let past_band = full * q2;
+    if past_band >= full_open && at_drive(past_band, beta)?.branch.alpha == full {
+        return Ok(past_band + beta);
+    }
+    let mut high = full_open.max(past_band);
+    let mut doublings = 0;
+    while excess(high)? > 0.0 {
+        doublings += 1;
+        if doublings > CHECK_DRIVE_DOUBLINGS || !high.is_finite() {
+            return Err(SimError::Numerical(format!(
+                "check valve '{}' on a draw line found no drive that passes {mass_flow:e} kg/s",
+                graph.node(src).name
+            )));
+        }
+        high *= 2.0;
+    }
+    let mut low = 0.0;
+    for _ in 0..CHECK_DRIVE_BISECTIONS {
+        let mid = 0.5 * (low + high);
+        if excess(mid)? > 0.0 {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    Ok(0.5 * (low + high) + beta)
 }

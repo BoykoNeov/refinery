@@ -79,6 +79,8 @@ mod crude_unit_wet_reference;
 mod declined_hold_reference;
 #[path = "dissipation_reference.rs"]
 mod dissipation_reference;
+#[path = "draw_line_check_valve.rs"]
+mod draw_line_check_valve;
 #[path = "dry_fired_reference.rs"]
 mod dry_fired_reference;
 #[path = "dry_tank_reference.rs"]

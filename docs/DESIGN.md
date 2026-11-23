@@ -32600,3 +32600,60 @@ behaves as if every product line had a check valve. Whether the new plants
 should teach that (put a `check_valve` on their lines, M30) or show the
 back-flow is a choice to make before M86.3 builds plants whose lines need
 their pumps.
+
+**Answered (the user, 2026-11-23):** the new plants get a real check valve
+on every product line, so the plant file and the map show what stops the
+back-flow; and all five product lines get a pump they need, so on a column
+that holds no liquid a stopped naphtha or residue pump halts the run with a
+message naming it (§84.2), and the three side draws pass their product down.
+A line without a check valve still behaves as if it had one: real back-flow
+through a stopped pump into a column is DEFERRED C36.
+
+### 84.3 Landed — a check valve on a product line
+
+**Allowed.** `resolve_draw_lines` takes a `check_valve` on a draw line as it
+takes a pump or a cooler; the refusal now reads "holds only pumps, coolers
+and check valves". A pumparound loop's line still refuses one (its own
+resolver, M72.2): no plant asks for it.
+
+**Marched.** The march sets each edge at the line's flow, but a check
+valve's disc is moved by the drive across it (M30, §33: `S = Δp − β` across
+the disc and the pipe it discharges through, folded into one branch, the
+lift a smoothstep of `S` over the valve's `full_open_bar`). So its edge is
+solved, not compiled once (`network::check_valve_drop`): at flow `Q` the
+drive is the root of `S = α(S)·Q²`, `α` the folded branch's resistance at
+the lift `S` gives. `α` falls from `+∞` (shut) as the disc lifts, so
+`α(S)·Q² − S` falls and the root is unique. Past full lift a liquid's `α`
+stops moving: the root is tried there first, `S = α_full·Q²`, and kept where
+a compile at it gives the same `α` (three compiles, the normal case). Inside
+the band, or where a flashing valve's `α` still reads its outlet pressure,
+it is bracketed (doubling from the band, at most 64 times, else an `Err`)
+and bisected 60 times. At no flow the disc is shut and the edge holds its
+static head alone, so the short-line search of §84.2 finds the same zero it
+found without the valve: the valve does not change what a line delivers,
+it is what makes "nothing runs back" true of the plant.
+
+**Byte-identical.** No shipped plant has a check valve on a draw line, and
+the march's other edges compute `α·Q|Q| + β` in the same order as before
+(`QuadraticBranch::drop_at`).
+
+**Gates** (`crates/scenarios/tests/draw_line_check_valve.rs`, inline
+fixtures: the crude unit with a product line on every draw, a check valve
+after each pump's discharge pipe and a metre of pipe from it to the
+cooler). At full lift (Kv 400, band 0.015 bar) the valve's inlet and the
+cooler stand where a hand march puts them, to 1e-9: the pump's curve less
+the line's friction, then `(ρ_rel/Cv² + k)·Q²` (ISA-75.01, Darcy–Weisbach),
+2.9–8.7 kPa across the disc; and every draw is the plain plant's to the bit.
+Inside the band (Kv 2000, band 0.3 bar) the disc sits 13–20 % up and its
+drive is the root `S = (ρ_rel/(Cv·φ(S))² + k)·Q²`, to 1e-9. A stopped
+kerosene pump under a raised tank behind its check valve, half of the 40 m
+climbed in the pipe right after the disc, delivers nothing, no pipe of its
+line running back, the diesel taking its share; the shut disc holds that
+pipe's `ρ·g·Δz` exactly, at the kerosene the line held a tick before (the
+stop changes what the column draws there, 804.8 → 793.1 kg/m³, and a line
+is read a tick late, §67.13); restarted, released. 72 of 72 plants
+byte-identical on both solvers. Mutation pass, five mutants, all killed:
+the band skipped (always full lift); the static head dropped at no flow
+(killed only once the disc's outlet pipe climbs — a flat metre hides it);
+the bisection's sense flipped; the valve's edge compiled once like any
+other; the loader refusing the valve.

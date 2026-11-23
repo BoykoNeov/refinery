@@ -5337,8 +5337,9 @@ fn resolve_loop_lines(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Result
 }
 
 /// Resolve every draw whose outlet is a pump or a cooler into its LINE — the
-/// pipes from the column through pumps and coolers to a product store (M62.4b,
-/// docs/DESIGN.md §67.13) — and refuse, by name, a line that is not one.
+/// pipes from the column through pumps, coolers and check valves (M86.3,
+/// docs/DESIGN.md §84.3) to a product store (M62.4b, §67.13) — and refuse, by
+/// name, a line that is not one.
 ///
 /// Each node on a line has one pipe in and one out (`validate_degrees`), each
 /// pipe declared from upstream to downstream, so the walk is the outlet pipe of
@@ -5391,7 +5392,12 @@ fn resolve_draw_lines(graph: &mut PlantGraph) -> Result<(), SimError> {
                             )));
                         }
                     }
-                    NodeKind::Cooler { .. } | NodeKind::WaterCooler { .. } => {}
+                    // A check valve (M86.3, docs/DESIGN.md §84.3): the march
+                    // solves its disc's lift at the line's flow, and holds the
+                    // line at no flow where nothing reaches the store.
+                    NodeKind::Cooler { .. }
+                    | NodeKind::WaterCooler { .. }
+                    | NodeKind::CheckValve { .. } => {}
                     NodeKind::Junction if name.ends_with("__leak_point") => {
                         return Err(SimError::Scenario(format!(
                             "a pipe on the draw line of column '{column_name}' declares a leak \
@@ -5403,8 +5409,9 @@ fn resolve_draw_lines(graph: &mut PlantGraph) -> Result<(), SimError> {
                     other => {
                         return Err(SimError::Scenario(format!(
                             "the draw line of column '{column_name}' runs through '{name}' \
-                             ({other:?}): a draw line holds only pumps and coolers between the \
-                             column and its product store (docs/DESIGN.md §67.13)"
+                             ({other:?}): a draw line holds only pumps, coolers and check \
+                             valves between the column and its product store (docs/DESIGN.md \
+                             §67.13, §84.3)"
                         )));
                     }
                 }

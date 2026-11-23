@@ -26,15 +26,15 @@ const PRODUCT_COOLER: &str = include_str!("../../../scenarios/product_cooler.tom
 
 /// Each product's cooling water [kg/s] and its cooler's UA [kW/K], sized to
 /// return the water near 45 °C.
-const LINES: [(&str, f64, f64); 5] = [
+pub(crate) const LINES: [(&str, f64, f64); 5] = [
     ("naphtha", 75.0, 150.0),
     ("kerosene", 115.0, 90.0),
     ("diesel", 190.0, 120.0),
     ("gas_oil", 150.0, 70.0),
     ("residue", 460.0, 100.0),
 ];
-const PUMP_HEAD_M: f64 = 40.0;
-const PUMP_A: f64 = 2000.0;
+pub(crate) const PUMP_HEAD_M: f64 = 40.0;
+pub(crate) const PUMP_A: f64 = 2000.0;
 const SUCTION_DROP_M: f64 = -15.0;
 const CP_WATER: f64 = 4186.0;
 
@@ -120,7 +120,7 @@ pub(crate) fn build(src: &str) -> Result<Engine, String> {
     refinery_scenarios::build_engine(&file).map_err(|e| e.to_string())
 }
 
-fn run(engine: &mut Engine, ticks: u32) {
+pub(crate) fn run(engine: &mut Engine, ticks: u32) {
     for t in 1..=ticks {
         engine
             .tick()
@@ -132,17 +132,17 @@ fn run(engine: &mut Engine, ticks: u32) {
     }
 }
 
-fn node<'a>(s: &'a Snapshot, name: &str) -> &'a NodeSnapshot {
+pub(crate) fn node<'a>(s: &'a Snapshot, name: &str) -> &'a NodeSnapshot {
     s.nodes.iter().find(|n| n.name == name).unwrap()
 }
 
-fn edge<'a>(s: &'a Snapshot, name: &str) -> &'a EdgeSnapshot {
+pub(crate) fn edge<'a>(s: &'a Snapshot, name: &str) -> &'a EdgeSnapshot {
     s.edges.iter().find(|e| e.name == name).unwrap()
 }
 
 /// The density a stream flows at: the line flash's mixture where it boils
 /// there, else its liquid's.
-fn density(slate: &Slate, engine: &Engine, stream: &EdgeSnapshot, pressure: f64) -> f64 {
+pub(crate) fn density(slate: &Slate, engine: &Engine, stream: &EdgeSnapshot, pressure: f64) -> f64 {
     let composition = &stream.stream.composition;
     let temperature = stream.stream.temperature;
     match EquilibriumLineFlash::default()
@@ -165,7 +165,7 @@ fn density(slate: &Slate, engine: &Engine, stream: &EdgeSnapshot, pressure: f64)
 }
 
 /// `k·Q|Q| + ρ·g·Δz` [Pa], a pipe's drop at `mass_flow` (Darcy–Weisbach).
-fn pipe_drop(engine: &Engine, name: &str, rho: f64, mass_flow: f64) -> f64 {
+pub(crate) fn pipe_drop(engine: &Engine, name: &str, rho: f64, mass_flow: f64) -> f64 {
     let pipe = engine
         .graph
         .edge_ids()
@@ -599,7 +599,7 @@ fn a_draw_line_refuses_what_it_does_not_model() {
     );
     let hot_water = base.replace("water_inlet_c = 30.0", "water_inlet_c = 100.0");
     for (src, expected) in [
-        (junction, "holds only pumps and coolers"),
+        (junction, "holds only pumps, coolers and check valves"),
         (leak, "leak path"),
         (npsh, "npsh_required_m"),
         (hot_water, "water_inlet_c"),
