@@ -146,7 +146,7 @@ const AUTO_BURST := {
 	400: ["quit"],
 }
 ## permissive (M44): the tank's overfill trip stops the feed pump at 266; the
-## heater, still fired at 3 MW, starves and its tube trip cuts it at 299, then
+## heater, still fired at 3 MW, starves and its tube trip cuts it at 298, then
 ## resets itself at 321 and leaves it dark — the pump's trip is its start
 ## permissive (DESIGN §49), and the panel says so. At 400 a person resets the
 ## pump's trip, starts the pump and relights the heater at 3 MW.
@@ -166,7 +166,7 @@ const AUTO_SHOT_TICKS := {
 	"burnout": [1144, 1145, 1300, 2500],
 	"autoreset": [75, 128, 214, 300, 901, 1001],
 	"burst": [75, 80, 128, 200, 260],
-	"permissive": [266, 299, 321, 400, 450],
+	"permissive": [266, 298, 321, 400, 450],
 }
 ## Print a `t=` line every this many ticks in a recorded run.
 const PRINT_EVERY := {"trip": 25, "burnout": 100, "autoreset": 25, "burst": 25, "permissive": 25}
