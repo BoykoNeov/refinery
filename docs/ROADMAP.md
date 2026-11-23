@@ -11835,3 +11835,19 @@ changed plants re-screenshotted from `demo/layout` and looked at.
 name (names sit under nodes); lay a chain so its pipes leave by a side.
 Positions off the 10 px channel grid, or two nodes ~50 px apart, can turn a
 straight run into a hop — space level neighbours ~60 px or more.
+
+## M86 — a stopped product pump stops its product (DEFERRED C35); OPEN
+
+Picked by the user (2026-11-23), option (c): holdup and spill-down. Spec and
+decisions: `docs/DESIGN.md` §84.
+
+- [x] **M86.1** — a stopped centrifugal pump resists as a locked rotor
+  (Chaudhry 2014, Table A-1): `QuadraticBranch::stopped_pump`, 1.57× the
+  curve's `a` forward, 2.03× reversed (§84.1). Four plants moved, approved.
+- [ ] **M86.2** — a draw line delivers what it can instead of refusing; on a
+  zero-volume column the shortfall goes to the next draw down, a short
+  bottoms draw halts with its name; a holdup column's tray backs up.
+- [ ] **M86.3** — a new zero-volume plant whose product lines need their pump.
+- [ ] **M86.4** — a new holdup plant with product pumps (margins checked first).
+- [ ] **M86.5** — DEFERRED row: the six crude units' easy lines, and holdup
+  for them; close-out.

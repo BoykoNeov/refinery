@@ -32437,3 +32437,80 @@ which loop moves it. Coolers gained Up/Down (`set_cooler_duty`) for this:
 the field names the right node BY NAME on the cascade demo and the six
 loop plants before M25, on the bytes too, and no loop has both or neither.
 Mutation pass: `actuates: None` and `actuates: Some(NodeId(0))`, both killed.
+
+## 84. A stopped product pump stops its product (C35) — the stopped pump's resistance first
+
+Picked by the user (2026-11-23) from the queue: DEFERRED C35, option (c) —
+holdup and spill-down. **Decided, the user, in order:** the milestone is the
+engine fix, the draw's shortfall overflowing to the next draw down on the six
+zero-volume crude units, and new plant files; holdup for those six is
+deferred (they have no trays, and five carry free water or steam, which C22
+refuses). A stopped residue (bottoms) pump on a zero-volume column halts the
+run with a message that names it, since there is no draw below to take it.
+Both halves together ("(C) both"): a sourced stopped-pump resistance
+everywhere, and new plants whose product lines really need their pump.
+
+### 84.0 The probe — how much a stopped centrifugal pump resists
+
+**Measured first** (a throwaway test; no engine code changed): the most a
+draw line on the six zero-volume plants can pass with its pump stopped, as a
+multiple of the share the column sends it. With the old model (the running
+curve's `a·Q|Q|`, no head) every product line still passes more than its
+share — boiling 1.03–1.96, the four water and steam plants 1.23–2.34 — so a
+stopped pump cut nothing: the column's own 1.8 bar (a pinned pressure, the
+plan `docs/plans/column-pressure-from-physics.md`) and the lines' fall to
+their tanks are enough to drive the products without it.
+
+**Is a stopped pump only that much resistance? Yes, for this kind of pump.**
+Chaudhry, *Applied Hydraulic Transients*, 3rd ed. (2014), Eq. 4-5 (`θ =
+tan⁻¹(α/v)`, checked on the printed page, book p. 121) and Table A-1, after
+Brown & Rogers (1980): a radial pump (`Ns = 0.46` SI) at zero speed loses
+`WH(0°) = 0.55` of its rated head at rated flow forward and `WH(180°) = 0.71`
+reversed; its shutoff head is `WH(90°) = 1.35`. KSB and GIW's guidance agrees
+in scale: a locked rotor about 10 velocity heads, a freewheeling one about 5.
+A positive-displacement pump does block flow when stopped, but a refinery's
+product pumps are centrifugal. So the honest fix is two-sided: a stopped pump
+somewhat stiffer than the old model, and product lines that, like real ones,
+need their pump (a control valve, a longer run, a tank entered under its
+liquid) — a stopped pump on such a line cuts its product.
+
+**Mapping the table to the engine's curve.** `H = h0 − a·Q|Q|` has no rated
+point, so it is put where the table puts it: `h0 = 1.35·H_R`, hence `a·Q_R² =
+0.35·H_R`. The locked rotor's loss `0.55·H_R·v²` is then `(0.55/0.35)·a·Q²`
+forward, `(0.71/0.35)·a·Q²` reversed: `STOPPED_PUMP_FORWARD = 1.571` and
+`STOPPED_PUMP_REVERSE = 2.029` (`crates/solvers/src/elements.rs`). With them
+the six plants' margins fall (boiling 0.92–1.77, the four 1.10–2.11, wetter
+1.69–3.23): only the boiling plant's residue line falls short.
+
+### 84.1 Landed — `QuadraticBranch::stopped_pump`
+
+An off pump compiles to `QuadraticBranch::stopped_pump(a, ρ, g, forward)`:
+`α = k·ρ·g·a`, `β = 0`, `k` forward or reversed by the direction the edge
+last ran (its stored flow, ≥ 0 forward), fixed for the solve — so a
+reversal is a tick late to take the reverse factor, as every pin is. A
+cavitating pump is a running one; a compressor is unchanged.
+
+**What moved** (the user approved, 2026-11-23). 68 of 72 plants
+byte-identical on both solvers. Moved: on Newton `furnace_restart_permissive`
+and `tank_level_fill_check_valve`; on the game solver those two and
+`tank_level_fill_pump_hold` and `tank_overfill_trip`, below the fourth
+decimal. `furnace_restart_permissive`'s full tank pushes back through its
+tripped pump at 11.4 kg/s, not 12.1 (tick 270), so the starved coil trips
+its tubes a tick sooner: tick 298, not 299 (the file's comment says 299;
+shipped files are not edited), and 339, not 340, without the permissive.
+`tank_level_fill_check_valve`: its check valve already held the flow at zero;
+a flow afterwards 2.606 → 2.600 kg/s. The pump screen's stopped-pump flow
+8.18 → 8.16 kg/s. Four tests updated to these numbers.
+
+**Gate** (`crates/solvers/tests/reference/stopped_pump.rs`): the table's
+locked rotor — at the rated point the curve implies, `0.55·H_R` of drop
+drives `Q_R` forward and `0.71·H_R` reversed; against the old model the same
+drop drives `√(0.35/0.55)` ≈ 0.80 of the flow forward. Mutation pass: the
+direction ignored (always forward) killed by `restart_permissive_reference`
+(4 tests); the reverse factor set to the forward one killed by the gate.
+
+**Next** (84.2 on): a draw line delivers what it can (bisected as a loop's
+is, M72.3) instead of refusing; on a zero-volume column the shortfall goes
+down to the next draw inside the separation's split, a short bottoms draw is
+an `Err` naming it; a holdup column runs the draw at what was delivered, so
+its tray backs up. Then the new plants.

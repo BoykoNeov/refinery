@@ -57,6 +57,8 @@ mod reference_orifice;
 mod reference_sieve_tray;
 #[path = "reference/steam_column.rs"]
 mod reference_steam_column;
+#[path = "reference/stopped_pump.rs"]
+mod reference_stopped_pump;
 #[path = "reference/two_phase_head.rs"]
 mod reference_two_phase_head;
 #[path = "reference/vapour_pressure.rs"]

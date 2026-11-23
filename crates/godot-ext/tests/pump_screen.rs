@@ -210,12 +210,13 @@ fn the_limit_plant_timeline_tells_its_story() {
     assert!((screen.flow() - 6.839).abs() < 0.001, "{}", screen.flow());
 
     // 160: back to 0.6 and stop the pump. The supply alone still drives
-    // 8.18 kg/s through it, and a stopped pump reports no push.
+    // 8.16 kg/s through it (8.18 before C35: a stopped pump resists as a locked rotor,
+    // docs/DESIGN.md §84), and a stopped pump reports no push.
     screen.send(valve(&LIMIT_VALVE, 0.6));
     screen.send(LIMIT_STOP);
     screen.run_to(179);
     assert!(screen.push().is_none());
-    assert!((screen.flow() - 8.18).abs() < 0.01, "{}", screen.flow());
+    assert!((screen.flow() - 8.16).abs() < 0.01, "{}", screen.flow());
 
     // 180: restart. The pump is back where it started.
     screen.send(LIMIT_START);

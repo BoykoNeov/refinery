@@ -350,8 +350,8 @@ fn the_permissive_timeline_tells_its_story() {
     screen.run_to(266);
     assert_eq!(screen.trip(0), tripped(266));
     assert!(!pump_on(&screen));
-    screen.run_to(299);
-    assert_eq!(screen.trip(1), tripped(299));
+    screen.run_to(298);
+    assert_eq!(screen.trip(1), tripped(298));
     assert_eq!(
         stop(&screen),
         serde_json::json!({"status": "held", "barred_by": ["permissive_not_clear"]})

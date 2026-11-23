@@ -2147,7 +2147,17 @@ fn compile_edge_at(
                     });
                 }
                 _ => {
-                    let pump = QuadraticBranch::pump(h0_eff, *a, rho, G);
+                    // A stopped pump is a locked rotor's resistance (C35,
+                    // docs/DESIGN.md §84), its direction the one the edge last
+                    // ran — fixed for the solve, so the branch stays one smooth
+                    // law within it; a reversal takes the reverse side a tick
+                    // later, as a line's stored flow does.
+                    let pump = if *on {
+                        QuadraticBranch::pump(h0_eff, *a, rho, G)
+                    } else {
+                        let forward = pipe.stream.mass_flow.value() >= 0.0;
+                        QuadraticBranch::stopped_pump(*a, rho, G, forward)
+                    };
                     // A running pump whose inlet is partly vapour delivers
                     // `(1 − M_H(α))·H(Q)` (M54, docs/DESIGN.md §59): RELAP5's
                     // multiplier on the vapour's share of its inlet's volume,

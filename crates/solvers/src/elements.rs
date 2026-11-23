@@ -76,14 +76,29 @@ pub fn valve_flow_ddp(dp: f64, cv_si: f64, opening: f64, rho_rel: f64, eps: f64)
 /// Centrifugal pump head [m] at volumetric flow Q: H(Q) = h0 − a·Q·|Q|
 /// (|Q| keeps it defined for reverse flow; real pumps in reverse are a
 /// later refinement — document if it ever matters).
-/// Pressure rise: dP_pump = ρ·g·H(Q). A pump that is `off` contributes
-/// h0 = 0 and acts as a (high-resistance) pipe.
+/// Pressure rise: dP_pump = ρ·g·H(Q). A pump that is `off` is
+/// `QuadraticBranch::stopped_pump`, not this.
 pub fn pump_pressure_rise(q: f64, h0: f64, a: f64, rho: f64, g: f64) -> f64 {
     rho * g * (h0 - a * q * q.abs())
 }
 pub fn pump_pressure_rise_dq(q: f64, a: f64, rho: f64, g: f64) -> f64 {
     rho * g * (-2.0 * a * q.abs())
 }
+
+/// A stopped pump's resistance as a multiple of its curve's `a` (C35,
+/// docs/DESIGN.md §84). A locked rotor passing flow `v = Q/Q_R` loses
+/// `h = WH(θ)·v²` of its rated head, `θ = tan⁻¹(α/v)` at speed `α = 0`
+/// (Chaudhry, *Applied Hydraulic Transients*, 3rd ed. 2014, Eq. 4-5 and
+/// Table A-1, after Brown & Rogers 1980; the radial pump, `Ns = 0.46` SI):
+/// `WH(0°) = −0.55` forward, `WH(180°) = +0.71` reversed, shutoff
+/// `WH(90°) = 1.35`. The engine's curve `H = h0 − a·Q|Q|` has no rated point,
+/// so it is taken where the table puts it: shutoff `h0 = 1.35·H_R`, hence
+/// `a·Q_R² = 0.35·H_R`, and the locked rotor's loss `0.55·H_R·v² =
+/// (0.55/0.35)·a·Q²`. A stopped radial pump is a modest restriction, not a
+/// shut valve (KSB/GIW put a locked rotor near 10 velocity heads).
+pub const STOPPED_PUMP_FORWARD: f64 = 0.55 / 0.35;
+/// Against the pumping direction: `0.71/0.35` (see `STOPPED_PUMP_FORWARD`).
+pub const STOPPED_PUMP_REVERSE: f64 = 0.71 / 0.35;
 
 /// `k` in `φ = 1 − exp(−k·σ²)`: chosen so `φ(1) = 0.97` exactly, i.e. the head
 /// has fallen 3% where `NPSHa = NPSH3` — the definition of NPSH3 (ANSI/HI 9.6.1,
@@ -265,12 +280,29 @@ impl QuadraticBranch {
     /// Centrifugal pump `H(Q) = h0 − a·Q·|Q|`, rise `dP = rho·g·H`. Across the
     /// device `P_out = P_in + rho·g·H`, so its contribution to the series
     /// *drop* is `dp = −rho·g·H = rho·g·a·Q|Q| − rho·g·h0`: `alpha = rho·g·a`
-    /// (≥0), `beta = −rho·g·h0` (the negative offset is the pressure jump). An
-    /// off pump passes `h0 = 0` (beta = 0) and acts as pure resistance.
+    /// (≥0), `beta = −rho·g·h0` (the negative offset is the pressure jump). A
+    /// stopped pump is `stopped_pump`: no head, and a locked rotor's resistance.
     pub fn pump(h0: f64, a: f64, rho: f64, g: f64) -> Self {
         Self {
             alpha: rho * g * a,
             beta: -rho * g * h0,
+        }
+    }
+
+    /// A stopped centrifugal pump: a locked rotor, no head, a resistance
+    /// (C35, docs/DESIGN.md §84). Its loss `ρ·g·k·a·Q|Q|` takes `k` from a
+    /// radial pump's complete characteristics — `STOPPED_PUMP_FORWARD` for
+    /// flow in the pumping direction, `STOPPED_PUMP_REVERSE` against it —
+    /// chosen by the direction the edge last ran (`forward`).
+    pub fn stopped_pump(a: f64, rho: f64, g: f64, forward: bool) -> Self {
+        let k = if forward {
+            STOPPED_PUMP_FORWARD
+        } else {
+            STOPPED_PUMP_REVERSE
+        };
+        Self {
+            alpha: k * rho * g * a,
+            beta: 0.0,
         }
     }
 

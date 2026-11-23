@@ -203,7 +203,7 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none — the user picks the next. Queued by the user (2026-11-20) for a future session: DEFERRED C35 (a stopped product pump must stop its product — the engine) and F11 (the map: a column's ports by tray, a bigger field with zoom and scroll — one milestone)** (C30's base side is still open; `docs/plans/` lists the review's plans; the user's aim, 2026-11-19: one complex plant that shows a fault spreading — next would be a screen finding its unit inside a bigger plant, and a plant joining the units).
+Work only on the current milestone unless asked. **Current: M86 — DEFERRED C35, a stopped product pump stops its product (`docs/ROADMAP.md` M86, `docs/DESIGN.md` §84; M86.1 landed). Queued next by the user (2026-11-20): F11 (the map: a column's ports by tray, a bigger field with zoom and scroll — one milestone); then the plan `docs/plans/column-pressure-from-physics.md` (forks answered 2026-11-23)** (C30's base side is still open; `docs/plans/` lists the review's plans; the user's aim, 2026-11-19: one complex plant that shows a fault spreading — next would be a screen finding its unit inside a bigger plant, and a plant joining the units).
 **Latest closed: M85 (2026-11-20)**: the map's pipes at right angles (`demo/route.gd`), crossings with a gap, a flange at each end, towers as tall as what is piped to them; 24 hand layouts in `demo/layout/`. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.

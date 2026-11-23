@@ -245,8 +245,10 @@ fn pump_on(snapshot: &Snapshot) -> bool {
 }
 
 /// Gate 3 — the demo, as its file says. The overfill trip stops the pump on
-/// 266, the tube trip cuts the starved furnace on 299 and re-arms itself on
-/// 321, and the furnace stays dark because the pump's trip is latched. A person
+/// 266, the tube trip cuts the starved furnace on 298 and re-arms itself on
+/// 321 (the file says 299: the stopped pump's resistance from Chaudhry 2014,
+/// C35 and docs/DESIGN.md §84, starves the coil a tick sooner; shipped files
+/// are not edited), and the furnace stays dark because the pump's trip is latched. A person
 /// resetting that trip restarts nothing — its reset is `manual` — and the
 /// heater still waits; a person starting the pump and firing the heater ends it.
 #[test]
@@ -262,8 +264,8 @@ fn the_demo_waits_for_the_pump_trip_and_then_for_a_person() {
         "the pump's trip leaves the heater lit"
     );
 
-    assert!(!tripped(&run_to(&mut engine, 298), TUBE_SKIN));
-    let cut = run_to(&mut engine, 299);
+    assert!(!tripped(&run_to(&mut engine, 297), TUBE_SKIN));
+    let cut = run_to(&mut engine, 298);
     assert!(tripped(&cut, TUBE_SKIN));
     assert_eq!(duty_w(&cut), 0.0);
     assert_eq!(
@@ -324,7 +326,7 @@ fn the_demo_waits_for_the_pump_trip_and_then_for_a_person() {
 }
 
 /// Gate 4 — what the permissive prevents: the same file without the line
-/// relights at 321 into the starved flow and cuts again at 340.
+/// relights at 321 into the starved flow and cuts again at 339.
 #[test]
 fn without_the_permissive_the_tube_trip_relights_into_the_starved_flow() {
     let mut engine = build(&demo_with(PERMISSIVE_LINE, ""));
@@ -332,8 +334,8 @@ fn without_the_permissive_the_tube_trip_relights_into_the_starved_flow() {
     assert!(tripped(&relit, OVERFILL), "the pump is still stopped");
     assert_eq!(duty_w(&relit), 3.0e6);
     assert_eq!(heater(&relit).trip_stop, None);
-    assert!(!tripped(&run_to(&mut engine, 339), TUBE_SKIN));
-    assert!(tripped(&run_to(&mut engine, 340), TUBE_SKIN));
+    assert!(!tripped(&run_to(&mut engine, 338), TUBE_SKIN));
+    assert!(tripped(&run_to(&mut engine, 339), TUBE_SKIN));
 }
 
 /// Gate 5 — a permissive is asked when the stop ENDS, not when it began: a
