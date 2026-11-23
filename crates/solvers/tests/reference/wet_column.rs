@@ -136,6 +136,7 @@ impl Case {
         HeatBalanceCascade::new()
             .separate(
                 &ColumnPass {
+                    draw_limits: &[],
                     slate,
                     draws,
                     smearing: Kelvin(0.0),
@@ -424,6 +425,7 @@ fn a_wet_feed_without_a_water_draw_is_refused() {
     let error = HeatBalanceCascade::new()
         .separate(
             &ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws: &draws,
                 smearing: Kelvin(0.0),
@@ -460,6 +462,7 @@ fn the_wet_column_is_start_insensitive() {
         model
             .separate(
                 &ColumnPass {
+                    draw_limits: &[],
                     slate: &slate,
                     draws: &draws,
                     smearing: Kelvin(0.0),

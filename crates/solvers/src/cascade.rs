@@ -439,6 +439,7 @@ impl SeparationModel for StageCascade {
         // not discovered" move `flash_isothermal` makes for its all-`K = 1` case.
         if feed_flow == 0.0 {
             return Ok(Separation {
+                short_draws: Vec::new(),
                 // An idle column solved nothing, so it has nothing to seed the
                 // next tick with. Publishing the seed here would hand the next
                 // tick a profile no iteration produced — a plausible-wrong number
@@ -682,6 +683,7 @@ impl SeparationModel for StageCascade {
         )?;
 
         Ok(Separation {
+            short_draws: Vec::new(),
             draws: result,
             // Published only on the converged path: every `return` above this one
             // is an `Err`, so a profile leaves this function only when the outer
@@ -1894,6 +1896,7 @@ mod tests {
         let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
         StageCascade::new().separate(
             &ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws,
                 smearing: Kelvin(0.0),
@@ -2128,6 +2131,7 @@ mod tests {
         let splitter = crate::CutPointSplitter
             .separate(
                 &ColumnPass {
+                    draw_limits: &[],
                     slate: &slate,
                     draws: &split_draws,
                     smearing: Kelvin(0.0),
@@ -2350,6 +2354,7 @@ mod tests {
         let message = StageCascade::new()
             .separate(
                 &ColumnPass {
+                    draw_limits: &[],
                     slate: &wide_slate,
                     draws: &draws,
                     smearing: Kelvin(0.0),
@@ -2403,6 +2408,7 @@ mod tests {
         let spec = spec(4, 2, 2.0);
         let result = StageCascade::new().separate(
             &ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws: &draws,
                 smearing: Kelvin(0.0),
@@ -2437,6 +2443,7 @@ mod tests {
         let spec = spec(4, 2, 2.0);
         StageCascade::new().separate(
             &ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws: &draws,
                 smearing: Kelvin(0.0),
@@ -2614,6 +2621,7 @@ mod tests {
             StageCascade::new()
                 .separate(
                     &ColumnPass {
+                        draw_limits: &[],
                         slate: &slate,
                         draws: &draws,
                         smearing: Kelvin(0.0),
@@ -2702,6 +2710,7 @@ mod tests {
             let separation = StageCascade::new()
                 .separate(
                     &ColumnPass {
+                        draw_limits: &[],
                         slate: &slate,
                         draws: &draws,
                         smearing: Kelvin(0.0),

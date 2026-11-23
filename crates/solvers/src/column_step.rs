@@ -145,6 +145,11 @@ pub(crate) struct ColumnStep<'a> {
     /// shut. What it takes past the top stage's vapour flashes off the
     /// drum's liquid.
     pub(crate) vent: f64,
+    /// The most each draw's line delivers [kg/s], by the plan's draw, or
+    /// empty where no line is short (M86.2, docs/DESIGN.md §84.2): a draw
+    /// runs at no more, and what it cannot take stays — on its tray, in the
+    /// drum, in the base — so the level there rises.
+    pub(crate) limits: &'a [Option<f64>],
 }
 
 /// Where a tick's Newton starts: each stage's temperature [K] and vapour
@@ -185,6 +190,9 @@ pub(crate) struct Stepped {
     /// The side draws a tray short of liquid cut back, as plan indices, and
     /// the share of their set flow each ran at.
     pub(crate) cut_back: Vec<(usize, f64)>,
+    /// The draws its lines ran short: the plan's draw, what it would have
+    /// run at and what it ran at [kg/s] (M86.2, §84.2).
+    pub(crate) short: Vec<(usize, f64, f64)>,
     /// The levels and limits the tick read, and which stream held the base.
     pub(crate) reading: HoldupReading,
     /// The state the tick leaves, but for the trays' vapour loads, which the
@@ -223,6 +231,8 @@ struct SetFlows {
     reboiler: f64,
     /// Each side draw's share of its set flow it ran at, where under one.
     cut_back: Vec<(usize, f64)>,
+    /// The draws its lines ran short (`Stepped::short`).
+    short: Vec<(usize, f64, f64)>,
     /// The levels and limits the tick started at, and which stream held the
     /// base.
     reading: HoldupReading,
@@ -447,6 +457,15 @@ impl ColumnStep<'_> {
         // On total reflux the side draws are shut (M74.6, docs/DESIGN.md
         // §79.17; Kister §12.8).
         let total_reflux = self.holdup.total_reflux;
+        // A draw its line limits runs at no more (M86.2, §84.2).
+        let mut short = Vec::new();
+        let mut limited = |i: usize, wanted: f64| match self.limits.get(i).copied().flatten() {
+            Some(limit) if wanted > limit => {
+                short.push((i, wanted, limit));
+                limit
+            }
+            _ => wanted,
+        };
         // The side draws' and the loops' set mass flows on each tray [kg/s].
         let mut side = vec![0.0; n];
         let mut side_draw: Vec<Option<usize>> = vec![None; n];
@@ -454,7 +473,7 @@ impl ColumnStep<'_> {
         for (i, location) in plan.locations.iter().enumerate() {
             if let DrawLocation::Stage(j) = location {
                 if i != 0 && i != last && !total_reflux {
-                    side[*j] = plan.mass_ratios[i] * self.feed_mass;
+                    side[*j] = limited(i, plan.mass_ratios[i] * self.feed_mass);
                     side_draw[*j] = Some(i);
                 }
             }
@@ -628,6 +647,10 @@ impl ColumnStep<'_> {
             bottoms_mass += base_overflow;
             base_limit = LevelLimit::Full;
         }
+        // Its line's limit on the bottoms, before a base past full's excess
+        // goes to slop: what the line cannot take stays in the base.
+        let bottoms_product = bottoms_mass - base_overflow;
+        let bottoms_mass = limited(last, bottoms_product) + base_overflow;
         drawn[n - 1] = bottoms_mass / mean(&stage_x[n - 1]);
         // On total reflux (§79.17) no distillate (a full drum's excess goes
         // to slop), and all the drum's level loop asks sent back as reflux:
@@ -639,7 +662,10 @@ impl ColumnStep<'_> {
         } else {
             (1.0, self.spec.reflux_ratio)
         };
-        let distillate = (product_share * controlled * drum_out_share + overflow) / mean(&drum_x);
+        // Its line's limit on the distillate: what it cannot take stays in
+        // the drum, the reflux as the level loop set it.
+        let product = limited(0, product_share * controlled * drum_out_share);
+        let distillate = (product + overflow) / mean(&drum_x);
         let reflux = reflux_share * controlled * drum_out_share / mean(&drum_x);
         let enthalpy = (0..n)
             .map(|j| liquid_enthalpy(self.slate, &stage_x[j], state.stage_temperature[j]))
@@ -658,6 +684,7 @@ impl ColumnStep<'_> {
             base_slop: base_overflow / mean(&stage_x[n - 1]),
             reboiler,
             cut_back,
+            short,
             reading: HoldupReading {
                 held,
                 drum_level,
@@ -1172,6 +1199,7 @@ impl ColumnStep<'_> {
             vent_masses,
             vent_heat,
             cut_back: set.cut_back.clone(),
+            short: set.short.clone(),
             reading,
             state: next,
         })

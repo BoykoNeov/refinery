@@ -1470,6 +1470,11 @@ pub fn swept_density_change(
     Ok(largest)
 }
 
+/// How far past its line's limit a draw may run before the column is
+/// refused (M86.2, docs/DESIGN.md §84.2): a model turns the limit into a
+/// share of its feed and back, which rounds.
+const DRAW_LIMIT_SLACK: f64 = 1e-9;
+
 /// Resolve every node's temperature [K] and composition for this tick.
 ///
 /// Inertial nodes seed the field with their start-of-tick temperature;
@@ -1539,6 +1544,7 @@ pub fn resolve_node_states(
     earlier: Option<&NodeStates>,
     starved: &BTreeMap<NodeId, StarvedTank>,
     loop_delivered: &BTreeMap<EdgeId, KgPerSec>,
+    draw_delivered: &BTreeMap<EdgeId, KgPerSec>,
     dt: Seconds,
 ) -> Result<NodeStates, SimError> {
     let mut temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
@@ -2228,8 +2234,31 @@ pub fn resolve_node_states(
                                 }
                                 other => other.map(Cow::Borrowed),
                             };
+                            // A draw whose line delivers less than it was
+                            // asked runs at no more (M86.2, docs/DESIGN.md
+                            // §84.2): the most each line delivers, parallel
+                            // to the draws — empty while every line carries
+                            // its draw, as on every shipped plant.
+                            let mut draw_limits: Vec<Option<KgPerSec>> = Vec::new();
+                            for (column, index, line) in &lines {
+                                let Some(delivered) =
+                                    line.first().and_then(|e| draw_delivered.get(e))
+                                else {
+                                    continue;
+                                };
+                                if *column != id {
+                                    continue;
+                                }
+                                if draw_limits.is_empty() {
+                                    draw_limits = vec![None; draws.len()];
+                                }
+                                if let Some(limit) = draw_limits.get_mut(*index) {
+                                    *limit = Some(*delivered);
+                                }
+                            }
                             let pass = separation.separate(
                                 &ColumnPass {
+                                    draw_limits: &draw_limits,
                                     slate,
                                     draws,
                                     smearing: *smearing,
@@ -2312,6 +2341,34 @@ pub fn resolve_node_states(
                                     Some(flow) => flow.value(),
                                     None => cut.split * feed_flow,
                                 };
+                                // A draw past what its line delivers: the
+                                // model could not put it anywhere (a column
+                                // that holds no liquid has no draw below its
+                                // bottoms), or ignores the limit (M86.2,
+                                // docs/DESIGN.md §84.2).
+                                if let Some(Some(delivered)) = draw_limits.get(*index) {
+                                    let delivered = delivered.value();
+                                    let stopped = crate::traits::STOPPED_DRAW_SHARE * feed_flow;
+                                    if drawn
+                                        > delivered.max(stopped) * (1.0 + DRAW_LIMIT_SLACK) + 1e-12
+                                    {
+                                        let store = line.last().map(|&e| graph.endpoints(e).1);
+                                        return Err(SimError::Numerical(format!(
+                                            "the draw line of column '{}' through '{}' cannot \
+                                             deliver its {drawn:.4} kg/s to '{}': it delivers \
+                                             {delivered:.4} kg/s at most, and the column has no \
+                                             draw below to take the rest. A line's pump must \
+                                             push its draw through its pipes and coolers to its \
+                                             store (docs/DESIGN.md §67.13, §84.2): start or \
+                                             strengthen the pump, or widen the line",
+                                            graph.node(id).name,
+                                            line.first().map_or("?", |&e| &graph
+                                                .node(graph.endpoints(e).1)
+                                                .name),
+                                            store.map_or("?", |n| &graph.node(n).name),
+                                        )));
+                                    }
+                                }
                                 line_writes.extend(line.iter().map(|&edge| (edge, drawn)));
                             }
                             // Each loop's line carries its circulation, the
@@ -4695,6 +4752,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeMap::new(),
             Seconds(1.0),
         )
         .map(|states| states.temperature)
@@ -4719,6 +4777,7 @@ mod tests {
             &everywhere_atmospheric(graph),
             &NodeStates::default(),
             None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
             Seconds(1.0),
@@ -4909,6 +4968,7 @@ mod tests {
                 &everywhere_atmospheric(&g),
                 &previous,
                 None,
+                &BTreeMap::new(),
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 Seconds(1.0),
@@ -5436,6 +5496,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeMap::new(),
             Seconds(1.0),
         )
         .unwrap()
@@ -5765,6 +5826,7 @@ mod tests {
                 None,
                 &BTreeMap::new(),
                 &BTreeMap::new(),
+                &BTreeMap::new(),
                 Seconds(1.0),
             )
             .unwrap();
@@ -5855,6 +5917,7 @@ mod tests {
                 &everywhere_atmospheric(&g),
                 &NodeStates::default(),
                 None,
+                &BTreeMap::new(),
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 Seconds(1.0),
@@ -6030,6 +6093,7 @@ mod tests {
                 &everywhere_atmospheric(g),
                 previous,
                 None,
+                &BTreeMap::new(),
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 Seconds(dt),

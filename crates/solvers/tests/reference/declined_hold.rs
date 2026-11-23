@@ -108,6 +108,7 @@ fn separate(
     HeatBalanceCascade::new()
         .separate(
             &ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws: &draws,
                 smearing: Kelvin(0.0),

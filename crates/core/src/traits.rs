@@ -88,6 +88,18 @@ pub struct HydraulicSolution {
     /// M72.3, and skipped in serialization then.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub loop_delivered: BTreeMap<EdgeId, KgPerSec>,
+    /// Each column draw whose LINE cannot carry the flow its march asked of it
+    /// this tick (M86.2, docs/DESIGN.md §84.2), keyed by the line's first pipe:
+    /// the most it delivers [kg/s] — the flow at which the line's march, at the
+    /// stored state, arrives at its store's pressure, or zero where it cannot
+    /// at any (a stopped pump on a line that needs it). The column runs the
+    /// draw at no more (`ColumnPass::draw_limits`). Data across the seam, as
+    /// `loop_delivered` is.
+    ///
+    /// Empty on every tick whose draw lines all deliver, so on every shipped
+    /// plant, and skipped in serialization then.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub draw_delivered: BTreeMap<EdgeId, KgPerSec>,
 }
 
 /// One pump's two-phase inlet at a solution (M54, docs/DESIGN.md §59).
@@ -799,6 +811,14 @@ pub struct Separation {
     /// ran at. Empty from every pass that ran every draw at its declared share,
     /// and from every fidelity that never cuts one back.
     pub cut_back: Vec<CutBackDraw>,
+    /// The draws this pass ran short of what the column would send them,
+    /// their lines delivering less (M86.2, docs/DESIGN.md §84.2): each at its
+    /// line's limit, the rest gone to the draw below (a column that holds no
+    /// liquid) or held on its tray or in its drum (one that does). Read by the
+    /// next tick's line march, which tries the line at what was wanted before
+    /// it settles for less. Empty from every pass whose draws all ran at what
+    /// the column sent them, and from every fidelity that never runs one short.
+    pub short_draws: Vec<ShortDraw>,
     /// Each pumparound loop's run this pass (M72.1, docs/DESIGN.md §77.1), in
     /// `CascadeSpec::loops`' order. Empty from a column without loops, and
     /// from a pass that did not fractionate (an idle or flooded column).
@@ -1047,6 +1067,26 @@ pub struct LoopRun {
     pub drawn_temperature: Kelvin,
 }
 
+/// The least share of a column's throughput a draw its line has stopped
+/// runs at [-] (M86.2, docs/DESIGN.md §84.2): a stage cascade's draw rates
+/// may not reach zero (its cut-back floor, §72.1), so a stopped product is a
+/// millionth of the feed. The engine lets a draw past its line's limit by
+/// this much.
+pub const STOPPED_DRAW_SHARE: f64 = 1.0e-6;
+
+/// A draw a column ran short this pass, its line delivering less than the
+/// column would send it (M86.2, docs/DESIGN.md §84.2).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShortDraw {
+    /// The draw, an index into `ColumnPass::draws` and `Separation::draws`.
+    pub draw: usize,
+    /// What the column would have sent it [kg/s]: its own share, and on a
+    /// column that holds no liquid whatever came down from a short draw above.
+    pub wanted: KgPerSec,
+    /// What its line delivered, the draw's flow this pass [kg/s].
+    pub delivered: KgPerSec,
+}
+
 /// A side draw a column cut back this pass (M67.1, docs/DESIGN.md §72.1).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CutBackDraw {
@@ -1170,6 +1210,15 @@ pub struct ColumnPass<'a> {
     /// docs/DESIGN.md §67.18), or `None` on a column with none. Never part of
     /// `feed`, `feed_flow` or `temperature`: it enters its own stage.
     pub steam: Option<ColumnSteam>,
+    /// The most each draw's line delivers this tick [kg/s], parallel to
+    /// `draws` (M86.2, docs/DESIGN.md §84.2): `None` for a draw whose line
+    /// carries what it is sent, or that has no line. EMPTY on every pass with
+    /// no short line — every shipped plant's. A model runs a limited draw at
+    /// no more: a column that holds no liquid sends the rest to the next draw
+    /// down, one that holds liquid keeps it. The engine refuses a pass that
+    /// draws more than a limit, naming the line, so a model that ignores
+    /// this cannot hide it.
+    pub draw_limits: &'a [Option<KgPerSec>],
 }
 
 impl ColumnPass<'_> {

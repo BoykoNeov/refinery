@@ -40,7 +40,7 @@ const CP_WATER: f64 = 4186.0;
 
 /// The crude unit with a product line on every draw, on a plant that boils
 /// (`flashing`) or not.
-fn crude_unit_lines(flashing: bool) -> String {
+pub(crate) fn crude_unit_lines(flashing: bool) -> String {
     let mut src = CRUDE_UNIT.to_string();
     if flashing {
         src = src
@@ -115,7 +115,7 @@ elevation_change_m = {}
     src
 }
 
-fn build(src: &str) -> Result<Engine, String> {
+pub(crate) fn build(src: &str) -> Result<Engine, String> {
     let file = refinery_scenarios::load_str(src).map_err(|e| e.to_string())?;
     refinery_scenarios::build_engine(&file).map_err(|e| e.to_string())
 }

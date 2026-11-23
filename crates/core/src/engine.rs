@@ -1576,6 +1576,7 @@ impl Engine {
                 earlier,
                 &solution.starved,
                 &solution.loop_delivered,
+                &solution.draw_delivered,
                 dt,
             )
         };

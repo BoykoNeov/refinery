@@ -187,6 +187,8 @@ mod restart_permissive_reference;
 mod restart_tubes_reference;
 #[path = "reverse_action_reference.rs"]
 mod reverse_action_reference;
+#[path = "short_draw_line.rs"]
+mod short_draw_line;
 #[path = "slate_loading.rs"]
 mod slate_loading;
 #[path = "snapshot_slate.rs"]

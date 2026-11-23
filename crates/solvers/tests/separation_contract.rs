@@ -38,6 +38,7 @@ impl SeparationModel for ShortSplitter {
         _thermo: &dyn ThermoModel,
     ) -> Result<Separation, SimError> {
         Ok(Separation {
+            short_draws: Vec::new(),
             profile: None,
             draws: vec![DrawSeparation {
                 split: 1.0,
@@ -232,6 +233,7 @@ fn a_short_draw_list_is_refused_by_the_composition_reader() {
     separations.insert(
         column,
         Separation {
+            short_draws: Vec::new(),
             profile: None,
             draws: vec![DrawSeparation {
                 split: 1.0,
@@ -298,6 +300,7 @@ impl SeparationModel for Recorder {
             temperature: pass.temperature,
         };
         Ok(Separation {
+            short_draws: Vec::new(),
             profile: Some(refinery_core::traits::CascadeProfile {
                 temperatures: vec![Kelvin(call)],
                 liquid: vec![vec![0.5, 0.5]],
@@ -390,6 +393,7 @@ impl SeparationModel for RunningRecorder {
             temperature: pass.temperature,
         };
         Ok(Separation {
+            short_draws: Vec::new(),
             profile: None,
             draws: vec![half.clone(), half],
             condenser_duty: Some(Watt::ZERO),

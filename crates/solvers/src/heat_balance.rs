@@ -34,8 +34,8 @@ use refinery_core::graph::{
 };
 use refinery_core::traits::{
     CascadeProfile, ColumnPass, CondenserReading, CutBackDraw, DeclinedHold, DrawSeparation,
-    HoldupReading, LevelLimit, LoopRun, ReliefVent, Separation, SeparationModel, SlopFlow,
-    SlopVessel, ThermoModel,
+    HoldupReading, LevelLimit, LoopRun, ReliefVent, Separation, SeparationModel, ShortDraw,
+    SlopFlow, SlopVessel, ThermoModel, STOPPED_DRAW_SHARE,
 };
 use refinery_core::units::{
     CubicMeter, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, R_GAS, T_AMBIENT,
@@ -766,6 +766,7 @@ impl HeatBalanceCascade {
                 );
             }
             return Ok(Separation {
+                short_draws: Vec::new(),
                 profile: None,
                 draws,
                 condenser_duty: Some(Watt::ZERO),
@@ -934,6 +935,15 @@ impl HeatBalanceCascade {
         {
             return stepped_pass(&setup, holdup, state, feed_vapour_fraction);
         }
+        // A draw whose line delivers less runs at what it delivers, the rest
+        // down to the next draw (M86.2, docs/DESIGN.md §84.2).
+        let mut setup = setup;
+        let short_draws = limit_shares(
+            &mut setup.plan,
+            pass.draw_limits,
+            water_draw.map(|(at, _)| at),
+            setup.feed_mass,
+        );
 
         let profile = match self.method {
             Method::FixedPoint => self.solve_by_fixed_point(&setup, warm)?,
@@ -1122,6 +1132,7 @@ impl HeatBalanceCascade {
         };
 
         Ok(Separation {
+            short_draws,
             draws: result,
             profile: Some(CascadeProfile {
                 temperatures: profile.temperatures.iter().copied().map(Kelvin).collect(),
@@ -1421,6 +1432,56 @@ fn emptied(mut state: HoldupState) -> HoldupState {
     state.tray_vapour.fill(KgPerSec(0.0));
     state.tray_drops = vec![Pascal(0.0); state.tray_vapour.len()];
     state
+}
+
+/// A column that holds no liquid runs each draw its line limits at what the
+/// line delivers, top down, the rest of its share added to the next oil draw
+/// below — the bottoms by subtraction (M86.2, docs/DESIGN.md §84.2): the
+/// liquid a product line cannot take overflows its tray to the one under it.
+/// Each limit is a flow [kg/s], each share `plan.mass_ratios` one of the oil
+/// fed, `feed_mass` [kg/s]; `water_at` the column's water draw, which the plan
+/// leaves out. A draw cut to nothing runs at [`STOPPED_DRAW_SHARE`], a product
+/// that has stopped. The bottoms is not limited here: past its line's limit
+/// the engine refuses the column. Returns the draws it ran short, by the
+/// column's own index — empty, and the plan untouched, with no limits.
+fn limit_shares(
+    plan: &mut CascadePlan,
+    limits: &[Option<KgPerSec>],
+    water_at: Option<usize>,
+    feed_mass: f64,
+) -> Vec<ShortDraw> {
+    let mut short = Vec::new();
+    if limits.is_empty() || feed_mass.is_nan() || feed_mass <= 0.0 {
+        return short;
+    }
+    let column = |p: usize| match water_at {
+        Some(at) if p >= at => p + 1,
+        _ => p,
+    };
+    let last = plan.mass_ratios.len() - 1;
+    let mut carry = 0.0;
+    for p in 0..last {
+        let wanted = plan.mass_ratios[p] + carry;
+        carry = 0.0;
+        let limit = limits.get(column(p)).copied().flatten();
+        match limit {
+            Some(limit) if wanted * feed_mass > limit.value() => {
+                let ran = (limit.value() / feed_mass)
+                    .max(STOPPED_DRAW_SHARE)
+                    .min(wanted);
+                carry = wanted - ran;
+                plan.mass_ratios[p] = ran;
+                short.push(ShortDraw {
+                    draw: column(p),
+                    wanted: KgPerSec(wanted * feed_mass),
+                    delivered: KgPerSec(ran * feed_mass),
+                });
+            }
+            _ => plan.mass_ratios[p] = wanted,
+        }
+    }
+    plan.mass_ratios[last] += carry;
+    short
 }
 
 /// One tick of a column that holds liquid (M74, docs/DESIGN.md §79.2): the
@@ -1726,6 +1787,26 @@ fn stepped_pass_at(
     } else {
         state.settled_reboiler.value()
     };
+    // Each draw's line limit by the plan's draw (M86.2, docs/DESIGN.md
+    // §84.2), empty while no line is short.
+    let water_at = pass.draws.iter().position(|draw| draw.water);
+    let column_of = |p: usize| match water_at {
+        Some(at) if p >= at => p + 1,
+        _ => p,
+    };
+    let limits: Vec<Option<f64>> = if pass.draw_limits.is_empty() {
+        Vec::new()
+    } else {
+        (0..plan.locations.len())
+            .map(|p| {
+                pass.draw_limits
+                    .get(column_of(p))
+                    .copied()
+                    .flatten()
+                    .map(|limit| limit.value())
+            })
+            .collect()
+    };
     let step = ColumnStep {
         plan,
         spec,
@@ -1742,6 +1823,7 @@ fn stepped_pass_at(
         energy_scale,
         tolerance: setup.tolerance,
         vent: venting.map_or(0.0, |venting| venting.mol_s),
+        limits: &limits,
     };
     // The last tick's answer is where Newton starts — a hint; failing one,
     // the state's temperatures and the vapour its trays carried.
@@ -1911,6 +1993,15 @@ fn stepped_pass_at(
         &[],
     )?;
     Ok(Separation {
+        short_draws: stepped
+            .short
+            .iter()
+            .map(|&(p, wanted, delivered)| ShortDraw {
+                draw: column_of(p),
+                wanted: KgPerSec(wanted),
+                delivered: KgPerSec(delivered),
+            })
+            .collect(),
         draws,
         profile: Some(CascadeProfile {
             temperatures: profile.temperatures.iter().copied().map(Kelvin).collect(),
@@ -3554,6 +3645,7 @@ fn oil_free_feed(
         )));
     }
     Ok(Separation {
+        short_draws: Vec::new(),
         draws,
         profile: None,
         condenser_duty: Some(Watt(condenser)),
@@ -3753,6 +3845,7 @@ fn flooded_pass_through(
             },
         );
         return Ok(Separation {
+            short_draws: Vec::new(),
             draws,
             profile: None,
             condenser_duty: Some(Watt(condenser)),
@@ -3795,6 +3888,7 @@ fn flooded_pass_through(
         },
     );
     Ok(Separation {
+        short_draws: Vec::new(),
         draws,
         profile: None,
         condenser_duty: Some(Watt(condenser)),
@@ -4033,6 +4127,7 @@ fn water_only_inflow(
         },
     );
     Ok(Separation {
+        short_draws: Vec::new(),
         draws,
         profile: None,
         condenser_duty: Some(Watt(condenser)),
@@ -4839,6 +4934,7 @@ mod tests {
         let spec = spec(reflux_ratio);
         model.separate(
             &ColumnPass {
+                draw_limits: &[],
                 slate,
                 draws: &draws,
                 smearing: Kelvin(0.0),
@@ -5102,6 +5198,7 @@ mod tests {
             let idle = HeatBalanceCascade::new()
                 .separate(
                     &ColumnPass {
+                        draw_limits: &[],
                         slate: &slate,
                         draws: &draws,
                         smearing: Kelvin(0.0),
@@ -5309,6 +5406,7 @@ mod start_tests {
         };
         model.separate(
             &ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws: &draws,
                 smearing: Kelvin(0.0),
@@ -5423,6 +5521,7 @@ mod pumparound_tests {
         let draws = draws();
         model.separate(
             &ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws: &draws,
                 smearing: Kelvin(0.0),
@@ -5680,6 +5779,7 @@ mod newton_tests {
                 holdup: None,
             };
             let pass = ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws: &draws,
                 smearing: Kelvin(0.0),
@@ -5720,6 +5820,7 @@ mod newton_tests {
         let scorching = HeatBalanceCascade::new()
             .separate(
                 &ColumnPass {
+                    draw_limits: &[],
                     slate: &slate,
                     draws: &draws,
                     smearing: Kelvin(0.0),
@@ -5783,6 +5884,7 @@ mod newton_tests {
             HeatBalanceCascade::new()
                 .separate(
                     &ColumnPass {
+                        draw_limits: &[],
                         slate: &slate,
                         draws: &draws,
                         smearing: Kelvin(0.0),
@@ -5892,6 +5994,7 @@ mod newton_tests {
         ) -> Result<Separation, SimError> {
             model.separate(
                 &ColumnPass {
+                    draw_limits: &[],
                     slate: &self.slate,
                     draws: &self.draws,
                     smearing: Kelvin(0.0),
@@ -6564,6 +6667,7 @@ mod newton_tests {
             HeatBalanceCascade::new()
                 .separate(
                     &ColumnPass {
+                        draw_limits: &[],
                         slate: &slate,
                         draws: &draws,
                         smearing: Kelvin(0.0),
@@ -6684,6 +6788,7 @@ mod steam_tests {
         let steam_le = Kelvin(273.15 + 400.0 + latent / 4184.0);
         for stage in [7, 8] {
             let pass = ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws: &draws,
                 smearing: Kelvin(0.0),
@@ -6805,6 +6910,7 @@ mod loop_tests {
         let draws = draws();
         model.separate(
             &ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws: &draws,
                 smearing: Kelvin(0.0),
@@ -6997,6 +7103,7 @@ mod loop_tests {
             model
                 .separate(
                     &ColumnPass {
+                        draw_limits: &[],
                         slate: &slate,
                         draws: &draws,
                         smearing: Kelvin(0.0),

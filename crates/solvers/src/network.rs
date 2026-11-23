@@ -3146,6 +3146,8 @@ where
     solution.pump_two_phase.extend(pins.pump_two_phase);
     // And what a short loop line delivers (M72.3, §77.13).
     solution.loop_delivered = pins.loop_delivered;
+    // And what a short draw line delivers (M86.2, §84.2).
+    solution.draw_delivered = pins.draw_delivered;
     Ok(solution)
 }
 
@@ -4152,6 +4154,7 @@ pub fn finalize(
         }
     }
     Ok(HydraulicSolution {
+        draw_delivered: BTreeMap::new(),
         node_pressure,
         edge_mass_flow: edges.mass_flow,
         edge_dissipation: edges.dissipation,
@@ -4624,6 +4627,10 @@ pub struct DrawLinePins {
     /// first pipe: the most it delivers [kg/s] (M72.3, docs/DESIGN.md §77.13)
     /// — `HydraulicSolution::loop_delivered`.
     pub loop_delivered: BTreeMap<EdgeId, KgPerSec>,
+    /// Each column draw whose line cannot carry what its march asked, by its
+    /// first pipe: the most it delivers [kg/s] (M86.2, docs/DESIGN.md §84.2)
+    /// — `HydraulicSolution::draw_delivered`.
+    pub draw_delivered: BTreeMap<EdgeId, KgPerSec>,
 }
 
 /// Bisection steps on a short loop line's flow (M72.3): 2^-60 of its
@@ -4658,7 +4665,17 @@ impl LineMarch {
 /// separation (a liquid at its stage), not the column's mixed feed; before any
 /// separation, the pipe's stored stream. The last edge's arrival must reach
 /// its store's pressure — the rest is the line's control valve, implicit — or
-/// the line cannot deliver its draw, and the solve refuses, naming it.
+/// the line cannot deliver its draw.
+///
+/// **A short draw line delivers what it can** (M86.2, docs/DESIGN.md
+/// §84.2), found as a short loop's is: the flow at which the march arrives
+/// at its store's pressure, by bisection, or zero where even no flow cannot —
+/// pinned at that flow and reported in `draw_delivered`; the column runs the
+/// draw at no more, and refuses, naming the line, where it cannot. A draw has
+/// no setpoint here, so a line its column ran short last tick
+/// (`Separation::short_draws`) is marched at what the column wanted of it,
+/// and released once it carries that; every other line at its stored flow,
+/// as before, the search made only when that falls short.
 ///
 /// **A pumparound loop's line does not refuse** (M72.3, docs/DESIGN.md
 /// §77.13): marched at its set flow, a line that arrives short of its column
@@ -4710,20 +4727,53 @@ pub fn march_draw_lines(
             store: None,
         };
         let marched = march(column, line, ends, mass_flow)?;
-        if !marched.reaches() {
-            let (store, store_pressure) = marched.store;
-            return Err(SimError::Numerical(format!(
-                "the draw line of column '{}' through '{}' cannot deliver its {mass_flow:.4} \
-                 kg/s to '{}': it arrives at {:.4} bar against the store's {:.4} bar. A \
-                 line's pump must push its draw through its pipes and coolers to its store \
-                 (docs/DESIGN.md §67.13): start or strengthen the pump, or widen the line",
-                graph.node(column).name,
-                graph.node(graph.endpoints(line[0]).1).name,
-                graph.node(store).name,
-                marched.arrival / 1e5,
-                store_pressure / 1e5
-            )));
-        }
+        // What the column wanted of a line it ran short last tick.
+        let wanted = previous_states
+            .column_separation
+            .get(&column)
+            .and_then(|separation| separation.short_draws.iter().find(|s| s.draw == index))
+            .map(|short| short.wanted.value());
+        let set = match wanted {
+            None if marched.reaches() => {
+                pin(&mut pins, marched);
+                continue;
+            }
+            None => mass_flow,
+            Some(wanted) => {
+                let at_wanted = march(column, line, ends, wanted)?;
+                if at_wanted.reaches() {
+                    // Released: it carries what was wanted.
+                    pin(
+                        &mut pins,
+                        if marched.reaches() {
+                            marched
+                        } else {
+                            at_wanted
+                        },
+                    );
+                    continue;
+                }
+                wanted
+            }
+        };
+        // Short: the most it delivers, `lo` arriving at its store at least.
+        let at_zero = march(column, line, ends, 0.0)?;
+        let (delivered, marched) = if !at_zero.reaches() {
+            (0.0, at_zero)
+        } else {
+            let (mut lo, mut hi) = ((0.0, at_zero), set);
+            for _ in 0..LOOP_DELIVERY_BISECTIONS {
+                let mid = 0.5 * (lo.0 + hi);
+                let at_mid = march(column, line, ends, mid)?;
+                if at_mid.reaches() {
+                    lo = (mid, at_mid);
+                } else {
+                    hi = mid;
+                }
+            }
+            lo
+        };
+        pins.draw_delivered.insert(line[0], KgPerSec(delivered));
         pin(&mut pins, marched);
     }
     // A pumparound loop's line marches the same way, its "store" its own

@@ -173,6 +173,7 @@ fn try_run(
     let feed = Composition::from_weights(feed_mass).unwrap();
     cascade.separate(
         &ColumnPass {
+            draw_limits: &[],
             slate,
             draws: &column.draws,
             smearing: Kelvin(0.0),
@@ -201,6 +202,7 @@ fn try_run_warm(
     let feed = Composition::from_weights(feed_mass).unwrap();
     cascade.separate(
         &ColumnPass {
+            draw_limits: &[],
             slate,
             draws: &column.draws,
             smearing: Kelvin(0.0),
@@ -858,6 +860,7 @@ fn a_temperature_independent_k_has_no_bubble_point_and_is_refused() {
     let message = StageCascade::new()
         .separate(
             &ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws: &column.draws,
                 smearing: Kelvin(0.0),

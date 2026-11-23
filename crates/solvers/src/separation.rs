@@ -119,6 +119,7 @@ impl SeparationModel for CutPointSplitter {
         }
 
         Ok(Separation {
+            short_draws: Vec::new(),
             draws: result,
             // No profile, for the same reason as the duties: a boiling-range
             // split has no stages and iterates nothing, so there is no converged
@@ -233,6 +234,7 @@ mod tests {
         CutPointSplitter
             .separate(
                 &ColumnPass {
+                    draw_limits: &[],
                     slate,
                     draws,
                     smearing,
@@ -423,6 +425,7 @@ mod tests {
         let sep = CutPointSplitter
             .separate(
                 &ColumnPass {
+                    draw_limits: &[],
                     slate: &slate,
                     draws: &draws,
                     smearing: Kelvin(0.0),

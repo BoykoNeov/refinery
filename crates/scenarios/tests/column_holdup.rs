@@ -1930,3 +1930,111 @@ fn slow_the_feed_back_in_one_tick_onto_a_stage_not_boiling() {
     assert!(books.mass < 1.0e-8, "{}", books.mass);
     assert!(books.heat < 200.0, "{}", books.heat);
 }
+
+/// **A column that holds liquid keeps what a stopped product line cannot
+/// take** (M86.2, docs/DESIGN.md §84.2): the naphtha runs down through a
+/// pump to a tank 40 m above it, so only the pump lifts it there. Stopped,
+/// the distillate stops — no draw below takes it, as on a column that holds
+/// none — and the drum fills, its level loop asking for more than the line
+/// delivers; every component's books close every tick. Started again, the
+/// distillate runs and the drum's level comes back down.
+#[test]
+fn slow_a_stopped_distillate_pump_fills_the_drum() {
+    let src = with_naphtha_pump(&fixture()).replacen(
+        "from = \"naphtha_pump\"\nto = \"naphtha_tank\"",
+        "from = \"naphtha_pump\"\nto = \"naphtha_tank\"\nelevation_change_m = 40.0",
+        1,
+    );
+    assert!(src.contains("elevation_change_m = 40.0"));
+    let mut engine = engine_of(&src).unwrap();
+    let first = run(&mut engine, 100);
+    let running = line_flow(&first, "naphtha_draw");
+    let level_before = reading(&first).drum_level;
+    assert!(running > 1.0, "the naphtha runs: {running}");
+    let feed = first
+        .edges
+        .iter()
+        .find(|e| e.name == "transfer_line")
+        .unwrap()
+        .id;
+    let draws: Vec<_> = draw_edges(&engine)
+        .into_iter()
+        .map(|(_, edge)| edge)
+        .collect();
+    let pump = engine.graph.find_node("naphtha_pump").unwrap();
+    engine
+        .apply(Command::SetPumpOn {
+            node: pump,
+            on: false,
+        })
+        .unwrap();
+    let dt = 0.1;
+    let mut worst: f64 = 0.0;
+    let mut level = level_before;
+    for t in 0..300 {
+        let before = inventory(&state(&engine).unwrap());
+        let snapshot = run(&mut engine, 1);
+        let after = inventory(&state(&engine).unwrap());
+        let flow = |edge| {
+            let e = snapshot.edges.iter().find(|e| e.id == edge).unwrap();
+            (
+                e.stream.mass_flow.value(),
+                e.stream.composition.fractions().to_vec(),
+            )
+        };
+        let (fed, z) = flow(feed);
+        for c in 0..z.len() {
+            let mut balance = fed * z[c] - (after[c] - before[c]) / dt;
+            for edge in &draws {
+                let (drawn, w) = flow(*edge);
+                balance -= drawn * w[c];
+            }
+            for slop in slop_of(&snapshot) {
+                balance -= slop.flow_kg_s * slop.composition.fractions()[c];
+            }
+            worst = worst.max(balance.abs());
+        }
+        let distillate = line_flow(&snapshot, "naphtha_draw");
+        assert!(
+            distillate < 1e-9,
+            "tick {t}: the distillate runs: {distillate}"
+        );
+        assert_eq!(
+            line_flow(&snapshot, "naphtha_rundown"),
+            distillate,
+            "tick {t}"
+        );
+        // The reading is the level the tick started from: a tick late.
+        let now = reading(&snapshot).drum_level;
+        assert!(
+            t < 2 || now >= level - 1e-12,
+            "tick {t}: the drum fell {level} -> {now}"
+        );
+        level = now;
+        if t % 100 == 99 {
+            println!("M86_2 holdup: tick {t}, drum {now:.4} (from {level_before:.4})");
+        }
+    }
+    // Measured 0.500 -> 0.535: the level loop sends more back as reflux too.
+    assert!(level > level_before + 0.02, "{level_before} -> {level}");
+    // As at rest (`each_component_is_conserved_every_tick`): round-off.
+    assert!(worst < 1.0e-8, "{worst}");
+    let column = engine.graph.find_node("column").unwrap();
+    let short = &engine.node_states().column_separation[&column].short_draws;
+    assert_eq!(short.len(), 1, "{short:?}");
+    assert_eq!(short[0].draw, 0);
+    assert!(short[0].wanted.value() > 1.0, "{short:?}");
+
+    engine
+        .apply(Command::SetPumpOn {
+            node: pump,
+            on: true,
+        })
+        .unwrap();
+    let snapshot = run(&mut engine, 300);
+    assert!(
+        line_flow(&snapshot, "naphtha_draw") > running,
+        "it runs again"
+    );
+    assert!(reading(&snapshot).drum_level < level, "the drum comes down");
+}

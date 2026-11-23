@@ -120,6 +120,7 @@ fn separate_by(
     model
         .separate(
             &ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws: &draws,
                 smearing: Kelvin(0.0),

@@ -129,6 +129,7 @@ fn separate(
     model
         .separate(
             &ColumnPass {
+                draw_limits: &[],
                 slate: &slate,
                 draws,
                 smearing: Kelvin(0.0),
@@ -442,6 +443,7 @@ fn the_steamed_column_is_start_insensitive() {
         model
             .separate(
                 &ColumnPass {
+                    draw_limits: &[],
                     slate: &slate,
                     draws: &draws,
                     smearing: Kelvin(0.0),

@@ -11844,9 +11844,12 @@ decisions: `docs/DESIGN.md` §84.
 - [x] **M86.1** — a stopped centrifugal pump resists as a locked rotor
   (Chaudhry 2014, Table A-1): `QuadraticBranch::stopped_pump`, 1.57× the
   curve's `a` forward, 2.03× reversed (§84.1). Four plants moved, approved.
-- [ ] **M86.2** — a draw line delivers what it can instead of refusing; on a
+- [x] **M86.2** — a draw line delivers what it can instead of refusing; on a
   zero-volume column the shortfall goes to the next draw down, a short
-  bottoms draw halts with its name; a holdup column's tray backs up.
+  bottoms draw halts with its name; a holdup column's tray backs up (§84.2).
+  72 of 72 plants byte-identical on both solvers. Open for the user before
+  M86.3: a stopped line under a raised tank stops at zero, as if it had a
+  check valve — real back-flow is not modelled (§84.2, last paragraph).
 - [ ] **M86.3** — a new zero-volume plant whose product lines need their pump.
 - [ ] **M86.4** — a new holdup plant with product pumps (margins checked first).
 - [ ] **M86.5** — DEFERRED row: the six crude units' easy lines, and holdup

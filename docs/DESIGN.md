@@ -32514,3 +32514,75 @@ is, M72.3) instead of refusing; on a zero-volume column the shortfall goes
 down to the next draw inside the separation's split, a short bottoms draw is
 an `Err` naming it; a holdup column runs the draw at what was delivered, so
 its tray backs up. Then the new plants.
+
+### 84.2 Landed — a short draw line delivers what it can
+
+**The solver reports, the column decides.** `march_draw_lines` no longer
+refuses a draw line that cannot reach its store. As a short loop's line does
+(M72.3), it finds the most the line delivers, by 60 bisections on the march
+at the stored state, or zero where even no flow arrives (a stopped pump under
+a raised tank). It pins the line at that flow and reports it in
+`HydraulicSolution::draw_delivered`, keyed by the line's first pipe. The
+engine's sweep hands each column its lines' limits (`ColumnPass::draw_limits`,
+parallel to the draws, empty while no line is short), and the column model
+runs each limited draw at no more. The limit goes in *before* the column
+solves, so the draw's flow and its composition come from one pass and every
+component's books close at a zero-volume column.
+
+**No flip-flop.** A draw has no setpoint the solver knows. After one short
+tick the line's stored flow is what it delivered, which it can carry, so the
+full share would come back the next tick and be cut the tick after. So the
+column records each draw it ran short (`Separation::short_draws`: the draw,
+what it wanted, what it got), and the next tick marches that line at what
+was wanted, releasing it only once it carries that. A line not short last
+tick is marched at its stored flow exactly as before, the search made only
+when that falls short — so every plant whose lines deliver makes the same
+march calls as before (72 of 72 plants byte-identical on both solvers).
+
+**A column that holds no liquid** (the heat-balance cascade's steady path,
+`heat_balance::limit_shares`): top down, a limited draw's share drops to what
+its line delivers, and the rest is added to the next oil draw below (its own
+line's limit then applies to the sum); the last side draw's rest goes to the
+bottoms, which is `1 − Σ others`. The share is one of the OIL fed
+(`setup.feed_mass`), and the plan's draws leave out the condenser's water
+draw, so the plan index is translated to the column's. A draw cut to nothing
+runs at `STOPPED_DRAW_SHARE` (a millionth of the feed): the cascade's draw
+rates may not reach zero, the same floor its tray cut-back uses (§72.1).
+
+**A column that holds liquid** (`column_step::set_flows`): a limited side
+draw, distillate or bottoms runs at no more and what it cannot take stays on
+its tray, in the drum or in the base, so the level there rises. The reflux
+is still the drum level loop's, so the drum fills slowly: 0.500 → 0.535 of
+its volume in 30 s on the tray plant with a stopped distillate pump.
+
+**The refusal moved, and covers every model.** The sweep refuses a pass that
+draws more than a line's limit (past the stopped floor and a 1e-9 slack),
+naming the line's first node: "the draw line of column … through '…' cannot
+deliver its … kg/s". On a zero-volume column that is a short bottoms line,
+which has no draw below it. A separation model that ignores
+`draw_limits` hits the same refusal; it cannot hide a short line.
+
+**Gates.** `crates/scenarios/tests/short_draw_line.rs` (inline fixtures, the
+crude unit with a product line on every draw, a product's tank raised 15 →
+40 m so only its pump lifts it): a stopped kerosene pump sends its share to
+the diesel every tick, books closing to 1e-13 of the feed, released on
+restart; two stopped pumps in a row pass both down to the gas oil; on the wet
+crude unit past its water draw; a narrowed line that carries part of its
+share (0.095 of 0.16) holds it, and the tick after its pump restarts is short
+too, never a tick at the full share. `column_holdup.rs`
+`slow_a_stopped_distillate_pump_fills_the_drum`. The existing residue-halt
+test still passes on the new refusal. Mutation pass, five mutants, all
+killed: the carry dropped; the wanted flow ignored by the march; the water
+draw's index ignored; the holdup distillate unlimited; the sweep's refusal
+removed.
+
+**Open — for the user, before M86.3: a stopped line does not drain back.**
+Where even no flow reaches the tank (the tank higher than the column can
+push), the line is reported at zero and the product stops. Without a check
+valve on the pump's discharge, a real plant's raised tank would push the
+product back through the stopped pump into the column (the tank plant's
+note, DEFERRED E22: about −4 kg/s back through a stopped pump). So the model
+behaves as if every product line had a check valve. Whether the new plants
+should teach that (put a `check_valve` on their lines, M30) or show the
+back-flow is a choice to make before M86.3 builds plants whose lines need
+their pumps.
