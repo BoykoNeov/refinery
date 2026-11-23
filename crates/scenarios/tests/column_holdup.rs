@@ -1939,7 +1939,7 @@ fn slow_the_feed_back_in_one_tick_onto_a_stage_not_boiling() {
 /// delivers; every component's books close every tick. Started again, the
 /// distillate runs and the drum's level comes back down.
 #[test]
-fn slow_a_stopped_distillate_pump_fills_the_drum() {
+fn a_stopped_distillate_pump_fills_the_drum() {
     let src = with_naphtha_pump(&fixture()).replacen(
         "from = \"naphtha_pump\"\nto = \"naphtha_tank\"",
         "from = \"naphtha_pump\"\nto = \"naphtha_tank\"\nelevation_change_m = 40.0",

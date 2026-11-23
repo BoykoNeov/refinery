@@ -32562,6 +32562,19 @@ deliver its … kg/s". On a zero-volume column that is a short bottoms line,
 which has no draw below it. A separation model that ignores
 `draw_limits` hits the same refusal; it cannot hide a short line.
 
+**The distillate.** A distillate line that carries part of its share
+works the same way: narrowed to 0.06 m it carries 0.084 of the oil fed, not
+0.22, and the rest goes down. At a set reflux ratio the reflux falls with
+it, so the kerosene's tray takes only part (0.252, not 0.38) and its tray
+cut-back (§72.1) sends the rest to the bottoms; the books close. A
+distillate stopped outright is a column with no reflux, which a column that
+holds no liquid cannot run: its solve fails, and the sweep now refuses any
+column that fails while a line is short with the line's name in front
+("column … cannot run while its draw line through 'naphtha_pump' …").
+
+**Saves.** `short_draws` is not saved, and needs not be: a save (M77) is the
+plant file and its commands replayed, which rebuilds it to the bit.
+
 **Gates.** `crates/scenarios/tests/short_draw_line.rs` (inline fixtures, the
 crude unit with a product line on every draw, a product's tank raised 15 →
 40 m so only its pump lifts it): a stopped kerosene pump sends its share to
@@ -32569,8 +32582,9 @@ the diesel every tick, books closing to 1e-13 of the feed, released on
 restart; two stopped pumps in a row pass both down to the gas oil; on the wet
 crude unit past its water draw; a narrowed line that carries part of its
 share (0.095 of 0.16) holds it, and the tick after its pump restarts is short
-too, never a tick at the full share. `column_holdup.rs`
-`slow_a_stopped_distillate_pump_fills_the_drum`. The existing residue-halt
+too, never a tick at the full share; a narrowed distillate line sends the
+rest down; a stopped distillate pump halts naming it. `column_holdup.rs`
+`a_stopped_distillate_pump_fills_the_drum`. The existing residue-halt
 test still passes on the new refusal. Mutation pass, five mutants, all
 killed: the carry dropped; the wanted flow ignored by the march; the water
 draw's index ignored; the holdup distillate unlimited; the sweep's refusal

@@ -281,3 +281,49 @@ fn a_line_that_carries_part_holds_it() {
         );
     }
 }
+
+/// **A distillate line that carries part of its share sends the rest down**:
+/// the naphtha's rundown narrowed, the distillate runs at what its line
+/// carries and the rest goes down the column. The kerosene's tray takes what
+/// it can at a lower reflux — measured 0.252 of the oil fed, not the whole
+/// 0.38 — and the tray cut-back (§72.1) sends the rest to the bottoms.
+#[test]
+fn a_distillate_line_that_carries_part_sends_the_rest_down() {
+    let mut engine = build(&narrowed(&crude_unit_lines(false), "naphtha", 0.06)).unwrap();
+    for t in 0..30 {
+        let s = tick(&mut engine, 1);
+        // Its first tick marches the line at no flow, which it carries.
+        if t < 3 {
+            continue;
+        }
+        let now = shares(&engine, &s);
+        assert!(now[0] > 0.01 && now[0] < 0.22 - 1e-3, "tick {t}: {now:?}");
+        assert!(
+            now[1] > 0.16 + 1e-3,
+            "tick {t}: the kerosene took none: {now:?}"
+        );
+        assert!(
+            (now.iter().sum::<f64>() - 1.0).abs() < 1e-9,
+            "tick {t}: {now:?}"
+        );
+        assert!(worst_imbalance(&engine, &s) < 1e-9, "tick {t}");
+    }
+}
+
+/// **A stopped distillate pump halts the run, by name**: a column that holds
+/// no liquid cannot run with no distillate at a set reflux ratio — the
+/// reflux goes with it — and the refusal names the line that stopped it.
+#[test]
+fn a_stopped_distillate_pump_halts_naming_it() {
+    let mut engine = build(&needs_pump(&crude_unit_lines(false), "naphtha")).unwrap();
+    tick(&mut engine, 30);
+    set_pump(&mut engine, "naphtha", false);
+    let err = (0..3)
+        .find_map(|_| engine.tick().err())
+        .expect("a column with its distillate stopped cannot run");
+    let text = err.to_string();
+    assert!(
+        text.contains("cannot run while its draw line") && text.contains("naphtha_pump"),
+        "{text}"
+    );
+}

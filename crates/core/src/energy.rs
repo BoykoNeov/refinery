@@ -1470,6 +1470,45 @@ pub fn swept_density_change(
     Ok(largest)
 }
 
+/// A column's refusal while a draw line is short (M86.2, docs/DESIGN.md
+/// §84.2): unchanged with no limits, else prefixed with the lines and what
+/// each delivers, so the player is told which product stopped the column.
+fn short_line_refusal(
+    graph: &PlantGraph,
+    column: NodeId,
+    lines: &[(NodeId, usize, &[EdgeId])],
+    draw_limits: &[Option<KgPerSec>],
+    refusal: SimError,
+) -> SimError {
+    let short: Vec<String> = lines
+        .iter()
+        .filter(|(at, _, _)| *at == column)
+        .filter_map(|(_, index, line)| {
+            let delivered = draw_limits.get(*index).copied().flatten()?;
+            let first = graph.node(graph.endpoints(*line.first()?).1).name.clone();
+            Some(format!(
+                "'{first}' delivering {:.4} kg/s",
+                delivered.value()
+            ))
+        })
+        .collect();
+    if short.is_empty() {
+        return refusal;
+    }
+    let reason = match refusal {
+        SimError::Numerical(reason) => reason,
+        other => other.to_string(),
+    };
+    SimError::Numerical(format!(
+        "column '{}' cannot run while its draw line through {} cannot deliver its \
+         draw: a column that holds no liquid has nowhere to keep it, and a stopped \
+         distillate takes its reflux with it. Start or strengthen the pump, or widen \
+         the line (docs/DESIGN.md §84.2). The column: {reason}",
+        graph.node(column).name,
+        short.join(", ")
+    ))
+}
+
 /// How far past its line's limit a draw may run before the column is
 /// refused (M86.2, docs/DESIGN.md §84.2): a model turns the limit into a
 /// share of its feed and back, which rounds.
@@ -2256,64 +2295,71 @@ pub fn resolve_node_states(
                                     *limit = Some(*delivered);
                                 }
                             }
-                            let pass = separation.separate(
-                                &ColumnPass {
-                                    draw_limits: &draw_limits,
-                                    slate,
-                                    draws,
-                                    smearing: *smearing,
-                                    // The condenser's running pressure,
-                                    // where it declares one (M75.1,
-                                    // docs/DESIGN.md §80.1).
-                                    pressure: crate::graph::running_column_pressure(
-                                        *pressure,
-                                        cascade.as_deref(),
-                                    ),
-                                    feed,
-                                    feed_flow: column_feed_flow(graph, edge_mass_flow, id),
-                                    temperature: mixed,
-                                    cascade: cascade.as_deref(),
-                                    // The warm start, and it needs no engine
-                                    // state: the previous tick's `NodeStates`
-                                    // is already an argument to this sweep, and
-                                    // its separations are already keyed by node.
-                                    // A column that did not exist last tick, or
-                                    // a fidelity that publishes no profile, is
-                                    // `None` and starts cold.
-                                    seed: previous
-                                        .column_separation
-                                        .get(&id)
-                                        .and_then(|previous| previous.profile.as_ref()),
-                                    // This tick's earlier pass, on a re-solve
-                                    // (M64.2, docs/DESIGN.md §69.3).
-                                    earlier_pass: earlier
-                                        .and_then(|earlier| earlier.column_separation.get(&id))
-                                        .and_then(|earlier| earlier.profile.as_ref()),
-                                    // The duty it last ran at: this tick's
-                                    // earlier pass, else the last tick (M66.2,
-                                    // docs/DESIGN.md §71.2).
-                                    running_reboiler: match earlier
-                                        .and_then(|earlier| earlier.column_separation.get(&id))
-                                    {
-                                        Some(earlier) => {
-                                            earlier.reboiler_duty.map(|duty| RunningReboiler {
-                                                duty,
-                                                declined: earlier.reboiler_declined.as_ref(),
-                                            })
-                                        }
-                                        None => previous
+                            let pass = separation
+                                .separate(
+                                    &ColumnPass {
+                                        draw_limits: &draw_limits,
+                                        slate,
+                                        draws,
+                                        smearing: *smearing,
+                                        // The condenser's running pressure,
+                                        // where it declares one (M75.1,
+                                        // docs/DESIGN.md §80.1).
+                                        pressure: crate::graph::running_column_pressure(
+                                            *pressure,
+                                            cascade.as_deref(),
+                                        ),
+                                        feed,
+                                        feed_flow: column_feed_flow(graph, edge_mass_flow, id),
+                                        temperature: mixed,
+                                        cascade: cascade.as_deref(),
+                                        // The warm start, and it needs no engine
+                                        // state: the previous tick's `NodeStates`
+                                        // is already an argument to this sweep, and
+                                        // its separations are already keyed by node.
+                                        // A column that did not exist last tick, or
+                                        // a fidelity that publishes no profile, is
+                                        // `None` and starts cold.
+                                        seed: previous
                                             .column_separation
                                             .get(&id)
-                                            .and_then(|previous| previous.reboiler_duty)
-                                            .map(|duty| RunningReboiler {
-                                                duty,
-                                                declined: None,
-                                            }),
+                                            .and_then(|previous| previous.profile.as_ref()),
+                                        // This tick's earlier pass, on a re-solve
+                                        // (M64.2, docs/DESIGN.md §69.3).
+                                        earlier_pass: earlier
+                                            .and_then(|earlier| earlier.column_separation.get(&id))
+                                            .and_then(|earlier| earlier.profile.as_ref()),
+                                        // The duty it last ran at: this tick's
+                                        // earlier pass, else the last tick (M66.2,
+                                        // docs/DESIGN.md §71.2).
+                                        running_reboiler: match earlier
+                                            .and_then(|earlier| earlier.column_separation.get(&id))
+                                        {
+                                            Some(earlier) => {
+                                                earlier.reboiler_duty.map(|duty| RunningReboiler {
+                                                    duty,
+                                                    declined: earlier.reboiler_declined.as_ref(),
+                                                })
+                                            }
+                                            None => previous
+                                                .column_separation
+                                                .get(&id)
+                                                .and_then(|previous| previous.reboiler_duty)
+                                                .map(|duty| RunningReboiler {
+                                                    duty,
+                                                    declined: None,
+                                                }),
+                                        },
+                                        steam,
                                     },
-                                    steam,
-                                },
-                                thermo,
-                            )?;
+                                    thermo,
+                                )
+                                // A column that cannot run with a line short —
+                                // a stopped distillate, its reflux tied to it —
+                                // is refused naming that line (M86.2, §84.2).
+                                .map_err(|refusal| {
+                                    short_line_refusal(graph, id, &lines, &draw_limits, refusal)
+                                })?;
                             // Each draw LINE carries its draw on every pipe,
                             // `splitᵢ·ṁ_in` — the engine's draw write, to the
                             // bit (M62.4b, docs/DESIGN.md §67.13); `ṁ_in` the
