@@ -865,6 +865,7 @@ impl Engine {
             // condenser is a limit only.
             Command::SetCondenserCooling { node, on } => {
                 let model = self.separation.name();
+                let level = self.separation.column_pressure();
                 let name = self.graph.node(node).name.clone();
                 let NodeKind::Column { cascade, .. } = &mut self.graph.node_mut(node).kind else {
                     return Err(SimError::InvalidCommand(format!(
@@ -891,6 +892,18 @@ impl Engine {
                         )))
                     }
                 };
+                // A column whose pressure is held reads no condenser: its
+                // cooling water would change nothing, so it is no control
+                // (M89.0, docs/DESIGN.md §86).
+                if let Some(level) = level.filter(|level| !level.reads_condenser()) {
+                    return Err(SimError::InvalidCommand(format!(
+                        "'{name}' runs its pressure {}: the column stands at its set \
+                         pressure whatever its condenser does, so its cooling water changes \
+                         nothing (docs/DESIGN.md §86) — run it at column_pressure = \"limit\" \
+                         for the condenser to act",
+                        level.name()
+                    )));
+                }
                 condenser.coolant_lost = !on;
                 Ok(())
             }
@@ -4297,6 +4310,7 @@ impl Engine {
                                         at_design: condenser.at_design,
                                         flooded_share: condenser.flooded_share,
                                         at_ceiling: condenser.at_ceiling,
+                                        level: condenser.level,
                                     }
                                 }),
                             }),

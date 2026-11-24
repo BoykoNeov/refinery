@@ -32970,3 +32970,68 @@ each screen with its own longest (column: the holding plant at grade; furnace:
 the start permissive; pump: the gas lock; reactor: the hydrogen quench), the
 map and the leaking line; every screen's `--auto`, the map's `--auto` over all
 76 plants and the M84 hand-over run; the godot-feature clippy clean.
+
+## 86. A column's pressure from physics, its level switchable (M89)
+
+The user's ask (2026-11-23): simulate the column's 1.8 bar from physics, not
+as a given number, with each such element switchable to a simpler form when a
+plant runs too heavy. The plan is `docs/plans/column-pressure-from-physics.md`;
+its forks were answered on 2026-11-23 (A: a `[fidelity]` key with a CLI
+override; B: the pressure may fall below its set; C: Level 1b first; D: new
+plant files only).
+
+### 86.0 M89.0 — the switch, a pure refactor (2026-11-24)
+
+**The key.** `[fidelity] column_pressure = "held" | "limit"`, lowest first
+(`ColumnPressureLevel`, ordered). `"held"`: the column pinned at its set
+pressure, whatever its condenser declares. `"limit"`: M75's condenser that
+can run out (§80.2). `"controlled"` joins in M89.1.
+
+**A ceiling, not a selection.** A column runs at the lower of the key's level
+and the highest its own declarations support (`condenser_limit` → `"limit"`,
+nothing → `"held"`). Absent, the key is that highest, so every plant written
+before M89 is byte-identical. Written, it may only lower: a level whose keys
+no column on the plant declares is refused at load, naming the key
+(`"limit"` with no `condenser_limit`), as every key the project would
+otherwise leave unread. `"held"` needs no key and builds anywhere; on a plant
+with no condenser it is what the plant already was. The key is read on every
+plant, so an unknown level is refused whatever the separation.
+
+**The cap.** A frontend lowers every column the same way
+(`Fidelity::column_pressure_cap`, never read from a file; the CLI's
+`--column-pressure <level>` on `run` and `corpus`). It is never refused for
+lowering nothing, so one cap runs over the whole corpus.
+
+**The seam.** `ColumnPressureModel` in `core` (`level`, `top_pressure`), its
+implementations in `solvers::column_pressure`: `HeldPressure` (one step at
+the set) and `CondenserLimitPressure` (M75's search, moved unchanged: the
+first trial at last tick's pressure, the bracket grown from there, Illinois
+to settle it, the retreats from a trial that does not converge). The model
+searches through `PressureTrials`, which `heat_balance`'s `ColumnTrials`
+implements: each trial a whole step from the same start at a top pressure,
+every stage moved with it, and the condenser's balance (`PressureBalance`:
+the residual [W] and the overhead's store [W/Pa], a new unit,
+`WattPerPascal`). The trials keep each step; the tick is the step at the
+pressure the model answers, which it must have tried (an internal refusal
+otherwise). The model is carried by `HeatBalanceCascade`
+(`with_column_pressure`), the only separation that holds liquid, so no
+fidelity singleton was added to `Engine::new`. Every other seam is untouched.
+
+**Said, and refused.** A column run below what it declares says so on its
+condenser's faceplate: `holdup.condenser.level = "held"`, off the wire at
+its own level. Its cooling water is no control there — cutting or restoring
+it would change nothing — so `SetCondenserCooling` is refused naming the
+level and the key that makes it act (`SeparationModel::column_pressure`,
+`ColumnPressureLevel::reads_condenser`). The drain is still taken: shut, the
+drum still holds its excess rather than sending it to slop; only the back-up's
+effect on the pressure is unread.
+
+**Checked.** Every plant byte-identical, 76 of 76 on both solvers. Five tests
+(`column_pressure_level.rs`) and the unknown value's row in
+`fidelity_selection.rs`: the refusals; the cap only lowers (a plain plant
+capped at `"limit"` byte-identical to itself, the overfill plant capped
+`"held"` byte-identical to its file's `"held"`); `"limit"` written is the
+overfill plant's own, to the bit; held, with the coolant put out of reach by
+hand, the column stands at 1.8 bar to the bit every tick, its relief shut,
+while the limit plant's pressure leaves its set; the cooling refused when
+held.

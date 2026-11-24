@@ -925,6 +925,12 @@ pub struct CondenserOperation {
     /// not serialized, while off.
     #[serde(default, skip_serializing_if = "is_false")]
     pub at_ceiling: bool,
+    /// The level the column ran its pressure at, where `[fidelity]
+    /// column_pressure` (or a frontend's cap) put it below the one its own
+    /// declarations support (M89.0, docs/DESIGN.md §86) — the condenser's
+    /// keys it no longer reads, said so. Absent, not serialized, at its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<crate::traits::ColumnPressureLevel>,
 }
 
 /// Whether a flag is off — what keeps `HoldupOperation::total_reflux` off

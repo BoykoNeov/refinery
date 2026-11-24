@@ -11972,7 +11972,7 @@ changes is what the pressure IS: a state, the balance of the vapour the column
 sends up against what its condenser condenses, the condenser worked by a
 controller that can run out of reach either way.
 
-- [ ] **M89.0** — the switch, a pure refactor (fork A, which no slice of the
+- [x] **M89.0** — the switch, a pure refactor (fork A, which no slice of the
   plan carried). `[fidelity] column_pressure = "held" | "limit"` (and
   `"controlled"` from M89.1), a `ColumnPressureModel` trait in `core`, its
   implementations in `solvers`, M75's within-tick pressure solve moved behind
@@ -11985,7 +11985,10 @@ controller that can run out of reach either way.
   every plant the same way and is never refused. A column run below what it
   declares says so on its condenser's faceplate (`level`, off the wire
   otherwise); a control that no longer acts there (the cooling water cut on a
-  held column) is refused with a plain message.
+  held column) is refused with a plain message. **Landed 2026-11-24**
+  (DESIGN §86.0): the model carried by `HeatBalanceCascade`, so `Engine::new`
+  is unchanged; 76 of 76 plants byte-identical on both solvers; five tests
+  and a `fidelity_selection` row; seven mutations, all caught.
 - [ ] **M89.1** — the controller (plan 1b.1): the condenser's free share the
   output of a PI pressure loop on the existing control machinery, its
   measurement the column's top pressure, its setpoint the file's

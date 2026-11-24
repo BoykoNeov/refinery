@@ -33,12 +33,14 @@ use refinery_core::graph::{
     CascadeSpec, ColumnCondenser, ColumnHoldup, ColumnRelief, HoldupState, Pumparound,
 };
 use refinery_core::traits::{
-    CascadeProfile, ColumnPass, CondenserReading, CutBackDraw, DeclinedHold, DrawSeparation,
-    HoldupReading, LevelLimit, LoopRun, ReliefVent, Separation, SeparationModel, ShortDraw,
-    SlopFlow, SlopVessel, ThermoModel, STOPPED_DRAW_SHARE,
+    CascadeProfile, ColumnPass, ColumnPressureLevel, ColumnPressureModel, CondenserReading,
+    CutBackDraw, DeclinedHold, DrawSeparation, HoldupReading, LevelLimit, LoopRun, PressureBalance,
+    PressureTrials, ReliefVent, Separation, SeparationModel, ShortDraw, SlopFlow, SlopVessel,
+    ThermoModel, STOPPED_DRAW_SHARE,
 };
 use refinery_core::units::{
-    CubicMeter, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, R_GAS, T_AMBIENT,
+    CubicMeter, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, WattPerPascal, R_GAS,
+    T_AMBIENT,
 };
 
 use crate::bubble::{bubble_temperature, bubble_temperature_unnormalized};
@@ -48,6 +50,7 @@ use crate::cascade::{
     DrawState, Flows, COMPONENT_RESIDUAL_KG_PER_S,
 };
 use crate::column_newton::{ColumnEquations, Solved, Specification, Start, Unsolved};
+use crate::column_pressure::CondenserLimitPressure;
 use crate::column_step::{ColumnStep, StepStart};
 use crate::flash::{flash_isothermal, FlashResult};
 use crate::line_flash::flash_on_the_line;
@@ -251,6 +254,10 @@ pub struct HeatBalanceCascade {
     /// held (M72.4, docs/DESIGN.md §77.5): off only for the gate that shows
     /// the first start refuses.
     seed_retry: bool,
+    /// How a column that declares its condenser finds its top pressure
+    /// (M89.0, docs/DESIGN.md §86): `[fidelity] column_pressure`, the
+    /// condenser a limit unless the loader selects lower.
+    column_pressure: Box<dyn ColumnPressureModel>,
 }
 
 impl HeatBalanceCascade {
@@ -264,6 +271,16 @@ impl HeatBalanceCascade {
             seed_offset: Kelvin::ZERO,
             method: Method::Newton,
             seed_retry: true,
+            column_pressure: Box::new(CondenserLimitPressure),
+        }
+    }
+
+    /// The cascade with its columns' pressure found by `column_pressure`
+    /// (M89.0, docs/DESIGN.md §86).
+    pub fn with_column_pressure(column_pressure: Box<dyn ColumnPressureModel>) -> Self {
+        Self {
+            column_pressure,
+            ..Self::new()
         }
     }
 
@@ -296,6 +313,7 @@ impl HeatBalanceCascade {
             seed_offset: Kelvin::ZERO,
             method: Method::FixedPoint,
             seed_retry: true,
+            column_pressure: Box::new(CondenserLimitPressure),
         }
     }
 
@@ -414,6 +432,10 @@ struct ColumnSetup<'a> {
 impl SeparationModel for HeatBalanceCascade {
     fn name(&self) -> &'static str {
         "heat_balance"
+    }
+
+    fn column_pressure(&self) -> Option<ColumnPressureLevel> {
+        Some(self.column_pressure.level())
     }
 
     /// The column fractionates; a held reboiler it cannot run at is declined
@@ -742,7 +764,7 @@ impl HeatBalanceCascade {
                     pressures,
                     plan,
                 };
-                return stepped_pass(&setup, holdup, state, 0.0);
+                return stepped_pass(self.column_pressure.as_ref(), &setup, holdup, state, 0.0);
             }
         }
         if feed_flow == 0.0 {
@@ -933,7 +955,13 @@ impl HeatBalanceCascade {
             .as_ref()
             .and_then(|holdup| holdup.state.as_ref().map(|state| (holdup, state)))
         {
-            return stepped_pass(&setup, holdup, state, feed_vapour_fraction);
+            return stepped_pass(
+                self.column_pressure.as_ref(),
+                &setup,
+                holdup,
+                state,
+                feed_vapour_fraction,
+            );
         }
         // A draw whose line delivers less runs at what it delivers, the rest
         // down to the next draw (M86.2, docs/DESIGN.md §84.2).
@@ -1124,6 +1152,7 @@ impl HeatBalanceCascade {
                         at_design: false,
                         flooded_share: 0.0,
                         at_ceiling: false,
+                        level: below_declared(self.column_pressure.level()),
                     })
                 }
                 None => None,
@@ -1490,17 +1519,14 @@ fn limit_shares(
 /// the engine writes back.
 ///
 /// **A column that declares its condenser as a limit** (M75.1,
-/// docs/DESIGN.md §80.1) solves its top pressure within the tick: the
-/// pressure `P` at which the vapour its condenser cannot condense is what
-/// fills its overhead — backward Euler on `dP/dt = (R·T/V)·(Q(P) − C(P))/λ`,
-/// `Q(P)` the duty the step at `P` condenses (the column's own answer to its
-/// pressure: a stage whose boiling point rises stops boiling and the duty
-/// falls), `C(P)` the condenser's capacity ([`condenser_balance`]). Solved by
-/// regula falsi (Illinois) between the set and the design pressure, each
-/// trial a whole step from the same start. A column at its set pressure
-/// whose condenser condenses what arrives takes one step, as every column
-/// without one.
+/// docs/DESIGN.md §80.1) has its top pressure found within the tick by
+/// `pressure`, the `[fidelity] column_pressure` model (M89.0,
+/// docs/DESIGN.md §86), searching whole steps from the same start at trial
+/// pressures ([`ColumnTrials`]). A column at its set pressure whose
+/// condenser condenses what arrives takes one step, as every column without
+/// one.
 fn stepped_pass(
+    pressure: &dyn ColumnPressureModel,
     setup: &ColumnSetup<'_>,
     holdup: &ColumnHoldup,
     state: &HoldupState,
@@ -1523,127 +1549,42 @@ fn stepped_pass(
         None => None,
     };
     let upper = relief.map_or(design, |(relief, _)| relief.ceiling.value());
-    // The step at a trial top pressure, every stage moved with it (the
-    // drops held), and its balance.
-    let at = |pressure: f64| -> Result<(Separation, Balance), SimError> {
-        let venting = relief.map(|(relief, top)| relief_vent(relief, &top, pressure));
-        let separation = if pressure == previous {
-            stepped_pass_at(setup, holdup, state, feed_vapour_fraction, venting)?
-        } else {
-            let shift = pressure - previous;
-            let pass = ColumnPass {
-                pressure: Pascal(pressure),
-                ..*setup.pass
-            };
-            let moved = ColumnSetup {
-                pass: &pass,
-                pressures: setup
-                    .pressures
-                    .iter()
-                    .map(|stage| Pascal(stage.value() + shift))
-                    .collect(),
-                ..setup.clone()
-            };
-            stepped_pass_at(&moved, holdup, state, feed_vapour_fraction, venting)?
-        };
-        // The share of the tubes backed up (M75.2, §80.3): the step's
-        // reading of the start-of-tick drum, so every trial's is the same.
-        let flooded = separation
-            .holdup_reading
-            .map_or(0.0, |reading| reading.condenser_flooded);
-        let balance = condenser_balance(
-            setup.pass.slate,
-            setup.thermo,
-            condenser,
-            ua,
-            flooded,
-            &separation,
-            Pascal(pressure),
-            Pascal(previous),
-            holdup.tick,
-        )?;
-        Ok((separation, balance))
+    let mut trials = ColumnTrials {
+        setup,
+        holdup,
+        state,
+        feed_vapour_fraction,
+        condenser,
+        ua,
+        relief,
+        previous,
+        upper,
+        tried: Vec::new(),
     };
-    let start = previous.clamp(set, upper);
-    let first = at(start)?;
-    let residual = first.1.residual;
-    let solved = if (residual >= 0.0 && start <= set) || residual == 0.0 {
-        // At the set pressure, the condenser condensing what arrives: its
-        // control floods the tubes it does not need.
-        (start, first)
-    } else {
-        // The bracket grown from where the pressure stands, never a whole
-        // step at its far end: the root lies within `|r|/store` of the start
-        // (the residual's slope is at least the store's — the duty falls and
-        // the capacity rises with `P`), capped at about the most a tick
-        // moves, doubled until it brackets, clamped to [set, design]. A step
-        // tried at the far end of a pressure at its peak (2.39 bar to the set
-        // 1.8 in one tick) flashed the column and refused the tick
-        // (docs/DESIGN.md §80.2).
-        let rising = residual < 0.0;
-        let (end, toward) = if rising { (upper, 1.0) } else { (set, -1.0) };
-        let mut distance = (residual.abs() / first.1.store)
-            .min(BRACKET_RATE_PA_PER_S * holdup.tick.value())
-            .max(PRESSURE_TOLERANCE);
-        let mut near = (start, first);
-        let mut retreats = 0;
-        loop {
-            let pressure = if rising {
-                (start + toward * distance).min(end)
-            } else {
-                (start + toward * distance).max(end)
-            };
-            // A trial whose step does not converge is a search point, not
-            // the tick's answer: the bracket retreats halfway back to the
-            // last trial that converged (docs/DESIGN.md §80.7) — a column
-            // whose stage is near to stopping boiling can stall Newton at one
-            // pressure and settle a few hundred pascals nearer. Refused only
-            // when the retreat reaches that trial, or after
-            // `MAX_PRESSURE_SOLVES` retreats. A tick none of whose trials
-            // fails takes exactly the path it took before.
-            let trial = match at(pressure) {
-                Ok(trial) => trial,
-                Err(failed) => {
-                    retreats += 1;
-                    if retreats > MAX_PRESSURE_SOLVES
-                        || (pressure - near.0).abs() <= PRESSURE_TOLERANCE
-                    {
-                        return Err(failed);
-                    }
-                    distance = 0.5 * ((pressure - start).abs() + (near.0 - start).abs());
-                    continue;
-                }
-            };
-            let r = trial.1.residual;
-            let beyond = if rising { r > 0.0 } else { r < 0.0 };
-            if r == 0.0 {
-                break (pressure, trial);
-            } else if beyond {
-                break illinois(&at, near, (pressure, trial))?;
-            } else if pressure == end {
-                // The design pressure, the most it rises to (with a relief,
-                // its ceiling, the alarm); or the set, the condenser taking
-                // the pressure back.
-                break (pressure, trial);
-            }
-            near = (pressure, trial);
-            distance *= 2.0;
-        }
+    let solved = pressure.top_pressure(&mut trials)?.value();
+    let Some(index) = trials.tried.iter().rposition(|(at, _, _)| *at == solved) else {
+        return Err(SimError::Numerical(format!(
+            "internal: the column's pressure model ({}) answered {:.4} bar, a pressure it \
+             never tried (docs/DESIGN.md §86)",
+            pressure.level().name(),
+            solved / 1.0e5
+        )));
     };
-    let (pressure, (mut separation, balance)) = solved;
+    let (_, mut separation, balance) = trials.tried.swap_remove(index);
     if let Some(next) = separation.holdup.as_mut() {
-        next.column_pressure = Some(Pascal(pressure));
+        next.column_pressure = Some(Pascal(solved));
     }
     let reading = CondenserReading {
-        pressure: Pascal(pressure),
+        pressure: Pascal(solved),
         set_pressure: condenser.set_pressure,
         capacity: Watt(balance.capacity),
-        at_capacity: pressure > set,
-        at_design: pressure >= design,
-        at_ceiling: relief.is_some() && pressure >= upper,
+        at_capacity: solved > set,
+        at_design: solved >= design,
+        at_ceiling: relief.is_some() && solved >= upper,
         flooded_share: separation
             .holdup_reading
             .map_or(0.0, |reading| reading.condenser_flooded),
+        level: below_declared(pressure.level()),
     };
     separation.holdup_reading = separation.holdup_reading.map(|before| HoldupReading {
         condenser: Some(reading),
@@ -1652,118 +1593,112 @@ fn stepped_pass(
     Ok(separation)
 }
 
-/// The most trial steps a column's top pressure takes within a tick
-/// (M75.1, docs/DESIGN.md §80.1) before the tick is refused.
-const MAX_PRESSURE_SOLVES: u32 = 40;
+/// The level a column that declares its condenser limit ran at, where it is
+/// below that one (M89.0, docs/DESIGN.md §86) — the faceplate's
+/// `level`; `None` at its own.
+fn below_declared(level: ColumnPressureLevel) -> Option<ColumnPressureLevel> {
+    (level < ColumnPressureLevel::Limit).then_some(level)
+}
 
-/// The top pressure's tolerance within a tick [Pa] (M75.1): the bracket,
-/// or the last move, narrower than this.
-const PRESSURE_TOLERANCE: f64 = 1.0;
+/// One column's tick at trial top pressures (M89.0, docs/DESIGN.md §86):
+/// each trial a whole step from the same start, every stage moved with the
+/// top (the drops held), and its condenser's balance. Keeps every trial, so
+/// the tick is the one at the pressure the model answers.
+struct ColumnTrials<'s, 'a> {
+    setup: &'s ColumnSetup<'a>,
+    holdup: &'s ColumnHoldup,
+    state: &'s HoldupState,
+    feed_vapour_fraction: f64,
+    condenser: &'s ColumnCondenser,
+    ua: WattPerKelvin,
+    /// The relief and the top vapour it vents, read once a tick.
+    relief: Option<(&'s ColumnRelief, TopVapour)>,
+    /// Last tick's top pressure [Pa].
+    previous: f64,
+    /// The design pressure, or the relief's ceiling [Pa].
+    upper: f64,
+    /// Each trial: its pressure [Pa], its step and its balance.
+    tried: Vec<(f64, Separation, Balance)>,
+}
 
-/// The most the bracket's first trial moves the top pressure a second
-/// [Pa/s] (docs/DESIGN.md §80.2): about three times M75.0's hand figure, 0.3
-/// bar/s on a 30 MW shortfall into 100 m³ — 10 kPa a tick of 0.1 s. Past it
-/// the bracket doubles.
-const BRACKET_RATE_PA_PER_S: f64 = 1.0e5;
-
-/// A trial pressure [Pa], its step and its balance.
-type PressureTrial = (f64, (Separation, Balance));
-
-/// Regula falsi with the Illinois modification on a bracketing pair — one
-/// end's residual below zero, the other's above, in either order — for the
-/// top pressure (M75.1, docs/DESIGN.md §80.1). Deterministic, and never
-/// leaves the bracket.
-fn illinois(
-    at: &dyn Fn(f64) -> Result<(Separation, Balance), SimError>,
-    one: PressureTrial,
-    other: PressureTrial,
-) -> Result<PressureTrial, SimError> {
-    let (low, high) = if one.1 .1.residual < 0.0 {
-        (one, other)
-    } else {
-        (other, one)
-    };
-    let (mut a, mut ra) = (low.0, low.1 .1.residual);
-    let (mut b, mut rb) = (high.0, high.1 .1.residual);
-    let mut side = 0i8;
-    let mut last = f64::NAN;
-    for _ in 0..MAX_PRESSURE_SOLVES {
-        let falsi = (a * rb - b * ra) / (rb - ra);
-        if !falsi.is_finite() {
-            break;
-        }
-        // A trial whose step does not converge is a search point, not the
-        // tick's answer (docs/DESIGN.md §80.7): the search retreats from it
-        // halfway towards each end of the bracket in turn — both ends
-        // converged — until a trial does, the bracket then narrowed by it as
-        // by any other. Refused when both retreats reach their ends. A solve
-        // none of whose trials fails takes exactly the path it took before.
-        let (pressure, trial) = match at(falsi) {
-            Ok(trial) => (falsi, trial),
-            Err(failed) => {
-                let (mut toward_a, mut toward_b) = (falsi, falsi);
-                let mut found = None;
-                for _ in 0..MAX_PRESSURE_SOLVES {
-                    toward_a = 0.5 * (a + toward_a);
-                    let a_open = (toward_a - a).abs() > PRESSURE_TOLERANCE;
-                    if a_open {
-                        if let Ok(trial) = at(toward_a) {
-                            found = Some((toward_a, trial));
-                            break;
-                        }
-                    }
-                    toward_b = 0.5 * (toward_b + b);
-                    let b_open = (toward_b - b).abs() > PRESSURE_TOLERANCE;
-                    if b_open {
-                        if let Ok(trial) = at(toward_b) {
-                            found = Some((toward_b, trial));
-                            break;
-                        }
-                    }
-                    if !a_open && !b_open {
-                        break;
-                    }
-                }
-                match found {
-                    Some(found) => {
-                        side = 0;
-                        found
-                    }
-                    None => return Err(failed),
-                }
-            }
-        };
-        let residual = trial.1.residual;
-        if residual == 0.0
-            || (pressure - last).abs() < PRESSURE_TOLERANCE
-            || b - a < PRESSURE_TOLERANCE
-        {
-            return Ok((pressure, trial));
-        }
-        last = pressure;
-        if residual < 0.0 {
-            a = pressure;
-            ra = residual;
-            if side == -1 {
-                rb *= 0.5;
-            }
-            side = -1;
-        } else {
-            b = pressure;
-            rb = residual;
-            if side == 1 {
-                ra *= 0.5;
-            }
-            side = 1;
-        }
+impl PressureTrials for ColumnTrials<'_, '_> {
+    fn previous(&self) -> Pascal {
+        Pascal(self.previous)
     }
-    Err(SimError::Numerical(format!(
-        "the column's top pressure did not settle within {MAX_PRESSURE_SOLVES} trials \
-         between {:.4} and {:.4} bar: its condenser's balance read {ra:.4e} and {rb:.4e} W \
-         at the two (docs/DESIGN.md §80.1).",
-        a / 1.0e5,
-        b / 1.0e5,
-    )))
+
+    fn set_pressure(&self) -> Pascal {
+        self.condenser.set_pressure
+    }
+
+    fn upper(&self) -> Pascal {
+        Pascal(self.upper)
+    }
+
+    fn tick(&self) -> Seconds {
+        self.holdup.tick
+    }
+
+    fn trial(&mut self, pressure: Pascal) -> Result<PressureBalance, SimError> {
+        let pressure = pressure.value();
+        let previous = self.previous;
+        let venting = self
+            .relief
+            .map(|(relief, top)| relief_vent(relief, &top, pressure));
+        let separation = if pressure == previous {
+            stepped_pass_at(
+                self.setup,
+                self.holdup,
+                self.state,
+                self.feed_vapour_fraction,
+                venting,
+            )?
+        } else {
+            let shift = pressure - previous;
+            let pass = ColumnPass {
+                pressure: Pascal(pressure),
+                ..*self.setup.pass
+            };
+            let moved = ColumnSetup {
+                pass: &pass,
+                pressures: self
+                    .setup
+                    .pressures
+                    .iter()
+                    .map(|stage| Pascal(stage.value() + shift))
+                    .collect(),
+                ..self.setup.clone()
+            };
+            stepped_pass_at(
+                &moved,
+                self.holdup,
+                self.state,
+                self.feed_vapour_fraction,
+                venting,
+            )?
+        };
+        // The share of the tubes backed up (M75.2, §80.3): the step's
+        // reading of the start-of-tick drum, so every trial's is the same.
+        let flooded = separation
+            .holdup_reading
+            .map_or(0.0, |reading| reading.condenser_flooded);
+        let balance = condenser_balance(
+            self.setup.pass.slate,
+            self.setup.thermo,
+            self.condenser,
+            self.ua,
+            flooded,
+            &separation,
+            Pascal(pressure),
+            Pascal(previous),
+            self.holdup.tick,
+        )?;
+        let reading = PressureBalance {
+            residual: Watt(balance.residual),
+            store: WattPerPascal(balance.store),
+        };
+        self.tried.push((pressure, separation, balance));
+        Ok(reading)
+    }
 }
 
 /// One tick of a column that holds liquid at the pressures `setup` carries

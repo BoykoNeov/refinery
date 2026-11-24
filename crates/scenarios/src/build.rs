@@ -327,6 +327,10 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     };
     order_uptake(scenario, &slate, reactions.as_ref())?;
 
+    // Read on every plant, so an unknown or unread level is refused whatever
+    // the separation; only the heat-balance cascade holds liquid, so only it
+    // carries the model (M89.0, docs/DESIGN.md §86).
+    let column_pressure = select_column_pressure(scenario)?;
     let separation: Box<dyn SeparationModel> = match scenario.fidelity.separation.as_str() {
         // M3.2's boiling-range splitter, and the default (see `Fidelity`).
         "cut_point" => Box::new(refinery_solvers::CutPointSplitter),
@@ -336,7 +340,9 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         // The M60 heat-balance cascade: the same stages, each stage's vapour from
         // its own energy balance, so a feed hot from its furnace is admitted
         // (docs/DESIGN.md §65). Validated exactly as `"cascade"` is.
-        "heat_balance" => Box::new(refinery_solvers::HeatBalanceCascade::new()),
+        "heat_balance" => Box::new(refinery_solvers::HeatBalanceCascade::with_column_pressure(
+            column_pressure,
+        )),
         other => {
             return Err(SimError::Scenario(format!(
                 "unknown separation model '{other}' (valid: cut_point, cascade, heat_balance)"
@@ -432,6 +438,51 @@ fn select_line_flash(name: &str) -> Result<Box<dyn LineFlashModel>, SimError> {
 /// nowhere to put its vapour (`Engine::tick` refuses exactly that). Returning
 /// the pair makes the agreement structural rather than a convention two call
 /// sites keep.
+/// The column-pressure model `[fidelity] column_pressure` and a frontend's
+/// cap select (M89.0, docs/DESIGN.md §86): the lowest of the two and the
+/// highest level any column on the plant declares. A file's level that no
+/// column declares the keys for is refused, naming the key; a cap is never
+/// refused for lowering nothing. An unknown level is refused either way.
+fn select_column_pressure(
+    scenario: &ScenarioFile,
+) -> Result<Box<dyn refinery_core::traits::ColumnPressureModel>, SimError> {
+    use refinery_core::traits::ColumnPressureLevel;
+    let parse = |key: &str, name: &str| {
+        ColumnPressureLevel::parse(name).ok_or_else(|| {
+            let valid: Vec<&str> = ColumnPressureLevel::ALL.iter().map(|l| l.name()).collect();
+            SimError::Scenario(format!(
+                "unknown {key} '{name}' (valid: {})",
+                valid.join(", ")
+            ))
+        })
+    };
+    // The highest level the plant's own columns declare the keys for.
+    let declared = if scenario.nodes.values().any(|node| {
+        matches!(node, NodeDef::Column { cascade: Some(def), .. } if def.condenser_limit.is_some())
+    }) {
+        ColumnPressureLevel::Limit
+    } else {
+        ColumnPressureLevel::Held
+    };
+    let mut level = declared;
+    if let Some(name) = &scenario.fidelity.column_pressure {
+        let written = parse("column_pressure", name)?;
+        if written > declared {
+            return Err(SimError::Scenario(format!(
+                "[fidelity] column_pressure = \"{name}\", but no column on this plant declares                  condenser_limit: the level reads a condenser that can run out, so nothing                  would read it (docs/DESIGN.md §86) — declare condenser_limit on a column that                  holds liquid, or drop the key"
+            )));
+        }
+        level = written;
+    }
+    if let Some(name) = &scenario.fidelity.column_pressure_cap {
+        level = level.min(parse("column pressure cap", name)?);
+    }
+    Ok(match level {
+        ColumnPressureLevel::Held => Box::new(refinery_solvers::HeldPressure),
+        ColumnPressureLevel::Limit => Box::new(refinery_solvers::CondenserLimitPressure),
+    })
+}
+
 fn select_boiloff(name: &str) -> Result<(Box<dyn BoilOffModel>, bool), SimError> {
     match name {
         // The default, and what every file written before M12 means.

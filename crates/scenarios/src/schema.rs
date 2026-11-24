@@ -287,6 +287,26 @@ pub struct Fidelity {
     /// reach.
     #[serde(default = "default_constant_heat_capacity")]
     pub heat_capacity: String,
+    /// "held" | "limit" (M89.0, docs/DESIGN.md §86): how much of a column's
+    /// pressure is physics — pinned at its set, or held by a condenser that
+    /// can run out (M75.1, `condenser_limit`).
+    ///
+    /// **A ceiling, not a selection.** Absent, each column runs at the
+    /// highest level its own declarations support — what every file written
+    /// before M89 means, so every plant is byte-identical. Written, it may
+    /// only lower a column's level, to run a heavy plant simpler without
+    /// editing its columns; a level whose keys no column on the plant
+    /// declares is refused at load, naming the key (`"limit"` with no
+    /// `condenser_limit`), as every key here that nothing would read.
+    /// `"held"` needs no key and builds anywhere.
+    #[serde(default)]
+    pub column_pressure: Option<String>,
+    /// A frontend's cap on the same level (the CLI's `--column-pressure`):
+    /// lowers every column as `column_pressure` does, and is never refused
+    /// for lowering nothing — one cap runs over a corpus of plants, most of
+    /// which declare no condenser. Never read from a file.
+    #[serde(skip)]
+    pub column_pressure_cap: Option<String>,
 }
 
 impl Fidelity {

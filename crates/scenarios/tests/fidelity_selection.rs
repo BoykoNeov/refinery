@@ -93,6 +93,12 @@ fn every_fidelity_key_refuses_a_value_it_does_not_implement() {
             "flow = \"newton\"\nseparation = \"nonsense\"",
             "cut_point",
         ),
+        (
+            "column_pressure",
+            "flow = \"newton\"
+column_pressure = \"nonsense\"",
+            "held",
+        ),
     ];
     for (key, fidelity, a_valid_value) in cases {
         let message =

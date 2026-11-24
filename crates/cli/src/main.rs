@@ -48,6 +48,10 @@ enum Cmd {
         /// Override the scenario's flow solver ("newton" | "simple").
         #[arg(long)]
         solver: Option<String>,
+        /// Cap the scenario's columns' pressure level ("held" | "limit",
+        /// M89.0): lowers a column that declares more, never refused.
+        #[arg(long)]
+        column_pressure: Option<String>,
         /// Emit a snapshot every N ticks (0 = only final).
         #[arg(long, default_value_t = 10)]
         snapshot_every: u64,
@@ -67,6 +71,10 @@ enum Cmd {
         /// Override every scenario's flow solver ("newton" | "simple").
         #[arg(long)]
         solver: Option<String>,
+        /// Cap every scenario's columns' pressure level ("held" | "limit",
+        /// M89.0): lowers a column that declares more, never refused.
+        #[arg(long)]
+        column_pressure: Option<String>,
         /// Write the rows as JSON here, for a later `--baseline`.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -89,28 +97,59 @@ fn main() -> Result<()> {
             scenario,
             ticks,
             solver,
+            column_pressure,
             snapshot_every,
             out,
-        } => run(&scenario, ticks, solver.as_deref(), snapshot_every, out),
+        } => run(
+            &scenario,
+            ticks,
+            Overrides {
+                solver: solver.as_deref(),
+                column_pressure: column_pressure.as_deref(),
+            },
+            snapshot_every,
+            out,
+        ),
         Cmd::Corpus {
             paths,
             ticks,
             solver,
+            column_pressure,
             out,
             baseline,
             jobs,
-        } => corpus(&paths, ticks, solver.as_deref(), out, baseline, jobs),
+        } => corpus(
+            &paths,
+            ticks,
+            Overrides {
+                solver: solver.as_deref(),
+                column_pressure: column_pressure.as_deref(),
+            },
+            out,
+            baseline,
+            jobs,
+        ),
     }
 }
 
-/// Load a scenario, apply the optional flow-solver override, and build the
+/// What the command line overrides in every scenario it loads.
+#[derive(Debug, Clone, Copy, Default)]
+struct Overrides<'a> {
+    /// The flow solver ("newton" | "simple").
+    solver: Option<&'a str>,
+    /// A cap on the columns' pressure level (M89.0, docs/DESIGN.md §86).
+    column_pressure: Option<&'a str>,
+}
+
+/// Load a scenario, apply the optional overrides, and build the
 /// engine. Returns the flow fidelity the engine was actually built with — the
 /// file's own, its default when the key is omitted, or the override.
-fn load(scenario: &Path, solver: Option<&str>) -> Result<(refinery_core::engine::Engine, String)> {
+fn load(scenario: &Path, overrides: Overrides) -> Result<(refinery_core::engine::Engine, String)> {
     let src = std::fs::read_to_string(scenario)
         .with_context(|| format!("reading {}", scenario.display()))?;
     let mut file = refinery_scenarios::load_str(&src)?;
-    if let Some(s) = solver {
+    file.fidelity.column_pressure_cap = overrides.column_pressure.map(str::to_string);
+    if let Some(s) = overrides.solver {
         file.fidelity.flow = s.to_string();
     }
     let engine = refinery_scenarios::build_engine(&file)?;
@@ -120,11 +159,11 @@ fn load(scenario: &Path, solver: Option<&str>) -> Result<(refinery_core::engine:
 fn run(
     scenario: &Path,
     ticks: u64,
-    solver: Option<&str>,
+    overrides: Overrides,
     snapshot_every: u64,
     out: Option<PathBuf>,
 ) -> Result<()> {
-    let (mut engine, _) = load(scenario, solver)?;
+    let (mut engine, _) = load(scenario, overrides)?;
 
     // Buffered: `serde_json::to_writer` on a bare `File` or stdout makes one
     // write call per token. The flush at the end reports what the buffer's
@@ -228,7 +267,7 @@ fn missing<'a>(rows: &[CorpusRow], baseline: &'a [CorpusRow]) -> Vec<&'a str> {
 fn corpus(
     paths: &[PathBuf],
     ticks: u64,
-    solver: Option<&str>,
+    overrides: Overrides,
     out: Option<PathBuf>,
     baseline: Option<PathBuf>,
     jobs: usize,
@@ -245,7 +284,7 @@ fn corpus(
         None => None,
     };
 
-    let rows = run_all(&files, ticks, solver, jobs);
+    let rows = run_all(&files, ticks, overrides, jobs);
 
     // The baseline's plants this run lost, counted only when whole
     // directories were run: a run of a few named files is meant to leave the
@@ -329,10 +368,10 @@ fn collect_scenarios(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
 /// Every plant's row, in `files` order whatever `jobs` is: `jobs` threads take
 /// the next plant off a shared counter and write its row into that plant's own
 /// slot, so the table and the `--out` file line up as they do on one thread.
-fn run_all(files: &[PathBuf], ticks: u64, solver: Option<&str>, jobs: usize) -> Vec<CorpusRow> {
+fn run_all(files: &[PathBuf], ticks: u64, overrides: Overrides, jobs: usize) -> Vec<CorpusRow> {
     let jobs = jobs.clamp(1, files.len().max(1));
     if jobs == 1 {
-        return files.iter().map(|f| run_one(f, ticks, solver)).collect();
+        return files.iter().map(|f| run_one(f, ticks, overrides)).collect();
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let slots: Vec<std::sync::Mutex<Option<CorpusRow>>> =
@@ -342,7 +381,7 @@ fn run_all(files: &[PathBuf], ticks: u64, solver: Option<&str>, jobs: usize) -> 
             scope.spawn(|| loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(file) = files.get(i) else { break };
-                let row = run_one(file, ticks, solver);
+                let row = run_one(file, ticks, overrides);
                 *slots[i].lock().expect("no thread panics holding a slot") = Some(row);
             });
         }
@@ -357,14 +396,14 @@ fn run_all(files: &[PathBuf], ticks: u64, solver: Option<&str>, jobs: usize) -> 
         .collect()
 }
 
-fn run_one(file: &Path, ticks: u64, solver: Option<&str>) -> CorpusRow {
+fn run_one(file: &Path, ticks: u64, overrides: Overrides) -> CorpusRow {
     let name = file
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| file.display().to_string());
     let mut row = CorpusRow {
         name,
-        flow: solver.unwrap_or("(file)").to_string(),
+        flow: overrides.solver.unwrap_or("(file)").to_string(),
         ticks: 0,
         status: STATUS_OK.into(),
         worst_iterations: 0,
@@ -373,7 +412,7 @@ fn run_one(file: &Path, ticks: u64, solver: Option<&str>) -> CorpusRow {
         fingerprint: String::new(),
     };
 
-    let mut engine = match load(file, solver) {
+    let mut engine = match load(file, overrides) {
         Ok((engine, flow)) => {
             row.flow = flow;
             engine

@@ -13,6 +13,7 @@ use crate::graph::{
 };
 use crate::units::{
     JPerKg, JPerKgK, JPerMol, Kelvin, Kg, KgPerM3, KgPerSec, Meter, Pascal, Seconds, Watt,
+    WattPerPascal,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -934,6 +935,105 @@ pub struct CondenserReading {
     /// §80.5): the relief at full lift cannot vent what the condenser
     /// leaves — the alarm. Never without a relief.
     pub at_ceiling: bool,
+    /// The level the column ran at, where it is below the one its own
+    /// declarations support (M89.0, docs/DESIGN.md §86): its condenser's
+    /// keys then unread, and said so. `None` at its own.
+    pub level: Option<ColumnPressureLevel>,
+}
+
+/// How much of a column's pressure is physics (M89.0, docs/DESIGN.md §86;
+/// plan `docs/plans/column-pressure-from-physics.md`, §3): the level
+/// `[fidelity] column_pressure` selects, lowest first. A column runs at the
+/// lower of the selected level and the highest its own declarations
+/// support, so the order is the point of the type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnPressureLevel {
+    /// Nothing holds the pressure: the column is pinned at its set
+    /// pressure, whatever its condenser declares.
+    Held,
+    /// The condenser a limit (M75.1, docs/DESIGN.md §80.2): the set
+    /// pressure held while the condenser condenses what arrives, past it
+    /// the pressure rising, solved within the tick.
+    Limit,
+}
+
+impl ColumnPressureLevel {
+    /// Every level, lowest first.
+    pub const ALL: [ColumnPressureLevel; 2] =
+        [ColumnPressureLevel::Held, ColumnPressureLevel::Limit];
+
+    /// The level as `[fidelity] column_pressure` writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ColumnPressureLevel::Held => "held",
+            ColumnPressureLevel::Limit => "limit",
+        }
+    }
+
+    /// The level `name` writes, or `None` for a name that is no level.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|level| level.name() == name)
+    }
+
+    /// Whether a column at this level reads its condenser: whether its
+    /// cooling water is a control (M89.0, docs/DESIGN.md §86).
+    pub fn reads_condenser(self) -> bool {
+        self >= ColumnPressureLevel::Limit
+    }
+}
+
+/// A column's condenser's balance at one trial top pressure (M75.1,
+/// docs/DESIGN.md §80.2), as a [`ColumnPressureModel`] reads it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PressureBalance {
+    /// `V·λ/(R·T·dt)·(P − P₀) − (Q(P) − C(P))` [W]: the heat the
+    /// overhead's vapour takes to rise from last tick's pressure `P₀` to the
+    /// trial's, less what the condenser left uncondensed. Zero at the tick's
+    /// pressure, rising with it.
+    pub residual: Watt,
+    /// `V·λ/(R·T·dt)` [W/Pa], the overhead's store: the residual's least
+    /// slope in the pressure.
+    pub store: WattPerPascal,
+}
+
+/// One column's tick, tried at a top pressure (M89.0, docs/DESIGN.md §86):
+/// what a [`ColumnPressureModel`] searches. Each trial is a whole step of the
+/// column from the same start, every stage moved with the top (the tray
+/// drops held); the implementor keeps each trial's step, and the tick is the
+/// one at the pressure the model returns, which it must have tried.
+pub trait PressureTrials {
+    /// Last tick's top pressure [Pa].
+    fn previous(&self) -> Pascal;
+    /// The pressure its control holds [Pa]: the column's declared one.
+    fn set_pressure(&self) -> Pascal;
+    /// The most it rises to [Pa]: its design pressure, or with a relief the
+    /// relief's ceiling.
+    fn upper(&self) -> Pascal;
+    /// The tick [s].
+    fn tick(&self) -> Seconds;
+    /// The column's step at top pressure `pressure` [Pa], and its condenser's
+    /// balance there.
+    ///
+    /// # Errors
+    /// The step's own refusal (a stage that does not converge at that
+    /// pressure): a search point, not necessarily the tick's answer.
+    fn trial(&mut self, pressure: Pascal) -> Result<PressureBalance, SimError>;
+}
+
+/// How a column that declares its condenser finds its top pressure each
+/// tick (M89.0, docs/DESIGN.md §86): the `[fidelity] column_pressure` seam.
+/// Engine-wide and pure, as every fidelity seam: what it reads arrives in
+/// the trials.
+pub trait ColumnPressureModel: Send {
+    /// The level this model is.
+    fn level(&self) -> ColumnPressureLevel;
+
+    /// The tick's top pressure [Pa], one the model tried.
+    ///
+    /// # Errors
+    /// No pressure settles the balance within the model's trials.
+    fn top_pressure(&self, trials: &mut dyn PressureTrials) -> Result<Pascal, SimError>;
 }
 
 /// A drum's or a base's excess past full, sent to the slop line this pass
@@ -1566,6 +1666,13 @@ pub trait SeparationModel: Send {
         pass: &ColumnPass<'_>,
         thermo: &dyn ThermoModel,
     ) -> Result<Separation, SimError>;
+
+    /// The level a column that declares its condenser runs its pressure at
+    /// under this model (M89.0, docs/DESIGN.md §86), or `None` from a model
+    /// that holds no liquid, whose columns declare none.
+    fn column_pressure(&self) -> Option<ColumnPressureLevel> {
+        None
+    }
 }
 
 /// The outcome of one reactor pass: the product composition and its heat of

@@ -121,6 +121,12 @@ unit!(
     WattPerKelvin
 );
 unit!(
+    /// Heat per pascal [W/Pa]: how fast a balance in watts moves with a
+    /// pressure — a column's overhead store, the heat its vapour takes to
+    /// rise a pascal in a tick (M75.1, docs/DESIGN.md §80.2; M89.0, §86).
+    WattPerPascal
+);
+unit!(
     /// Heat capacity of a body [J/K] — mass times specific heat, lumped.
     ///
     /// One number for the same reason `WattPerKelvin` is one: a furnace's tube
