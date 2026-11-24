@@ -161,6 +161,8 @@ mod pressure_control_demo;
 mod pressure_control_reference;
 #[path = "product_line_reference.rs"]
 mod product_line_reference;
+#[path = "product_pumps.rs"]
+mod product_pumps;
 #[path = "pump_cavitation_reference.rs"]
 mod pump_cavitation_reference;
 #[path = "pump_gas_lock_reference.rs"]

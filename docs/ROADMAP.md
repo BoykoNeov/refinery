@@ -11854,8 +11854,14 @@ decisions: `docs/DESIGN.md` §84.
 - [x] **M86.3** — a check valve may stand on a product line: the march
   solves its disc's lift at the line's flow (§84.3). 72 of 72 plants
   byte-identical on both solvers.
-- [ ] **M86.4** — a new zero-volume plant whose five product lines need their
-  pump, each behind a check valve (margins checked first).
+- [x] **M86.4** — two new zero-volume plants whose five product lines need
+  their pump, each behind a check valve (§84.4). The user asked for both
+  (2026-11-24): `crude_unit_pumps_lifted` (tanks out of the column's reach:
+  a stopped pump stops its product) and `crude_unit_pumps_grade` (tanks at
+  grade at the end of long rundowns: a stopped pump cuts its product to
+  0.41–0.46 of its share, and a stopped diesel's spill overfills the gas oil
+  line too). Margins measured first. 72 of 72 plants byte-identical on both
+  solvers.
 - [ ] **M86.5** — a new holdup plant with product pumps (margins checked first).
 - [ ] **M86.6** — DEFERRED row: the six crude units' easy lines, and holdup
   for them; close-out.
