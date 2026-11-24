@@ -1460,8 +1460,8 @@ fn limit_shares(
     };
     let last = plan.mass_ratios.len() - 1;
     let mut carry = 0.0;
-    for p in 0..last {
-        let wanted = plan.mass_ratios[p] + carry;
+    for (p, ratio) in plan.mass_ratios.iter_mut().enumerate().take(last) {
+        let wanted = *ratio + carry;
         carry = 0.0;
         let limit = limits.get(column(p)).copied().flatten();
         match limit {
@@ -1470,14 +1470,14 @@ fn limit_shares(
                     .max(STOPPED_DRAW_SHARE)
                     .min(wanted);
                 carry = wanted - ran;
-                plan.mass_ratios[p] = ran;
+                *ratio = ran;
                 short.push(ShortDraw {
                     draw: column(p),
                     wanted: KgPerSec(wanted * feed_mass),
                     delivered: KgPerSec(ran * feed_mass),
                 });
             }
-            _ => plan.mass_ratios[p] = wanted,
+            _ => *ratio = wanted,
         }
     }
     plan.mass_ratios[last] += carry;
