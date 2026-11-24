@@ -11871,5 +11871,9 @@ decisions: `docs/DESIGN.md` §84.
   the way: a holding column's limited draw came out a hair past its line's
   limit and halted the run (`ColumnStep::scale_to_limits`). 74 of 74 plants
   byte-identical on both solvers.
-- [ ] **M86.6** — DEFERRED row: the six crude units' easy lines, and holdup
+- [x] **M86.6** — the two holding plants on the column screen (keys 0 and -),
+  F1–F5 stopping and starting the five product pumps, a stopped pump named in
+  warning by its product (§84.6). The user's answer (2026-11-24): there, where
+  the drum's and base's levels and their chart already are (DEFERRED F12).
+- [ ] **M86.7** — DEFERRED row: the six crude units' easy lines, and holdup
   for them; close-out.

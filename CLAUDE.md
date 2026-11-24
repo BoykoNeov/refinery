@@ -162,8 +162,8 @@ godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--p
 #   M77: [--save-at=120 --save-file=W:/temp/claude/<task>/pump.json], then [--continue --save-file=…] prints the same lines after 120 (F5/F9 save and load by hand)
 godot --path . res://demo/reactor.tscn       # the M57.5 reactor screen (keys on screen; 4 = M58 wall; 5/6 = M59 hydrogen)
 godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
-godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops, 7 M73 trays, 8 M74 holdup, 9 M75 overfill)
-godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped|cold|loops|trays|holdup|overfill]
+godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops, 7 M73 trays, 8 M74 holdup, 9 M75 overfill, 0 / - M86 holding plants with product pumps, F1–F5 the pumps)
+godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped|cold|loops|trays|holdup|overfill|pumps_grade|pumps_lifted]
 ```
 
 ## Testing
@@ -203,7 +203,7 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M86 — DEFERRED C35, a stopped product pump stops its product (`docs/ROADMAP.md` M86, `docs/DESIGN.md` §84; M86.1–M86.5 landed — M86.5 the two holding plants `crude_unit_holdup_pumps_grade` and `crude_unit_holdup_pumps_lifted`; M86.6 next: the DEFERRED row and close-out). Queued next by the user (2026-11-20): F11 (the map: a column's ports by tray, a bigger field with zoom and scroll — one milestone); then the plan `docs/plans/column-pressure-from-physics.md` (forks answered 2026-11-23)** (C30's base side is still open; `docs/plans/` lists the review's plans; the user's aim, 2026-11-19: one complex plant that shows a fault spreading — next would be a screen finding its unit inside a bigger plant, and a plant joining the units).
+Work only on the current milestone unless asked. **Current: M86 — DEFERRED C35, a stopped product pump stops its product (`docs/ROADMAP.md` M86, `docs/DESIGN.md` §84; M86.1–M86.6 landed — M86.5 the two holding plants `crude_unit_holdup_pumps_grade` and `crude_unit_holdup_pumps_lifted`, M86.6 them on the column screen with F1–F5 the product pumps; M86.7 next: the DEFERRED row and close-out; then, the user's 2026-11-24 answer, each plant's description shown in the game). Queued next by the user (2026-11-20): F11 (the map: a column's ports by tray, a bigger field with zoom and scroll — one milestone); then the plan `docs/plans/column-pressure-from-physics.md` (forks answered 2026-11-23)** (C30's base side is still open; `docs/plans/` lists the review's plans; the user's aim, 2026-11-19: one complex plant that shows a fault spreading — next would be a screen finding its unit inside a bigger plant, and a plant joining the units).
 **Latest closed: M85 (2026-11-20)**: the map's pipes at right angles (`demo/route.gd`), crossings with a gap, a flange at each end, towers as tall as what is piped to them; 24 hand layouts in `demo/layout/`. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.

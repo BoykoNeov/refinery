@@ -32855,3 +32855,34 @@ the two new plants run 6000 ticks on both. The map lays both out (30 nodes,
 draws no drum or base level; the column screen draws the levels but has
 neither plant nor a product pump key. A player stopping a pump here sees its
 flow fall, not the vessel fill: DEFERRED F12.
+
+### 84.6 Landed — the two holding plants on the column screen
+
+**The user's answer (2026-11-24, DEFERRED F12):** on the column screen, which
+already draws the drum's and the base's levels, their limits and the level
+chart (M83). `demo/column.gd`: `pumps_grade` on key 0, `pumps_lifted` on -;
+F1–F5 stop and start the naphtha, kerosene, diesel, gas oil and residue
+pumps (`set_pump_on`, the map's command), the products drawn by their lines'
+first pipes (`<product>_suction`). A stopped pump's product reads in warning,
+"<product>  pump off" (a longer label ran into the panel), above its flow; the `--auto` line names the pumps
+stopped and every product's flow. **Only the pumps are on keys**: the holding
+plant's measured box (§79.8) was measured without product lines, so the
+furnace, the reflux, the loops and the reboiler stay at the file's settings
+and say so when pressed (`range_ref` "§84.5: only its product pumps are on
+keys") — the rule that a key stays inside the range measured (§65.9).
+
+**Timelines** (`AUTO_PUMPS_GRADE`, `AUTO_PUMPS_LIFTED`), replayed by
+`crates/godot-ext/tests/column_screen.rs`: at grade the residue stopped at
+600 cuts the bottoms to 0.50–0.56 and the base passes 0.6 by 6 600; started,
+the bottoms runs above its flow and the base falls; the kerosene stopped at
+7 200 runs at 0.53–0.60, the naphtha raised; started at 10 200, back. On
+high ground the residue stopped at 600 stops the bottoms, the base full and
+the bottoms to slop by 13 800; started, emptying; the naphtha stopped at
+14 400 stops the distillate, the drum past 0.6 by 18 000; started, emptying.
+The Godot library had to be rebuilt first (it predated M86.5's fix and halted
+the kerosene's stop with the old refusal).
+
+The screen's full vessel read "FULL: the excess leaves with its product",
+true before M74.6 sent a full drum's or base's excess to slop (§79.18); it now
+reads "FULL: the excess goes to slop, off-spec". Seen on these plants'
+screenshots, where the base fills to slop.

@@ -57,6 +57,18 @@
 #               it. Past its condenser the column's pressure rises; at 3.52
 #               bar the relief lifts and vents to the flare; at 4.05 bar it is
 #               held with an alarm.
+#   pumps_grade scenarios/crude_unit_holdup_pumps_grade.toml — the holding
+#               plant with a pump on each product line, its tanks at grade
+#               (M86.5, §84.5). F1–F5 stop and start the naphtha, kerosene,
+#               diesel, gas oil and residue pumps. A stopped pump's product
+#               falls to about half (the column still pushes some through it);
+#               what its line cannot take stays in the column: the drum or the
+#               base fills, or a side product's rest leaves with the naphtha
+#               and the residue. Its other keys stay at the file's settings:
+#               their range is not measured with product lines on.
+#   pumps_lifted scenarios/crude_unit_holdup_pumps_lifted.toml — the same with
+#               its tanks on high ground: a stopped pump stops its product, and
+#               the drum or the base fills to slop.
 #
 # Same rule as every screen: this script computes nothing physical. Every
 # number it draws is a snapshot field — the stage temperatures and vapour, the
@@ -67,7 +79,7 @@
 # to MW (CLAUDE.md rule 4).
 #
 # Interactive:  godot --path . res://demo/column.tscn
-#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 switch plants,
+#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 0 / - switch plants,
 #               Esc goes to the menu, F11 full screen)
 #               Enter: the plant map, on this same running plant (M84; the
 #               map's Enter opens this screen on a plant it draws, as it stands)
@@ -363,6 +375,60 @@ const PLANTS := {
 		"reboiler_mw": [0.0, 215.0],
 		"range_ref": "§79.8, §80.7",
 	},
+	"pumps_grade":
+	{
+		"scenario": "res://scenarios/crude_unit_holdup_pumps_grade.toml",
+		"title": "The holding plant, its tanks at grade: a stopped product pump cuts its product to about half",
+		"furnace": "furnace",
+		"feed_pipe": "transfer_line",
+		"draws":
+		[
+			["naphtha_suction", "naphtha"],
+			["kerosene_suction", "kerosene"],
+			["diesel_suction", "diesel"],
+			["gas_oil_suction", "gas oil"],
+			["residue_suction", "residue"],
+		],
+		# Each product's pump, top-down as `draws` (M86.5, §84.5): F1–F5.
+		"product_pumps": ["naphtha_pump", "kerosene_pump", "diesel_pump", "gas_oil_pump", "residue_pump"],
+		# The holding plant's frame budget (M74.4): its column, five lines more.
+		"ticks_per_frame": 5,
+		# Only the pumps are on keys: the holding plant's measured box (§79.8)
+		# was measured without product lines, so every other key stays at the
+		# file's setting and says so.
+		"furnace_mw": [20.0, 20.0],
+		"loop_flow": [1.0, 1.0],
+		"loop_return_k": [0.0, 0.0],
+		"range_ref": "§84.5: only its product pumps are on keys",
+		"level_chart": true,
+	},
+	"pumps_lifted":
+	{
+		"scenario": "res://scenarios/crude_unit_holdup_pumps_lifted.toml",
+		"title": "The holding plant, its tanks on high ground: a stopped product pump stops its product",
+		"furnace": "furnace",
+		"feed_pipe": "transfer_line",
+		"draws":
+		[
+			["naphtha_suction", "naphtha"],
+			["kerosene_suction", "kerosene"],
+			["diesel_suction", "diesel"],
+			["gas_oil_suction", "gas oil"],
+			["residue_suction", "residue"],
+		],
+		# Each product's pump, top-down as `draws` (M86.5, §84.5): F1–F5.
+		"product_pumps": ["naphtha_pump", "kerosene_pump", "diesel_pump", "gas_oil_pump", "residue_pump"],
+		# The holding plant's frame budget (M74.4): its column, five lines more.
+		"ticks_per_frame": 5,
+		# Only the pumps are on keys: the holding plant's measured box (§79.8)
+		# was measured without product lines, so every other key stays at the
+		# file's setting and says so.
+		"furnace_mw": [20.0, 20.0],
+		"loop_flow": [1.0, 1.0],
+		"loop_return_k": [0.0, 0.0],
+		"range_ref": "§84.5: only its product pumps are on keys",
+		"level_chart": true,
+	},
 }
 
 ## Scripted timelines for the recorded runs, in ticks. Each is replayed with the
@@ -503,11 +569,36 @@ const AUTO_OVERFILL := {
 	12000: ["total_reflux_off"],
 	15000: ["quit"],
 }
+## pumps_grade (M86.5, §84.5), the holding plant's product pumps with its
+## tanks at grade: the residue pump stopped at 600 cuts the bottoms to about
+## half and the base climbs; started at 6 600, the bottoms runs above its flow,
+## emptying the base; the kerosene pump stopped at 7 200 cuts the kerosene to
+## about half, its rest raising the naphtha and the residue; started at 10 200.
+const AUTO_PUMPS_GRADE := {
+	600: ["pump_4"],
+	6600: ["pump_4"],
+	7200: ["pump_1"],
+	10200: ["pump_1"],
+	10800: ["quit"],
+}
+## pumps_lifted (M86.5, §84.5), the same with its tanks on high ground: the
+## residue pump stopped at 600 stops the bottoms; the base is full about 20
+## minutes on and the bottoms goes to slop; started at 13 800; the naphtha
+## pump stopped at 14 400 stops the distillate and the drum climbs; started
+## at 18 000.
+const AUTO_PUMPS_LIFTED := {
+	600: ["pump_4"],
+	13800: ["pump_4"],
+	14400: ["pump_0"],
+	18000: ["pump_0"],
+	18600: ["quit"],
+}
 ## The reboiler key pressed every `[2]` ticks from `[0]` to `[1]` on a timeline.
 const WALKS := {"cold": [510, 2390, 10]}
 const TIMELINES := {
 	"crude": AUTO_CRUDE, "hot": AUTO_HOT, "overheated": AUTO_OVERHEATED, "stripped": AUTO_STRIPPED, "cold": AUTO_COLD,
-	"loops": AUTO_LOOPS, "trays": AUTO_TRAYS, "holdup": AUTO_HOLDUP, "overfill": AUTO_OVERFILL
+	"loops": AUTO_LOOPS, "trays": AUTO_TRAYS, "holdup": AUTO_HOLDUP, "overfill": AUTO_OVERFILL,
+	"pumps_grade": AUTO_PUMPS_GRADE, "pumps_lifted": AUTO_PUMPS_LIFTED
 }
 const AUTO_SHOT_TICKS := {
 	"crude": [600, 1500, 2400, 3000],
@@ -519,6 +610,8 @@ const AUTO_SHOT_TICKS := {
 	"trays": [1500, 2400, 3300, 3900, 4500, 4800],
 	"holdup": [1200, 3900, 6600, 9600, 11400],
 	"overfill": [1800, 2400, 4800, 9600, 11400, 13800],
+	"pumps_grade": [3000, 6000, 9000],
+	"pumps_lifted": [6000, 13200, 17400],
 }
 const PRINT_EVERY := 300
 
@@ -558,6 +651,9 @@ var design_pumparounds: Array = []
 var design_loop_flows: Array = []
 var design_loop_returns: Array = []
 var snapshot: Dictionary = {}
+## Each product's pump, top-down as the draws (M86.5), on a plant whose
+## product lines have them on keys; else empty.
+var pump_ids: Array = []
 var halted := ""
 var auto_run := false
 var shots_dir := ""
@@ -595,7 +691,7 @@ func _ready() -> void:
 	if _took_over():
 		return
 	if not PLANTS.has(plant_key):
-		_halt("no plant '%s' (crude | hot | overheated | stripped | cold | loops | trays | holdup | overfill)" % plant_key)
+		_halt("no plant '%s' (crude | hot | overheated | stripped | cold | loops | trays | holdup | overfill | pumps_grade | pumps_lifted)" % plant_key)
 		return
 	_load(plant_key)
 
@@ -626,10 +722,13 @@ func _load(key: String, fresh: bool = true) -> void:
 	draw_ids = []
 	for draw in plant["draws"]:
 		draw_ids.append(sim.edge_id(draw[0]))
+	pump_ids = []
+	for pump in plant.get("product_pumps", []):
+		pump_ids.append(sim.node_id(pump))
 	steam_valve_id = sim.node_id(plant["steam_valve"]) if plant.has("steam_valve") else -1
 	steam_pipe_id = sim.edge_id(plant["steam_pipe"]) if plant.has("steam_pipe") else -1
 	var steam_missing := plant.has("steam_valve") and (steam_valve_id < 0 or steam_pipe_id < 0)
-	if furnace_id < 0 or column_id < 0 or feed_pipe_id < 0 or draw_ids.has(-1) or steam_missing:
+	if furnace_id < 0 or column_id < 0 or feed_pipe_id < 0 or draw_ids.has(-1) or pump_ids.has(-1) or steam_missing:
 		_halt("this scenario does not have the names the scene expects")
 		return
 
@@ -776,6 +875,20 @@ func _input(event: InputEvent) -> void:
 			_load("holdup")
 		KEY_9:
 			_load("overfill")
+		KEY_0:
+			_load("pumps_grade")
+		KEY_MINUS:
+			_load("pumps_lifted")
+		KEY_F1:
+			_do("pump_0")
+		KEY_F2:
+			_do("pump_1")
+		KEY_F3:
+			_do("pump_2")
+		KEY_F4:
+			_do("pump_3")
+		KEY_F5:
+			_do("pump_4")
 		KEY_ENTER, KEY_KP_ENTER:
 			_to_map()
 			return
@@ -958,6 +1071,17 @@ func _do(action: String) -> void:
 			_send("shut the drum's drain to slop: past full it backs up into the condenser", {"cmd": "set_slop_drain", "node": column_id, "open": false})
 		"drain_open":
 			_send("open the drum's drain to slop", {"cmd": "set_slop_drain", "node": column_id, "open": true})
+		# A product's pump stopped or started (M86.5, §84.5), top-down as the
+		# draws: F1 the naphtha's … F5 the residue's.
+		"pump_0", "pump_1", "pump_2", "pump_3", "pump_4":
+			var i := int(action.substr(5))
+			if pump_ids.is_empty():
+				_say("this plant's product lines have no pumps on keys", true)
+				return
+			var on := not _pump_on(i)
+			var product: String = plant["draws"][i][1]
+			var what := "start the %s pump" % product if on else "stop the %s pump: what its line cannot take stays in the column" % product
+			_send(what, {"cmd": "set_pump_on", "node": int(pump_ids[i]), "on": on})
 
 
 ## On a plant whose reboiler is on a key, while it is held: the presses past
@@ -1383,6 +1507,11 @@ func _say(text: String, bad: bool) -> void:
 
 # ---------------------------------------------------------------- reading
 
+## Whether product `i`'s pump runs (M86.5).
+func _pump_on(i: int) -> bool:
+	return bool(_node(int(pump_ids[i]))["kind"].get("on", true))
+
+
 func _node(id: int) -> Dictionary:
 	return snapshot["nodes"][id]
 
@@ -1743,6 +1872,15 @@ func _readout(tick: int) -> String:
 		line += "  steam=%.0f%% %.3f kg/s  bottom=%.1f C" % [
 			_steam_opening() * 100.0, _steam_kg_s(), float(stages[-1]) - 273.15 if not stages.is_empty() else 0.0
 		]
+	if not pump_ids.is_empty():
+		var stopped: PackedStringArray = []
+		for i in pump_ids.size():
+			if not _pump_on(i):
+				stopped.append(str(PLANTS[plant_key]["draws"][i][1]))
+		line += "  pumps stopped: %s  products %s kg/s" % [
+			", ".join(stopped) if not stopped.is_empty() else "none",
+			" ".join(draw_ids.map(func(id): return "%.2f" % float(_edge(id)["stream"]["mass_flow"])))
+		]
 	if _holds_liquid() and not _holdup().is_empty():
 		var h := _holdup()
 		line += "  %s  drum %.0f%% %s  base %.0f%% %s%s  held %.1f t" % [
@@ -1865,6 +2003,8 @@ func _draw() -> void:
 	var keys := "Up/Down furnace   W/S reflux   E/D pumparounds   Space pause   [ ] speed"
 	if PLANTS[plant_key].has("overhead"):
 		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   T/G reboiler   Y free it   C cooling   X total reflux   V drain   Space pause   [ ] speed"
+	elif not pump_ids.is_empty():
+		keys = "F1–F5 stop/start the naphtha, kerosene, diesel, gas oil, residue pumps   Space pause   [ ] speed"
 	elif _holds_liquid():
 		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   T/G reboiler   Y free it   Space pause   [ ] speed"
 	elif PLANTS[plant_key].has("reboiler"):
@@ -1876,7 +2016,7 @@ func _draw() -> void:
 	# Both legends stop short of the panel, whose last lines reach this low.
 	Screen.legend(self, Vector2(30, 621), [
 		keys,
-		"start over:  1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup   9 overfill",
+		"start over:  1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup   9 overfill   0 pumps at grade   - pumps lifted",
 	], DIM, 16, 20.0, PANEL_X - 30.0 - 24.0)
 	if halted != "":
 		draw_multiline_string(
@@ -2370,7 +2510,9 @@ func _draw_products() -> void:
 		draw_rect(Rect2(Vector2(PRODUCT_X, y - 8), Vector2(BAR_WIDTH, 16)), SHELL, false, 1.0)
 		# A product cut back (M67.1) is named in warning, with how far it is cut.
 		var cut := _cut_back()
-		if cut.has(i):
+		if not pump_ids.is_empty() and not _pump_on(i):
+			_text(Vector2(PRODUCT_X + BAR_WIDTH + 8, y - 2), "%s  pump off" % plant["draws"][i][1], WARN, 13)
+		elif cut.has(i):
 			_text(Vector2(PRODUCT_X + BAR_WIDTH + 8, y - 2), "%s  %s" % [plant["draws"][i][1], _cut_words(cut[i])], WARN, 13)
 		else:
 			_text(Vector2(PRODUCT_X + BAR_WIDTH + 8, y - 2), plant["draws"][i][1], INK, 13)
@@ -2532,7 +2674,7 @@ func _draw_holdup_panel(y: float) -> float:
 	y += 22
 	for vessel in [["drum", "drum_level", "drum_limit", "drum_loop_at_max", "the distillate"], ["base", "base_level", "base_limit", "base_loop_at_max", "the reboiler" if not bool(h["reboiler_held"]) else "the bottoms"]]:
 		var limit := str(h[vessel[2]])
-		var words: String = {"normal": "", "dry": "DRY: its outflow cut to what it holds", "full": "FULL: the excess leaves with its product", "backed_up": "BACKED UP: its drain shut, the excess floods the condenser"}[limit]
+		var words: String = {"normal": "", "dry": "DRY: its outflow cut to what it holds", "full": "FULL: the excess goes to slop, off-spec", "backed_up": "BACKED UP: its drain shut, the excess floods the condenser"}[limit]
 		_text(Vector2(PANEL_X, y), "%-14s %5.0f %%" % [vessel[0], float(h[vessel[1]]) * 100.0], _limit_color(limit) if limit != "normal" else INK)
 		y += 18
 		# What the limit does, on its own line: beside the level it ran off

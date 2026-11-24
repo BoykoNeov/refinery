@@ -1216,3 +1216,131 @@ fn slow_the_overfill_plant_timeline() {
     assert!(pressure(&screen) < 3.52e5, "{}", pressure(&screen));
     assert_eq!(screen.venting(), 0.0);
 }
+
+impl Screen {
+    /// The holding plant with its product pumps (M86.5): `variant` "grade" or
+    /// "lifted", its draws by their lines' first pipes.
+    fn pumps(variant: &str) -> Self {
+        Screen::load(
+            &format!("crude_unit_holdup_pumps_{variant}.toml"),
+            "furnace",
+            "transfer_line",
+            &[
+                "naphtha_suction",
+                "kerosene_suction",
+                "diesel_suction",
+                "gas_oil_suction",
+                "residue_suction",
+            ],
+        )
+    }
+
+    /// The scene's F1–F5 command: product `pump` stopped or started.
+    fn send_pump(&mut self, pump: &str, on: bool) {
+        let node = self.session.node_id(&format!("{pump}_pump"));
+        assert!(node >= 0, "no {pump} pump");
+        self.send(&format!(
+            r#"{{"cmd":"set_pump_on","node":{node},"on":{on}}}"#
+        ));
+    }
+
+    /// What the column sent to slop this tick [kg/s].
+    fn slop(&self) -> f64 {
+        self.column_node()["column_operation"]["slop"]
+            .as_array()
+            .map_or(0.0, |vessels| {
+                vessels
+                    .iter()
+                    .map(|v| v["flow_kg_s"].as_f64().unwrap())
+                    .sum()
+            })
+    }
+}
+
+/// **The holding plant, its tanks at grade** (`AUTO_PUMPS_GRADE`, M86.5,
+/// DESIGN §84.5): the residue pump stopped at 600 cuts the bottoms to about
+/// half and the base climbs; started at 6 600, the bottoms runs above its
+/// flow, emptying the base; the kerosene pump stopped at 7 200 cuts the
+/// kerosene to about half, its rest raising the naphtha and the residue;
+/// started at 10 200, the kerosene is back.
+#[test]
+fn slow_the_holding_plant_at_grade_timeline() {
+    let mut screen = Screen::pumps("grade");
+    let level = |h: &Value, key: &str| h[key].as_f64().unwrap();
+    screen.run_to(600);
+    let residue = screen.draw_flow("residue_suction");
+    let naphtha = screen.draw_flow("naphtha_suction");
+    screen.send_pump("residue", false);
+    screen.run_to(6600);
+    let cut = screen.draw_flow("residue_suction") / residue;
+    assert!(cut > 0.5 && cut < 0.56, "the bottoms at {cut} of its flow");
+    let base = level(&screen.holdup_reading(), "base_level");
+    assert!(base > 0.6, "the base at {base}");
+    screen.send_pump("residue", true);
+    screen.run_to(7200);
+    assert!(
+        screen.draw_flow("residue_suction") > residue,
+        "not emptying"
+    );
+    assert!(level(&screen.holdup_reading(), "base_level") < base);
+    let kerosene = screen.draw_flow("kerosene_suction");
+    let naphtha_before = screen.draw_flow("naphtha_suction");
+    screen.send_pump("kerosene", false);
+    screen.run_to(10200);
+    let cut = screen.draw_flow("kerosene_suction") / kerosene;
+    assert!(cut > 0.53 && cut < 0.6, "the kerosene at {cut} of its flow");
+    assert!(screen.draw_flow("naphtha_suction") > 1.01 * naphtha_before);
+    assert!(screen.draw_flow("naphtha_suction") > naphtha);
+    screen.send_pump("kerosene", true);
+    screen.run_to(10800);
+    let back = screen.draw_flow("kerosene_suction") / kerosene;
+    assert!(
+        (back - 1.0).abs() < 1e-3,
+        "the kerosene at {back} of its flow"
+    );
+}
+
+/// **The holding plant, its tanks on high ground** (`AUTO_PUMPS_LIFTED`,
+/// M86.5, DESIGN §84.5): the residue pump stopped at 600 stops the bottoms;
+/// by 13 800 the base is full, the bottoms to slop; started, the bottoms runs
+/// above its flow; the naphtha pump stopped at 14 400 stops the distillate
+/// and the drum climbs; started at 18 000, the distillate runs above its
+/// flow, emptying the drum.
+#[test]
+fn slow_the_holding_plant_lifted_timeline() {
+    let mut screen = Screen::pumps("lifted");
+    let level = |h: &Value, key: &str| h[key].as_f64().unwrap();
+    screen.run_to(600);
+    let residue = screen.draw_flow("residue_suction");
+    let naphtha = screen.draw_flow("naphtha_suction");
+    screen.send_pump("residue", false);
+    screen.run_to(13800);
+    assert!(
+        screen.draw_flow("residue_suction") < 1e-9,
+        "the bottoms runs"
+    );
+    let held = screen.holdup_reading();
+    assert_eq!(held["base_limit"], "full", "{held}");
+    assert!(screen.slop() > 0.9 * residue, "slop {}", screen.slop());
+    screen.send_pump("residue", true);
+    screen.run_to(14400);
+    assert!(
+        screen.draw_flow("residue_suction") > residue,
+        "not emptying"
+    );
+    screen.send_pump("naphtha", false);
+    screen.run_to(18000);
+    assert!(
+        screen.draw_flow("naphtha_suction") < 1e-9,
+        "the distillate runs"
+    );
+    let drum = level(&screen.holdup_reading(), "drum_level");
+    assert!(drum > 0.6, "the drum at {drum}");
+    screen.send_pump("naphtha", true);
+    screen.run_to(18600);
+    assert!(
+        screen.draw_flow("naphtha_suction") > naphtha,
+        "not emptying"
+    );
+    assert!(level(&screen.holdup_reading(), "drum_level") < drum);
+}
