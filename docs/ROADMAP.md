@@ -11891,3 +11891,25 @@ back. Ahead of F11 (queued 2026-11-20), being newer.
   every shipped plant (none empty, none a placeholder). DESIGN §85.
 - [x] **M87.2** — the menu, the five screens and the map show it; screenshots
   with the longest; close-out.
+
+## M88 — the map: a column's pipes in tray order, and a bigger field with zoom and scroll (DEFERRED F11)
+
+Picked by the user (2026-11-20, taken 2026-11-24): both parts of F11 as one
+milestone, since each forces a look at every plant on the map. No Rust.
+
+- [ ] **M88.1** — a column's pipes join it in tray order. The map reads each
+  pipe's tray from the snapshot (a draw's `stage`, a loop's draw and return
+  stages, the stripping steam's, the feed's), and `demo/route.gd` orders a
+  column's ports on a side by it; a tie left over goes by the side the pipe
+  arrives from, not by file order. A route fingerprint per plant (`--auto
+  --routes`) shows which plants' pipes moved; those are screenshotted and
+  their hand layouts fixed (on the loop plants the feed enters below the
+  loops, so the furnace row goes under them).
+- [ ] **M88.2** — a field bigger than the screen: the wheel zooms at the
+  mouse (over the panel it still scrolls the panel), a right- or middle-drag
+  scrolls, Home fits the whole plant; the headings, panel and legend stay put.
+  Hover, click and Ctrl+drag work through the zoom; a load and `--shot` open
+  fitted, so screenshots repeat. The layout files keep their coordinates.
+- [ ] **M88.3** — the computed layout spaced by a least gap between nodes,
+  the field growing to hold it, rather than squeezed onto one screen; every
+  plant without a layout file looked at; close-out.
