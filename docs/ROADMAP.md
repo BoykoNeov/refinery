@@ -11862,6 +11862,14 @@ decisions: `docs/DESIGN.md` §84.
   0.41–0.46 of its share, and a stopped diesel's spill overfills the gas oil
   line too). Margins measured first. 72 of 72 plants byte-identical on both
   solvers.
-- [ ] **M86.5** — a new holdup plant with product pumps (margins checked first).
+- [x] **M86.5** — two new holdup plants with product pumps (§84.5), the user's
+  (2026-11-24) "closer to reality" and the unrealistic one too:
+  `crude_unit_holdup_pumps_grade` (a stopped pump cuts its product to
+  0.54–0.58) and `crude_unit_holdup_pumps_lifted` (it stops). Nothing halts:
+  the drum or base fills, to slop on high ground; a side product's rest leaves
+  with the naphtha and the residue. Margins measured first. Found and fixed on
+  the way: a holding column's limited draw came out a hair past its line's
+  limit and halted the run (`ColumnStep::scale_to_limits`). 74 of 74 plants
+  byte-identical on both solvers.
 - [ ] **M86.6** — DEFERRED row: the six crude units' easy lines, and holdup
   for them; close-out.

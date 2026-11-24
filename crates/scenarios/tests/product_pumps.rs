@@ -21,7 +21,7 @@ const OIL: [&str; 5] = ["naphtha", "kerosene", "diesel", "gas_oil", "residue"];
 /// Each draw's share of the oil fed, as the plant file sets it [-].
 const SHARE: [f64; 5] = [0.22, 0.16, 0.2, 0.14, 0.28];
 
-fn on_solver(src: &str, solver: &str) -> String {
+pub(crate) fn on_solver(src: &str, solver: &str) -> String {
     let chosen = src.replace("flow = \"newton\"", &format!("flow = \"{solver}\""));
     assert!(
         solver == "newton" || chosen != src,
@@ -40,7 +40,7 @@ fn pressure(s: &Snapshot, name: &str) -> f64 {
 
 /// The check valve's lift [-], read off the drive across it and its outlet
 /// pipe (M30, docs/DESIGN.md §33) at the plant's 0.015 bar band.
-fn lift(s: &Snapshot, product: &str) -> f64 {
+pub(crate) fn lift(s: &Snapshot, product: &str) -> f64 {
     let drive =
         pressure(s, &format!("{product}_check")) - pressure(s, &format!("{product}_cooler"));
     check_opening(drive, 0.015e5)
