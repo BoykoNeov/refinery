@@ -32865,7 +32865,8 @@ F1–F5 stop and start the naphtha, kerosene, diesel, gas oil and residue
 pumps (`set_pump_on`, the map's command), the products drawn by their lines'
 first pipes (`<product>_suction`). A stopped pump's product reads in warning,
 "<product>  pump off" (a longer label ran into the panel), above its flow; the `--auto` line names the pumps
-stopped and every product's flow. **Only the pumps are on keys**: the holding
+stopped and every product's flow. **Only the pumps are on keys** (as landed;
+since §84.7 every key is on, untested and saying so): the holding
 plant's measured box (§79.8) was measured without product lines, so the
 furnace, the reflux, the loops and the reboiler stay at the file's settings
 and say so when pressed (`range_ref` "§84.5: only its product pumps are on

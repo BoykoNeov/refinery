@@ -55,7 +55,8 @@ spill-down; "closer to reality", and the unrealistic plants too.
   the tick solved again. 74 of 74 plants byte-identical on both solvers.
 - **On screen** (M86.6): the holding pair on the column screen, keys 0 and -,
   F1–F5 the five product pumps, a stopped pump's product "pump off"; every
-  other key held there. A full vessel now reads that its excess goes to slop.
+  other key held there (since 2026-11-24 on, untested and saying so, §84.7).
+  A full vessel now reads that its excess goes to slop.
 - **Left open**: C36 (no back-flow through a stopped pump without a check
   valve) and C37 (the six older crude units' lines still do not need their
   pumps).
