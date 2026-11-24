@@ -32817,9 +32817,9 @@ a line cannot take stays in the column:
 
 | pump stopped | at grade | on high ground |
 |---|---|---|
-| naphtha | to 0.55; drum 0.50 → 0.54, back to 0.51 by 40 min (its loop returns the rest as reflux); residue +36 % by 40 min | stops; drum 0.60 at 5 min, full at ~28 (the loop raises the reflux too), then 8 kg/s to slop; trays 1–5 flood |
+| naphtha | to 0.56, 0.52 by 40 min; drum 0.50 → 0.54, back to 0.51 by 40 min (its loop returns the rest as reflux); residue +36 % by 40 min | stops; drum 0.60 at 5 min, full at ~28 (the loop raises the reflux too), then 8 kg/s to slop; trays 1–5 flood |
 | a side draw | to 0.55–0.58; naphtha +3–12 %, residue +13–25 % | stops; naphtha +5–26 %, residue +35–70 %; up to five trays flood |
-| residue | to 0.54; base 0.56 at 5 min, 0.98 at 40 | stops; base 0.63 at 5 min, full at 20, then the whole bottoms (29 kg/s) to slop |
+| residue | to 0.54, 0.47 by 70 min; base 0.56 at 5 min, full at 41, then 15 kg/s to slop, the line still carrying 14 | stops; base 0.63 at 5 min, full at 20, then the whole bottoms (29 kg/s) to slop |
 
 A side draw's rest does not go to the draw below, as on a column that holds
 none: the side draws run at their shares, so it runs down the trays, and on
@@ -32835,7 +32835,13 @@ component's books to 1e-8 kg/s every tick, the drum or base risen or the
 naphtha and residue raised by five minutes, released on restart (a side draw
 back at its share, its line no longer short; the naphtha and residue above
 their flows, emptying what the column held); the lifted residue's base full by
-20 minutes and its bottoms to slop. A census moved: 44 furnaces in the repo,
+20 minutes and its bottoms to slop; the grade residue 70 minutes on both
+solvers — the base full at 41, 15 kg/s to slop on top of a bottoms still at
+its line's limit (13.7 kg/s), the books to 5e-10 kg/s: the only gate that
+runs `scale_to_limits`' slop with a line still carrying (killed when the slop
+is dropped from the scaled rate: the tick after the base fills halts). A
+stopped line's share drifts down as the column moves, about a point every 10
+minutes. A census moved: 44 furnaces in the repo,
 not 42 (`burnout_reference`). Mutation pass on the plant files, four mutants:
 the grade kerosene rundown widened to 0.20 m and the grade pumps cut to 60 m
 (the margins), the lifted kerosene tank lowered to 15 m (the stopped gate),
@@ -32848,4 +32854,4 @@ the two new plants run 6000 ticks on both. The map lays both out (30 nodes,
 **Not on screen yet.** The map shows the pipes' flows and works the pumps but
 draws no drum or base level; the column screen draws the levels but has
 neither plant nor a product pump key. A player stopping a pump here sees its
-flow fall, not the vessel fill.
+flow fall, not the vessel fill: DEFERRED F12.

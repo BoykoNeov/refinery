@@ -465,3 +465,70 @@ fn slow_a_stopped_residue_pump_on_high_ground_fills_the_base_to_slop() {
     );
     assert!(flow(&s, "residue_suction") < 1e-9);
 }
+
+/// At grade a stopped residue pump's line still carries about half the
+/// bottoms, so the base fills more slowly — and then runs past full with its
+/// line still short: the bottoms at what its line delivers, the excess to
+/// slop on top (`ColumnStep::scale_to_limits`' slop, the only plant that
+/// reaches it). Seventy minutes: nothing halts, the base full, its slop
+/// flowing, the residue at its line's limit, every component's books closing.
+fn grade_residue_runs_to_slop(solver: &str) {
+    let mut engine = build(&on_solver(GRADE_PLANT, solver)).unwrap();
+    let s = tick(&mut engine, 30);
+    let bottoms = flow(&s, "residue_suction");
+    set_pump(&mut engine, "residue", false);
+    let mut worst: f64 = 0.0;
+    let mut full_at = None;
+    for t in 0..42_000 {
+        let before = inventory(&holdup_state(&engine));
+        engine
+            .tick()
+            .unwrap_or_else(|e| panic!("{solver} tick {t}: the plant must run: {e}"));
+        let s = engine.snapshot();
+        let after = inventory(&holdup_state(&engine));
+        worst = worst.max(worst_books(&engine, &before, &after, &s));
+        if full_at.is_none() && holdup(&s).base_limit == LevelLimit::Full {
+            full_at = Some(t);
+        }
+        if t % 6000 == 5999 {
+            println!(
+                "M86_5 {solver} grade residue {} min: {:.3} of its flow, base {:.3}",
+                (t + 1) / 600,
+                flow(&s, "residue_suction") / bottoms,
+                holdup(&s).base_level
+            );
+        }
+    }
+    let s = engine.snapshot();
+    let held = holdup(&s);
+    let column = s.nodes.iter().find(|n| n.name == "column").unwrap();
+    let slop: f64 = column
+        .column_operation
+        .as_ref()
+        .unwrap()
+        .slop
+        .iter()
+        .map(|vessel| vessel.flow_kg_s)
+        .sum();
+    let drawn = flow(&s, "residue_suction");
+    let (_, limit) = ran_short(&engine, 4).expect("the residue line short");
+    println!("M86_5 {solver} grade residue: full at tick {full_at:?}, slop {slop:.2} kg/s, residue {drawn:.3} kg/s, books {worst:e}");
+    assert_eq!(held.base_limit, LevelLimit::Full, "{solver}: {held:?}");
+    assert!(slop > 0.3 * bottoms, "{solver}: slop {slop}");
+    assert!(
+        (drawn - limit).abs() <= 1e-9 * limit,
+        "{solver}: {drawn} {limit}"
+    );
+    assert!(drawn > 0.4 * bottoms, "{solver}: {drawn}");
+    assert!(worst < 1e-8, "{solver}: {worst} kg/s");
+}
+
+#[test]
+fn slow_a_stopped_residue_pump_at_grade_fills_the_base_to_slop() {
+    grade_residue_runs_to_slop("newton");
+}
+
+#[test]
+fn slow_a_stopped_residue_pump_at_grade_fills_the_base_to_slop_on_the_game_solver() {
+    grade_residue_runs_to_slop("simple");
+}
