@@ -12,6 +12,28 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M87 is CLOSED (2026-11-24): each plant's description shown in the game.**
+Asked by the user (2026-11-24): "add description to every plant", answered
+as showing each file's existing one-line `[meta] description`, as written.
+- **Read by the bridge** (`describe_json`, the binding's static
+  `RefinerySim.describe`, through Godot's `FileAccess`); cached in
+  `demo/screen.gd`. A test reads every shipped plant: its own name, a
+  description, no placeholder.
+- **Shown**: in the menu, two lines for the chosen row in one fixed place;
+  on the column, reactor, pump and furnace screens and the map, the message
+  line when a plant loads, and **I** brings it back; on the leaking-line
+  screen, under its keys (I hides it). The map's two-line message no longer
+  runs into its legend.
+- **Checked**: screenshots with each screen's longest description; every
+  `--auto`, the map's over 76 plants; corpus 76 of 76 identical on both
+  solvers (no engine change).
+- **Left as written**, for the user to judge: six descriptions name another
+  plant file or a milestone (`crude_column_boiloff`, `_recovery`,
+  `_recovery_train`, `furnace_burst_during_stop`,
+  `furnace_coil_trip_autoreset`, `tank_flow_control`).
+
+---
+
 **M86 is CLOSED (2026-11-24): a stopped product pump stops its product
 (DEFERRED C35).** Picked by the user (2026-11-23), option (c), holdup and
 spill-down; "closer to reality", and the unrealistic plants too.

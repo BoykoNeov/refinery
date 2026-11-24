@@ -32895,3 +32895,46 @@ keys) sent their commands whatever the plant, so X would have put these
 plants on total reflux, unmeasured; on a plant with `product_pumps` they are
 now held with a message. `AUTO_PUMPS_GRADE` presses every other key once at
 tick 300: each is held, nothing sent.
+
+## 85. Each plant's description shown in the game (M87)
+
+Asked by the user (2026-11-24): every plant file already carries a one-line
+`[meta] description`, but the game showed none of them. It now shows them as
+written — no description was reworded.
+
+**Read by the bridge, never parsed in GDScript.**
+`bridge::describe_json(toml_src)` loads the file (`refinery_scenarios::
+load_str`, nothing built) and returns `{name, description}`, or the load's
+`{code, message}`. The binding's static `RefinerySim.describe(res_path)`
+reads the file through Godot's `FileAccess`, as `load_scenario` does, so a
+`res://` path still works in an exported game. `Screen.description(scenario)`
+(`demo/screen.gd`) caches it per file. Test
+(`crates/godot-ext/tests/bridge.rs`,
+`every_shipped_plant_describes_itself`): every file in `scenarios/` reads to
+its own stem as `name` and a description of more than 20 characters with no
+"PENDING" (M86.5's generated plants carried that placeholder until their
+probe ran); a source that is no plant reads as an error. Mutation: the
+description returned empty, killed by it.
+
+**Where.** The longest description is 272 characters (two lines at the
+window's width), the shortest 51.
+- **The menu**: the chosen row's plant, two lines under the keys' line, in
+  one fixed place, so moving the choice never moves the rows (the list
+  starts 46 px lower, squeezed a little more). Rows that name no plant (the
+  map's "any plant") show none. `--select=<stem>` chooses a row, for a
+  screenshot.
+- **The four unit screens and the map**: the message line, when a plant is
+  loaded fresh; a plant taken over as it stands says so and adds
+  "(I: about this plant)". Any command replaces the message, so **I** puts
+  the description back. I was free on every screen and the map; the shared
+  legend (`Screen.legend`) names it, once for all.
+- **The leaking-line screen** has no message line: the description is drawn
+  under its keys, and I hides it and shows it again.
+- **The map's message line** was already two lines, drawn 6 px too low: the
+  second line ran into the legend. Raised.
+
+**Checked**: screenshots of the menu with the longest description chosen,
+each screen with its own longest (column: the holding plant at grade; furnace:
+the start permissive; pump: the gas lock; reactor: the hydrogen quench), the
+map and the leaking line; every screen's `--auto`, the map's `--auto` over all
+76 plants and the M84 hand-over run.

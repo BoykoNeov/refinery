@@ -321,8 +321,22 @@ static func legend(canvas: CanvasItem, at: Vector2, lines: Array, color: Color, 
 	for i in lines.size():
 		var line: String = lines[i]
 		if i == lines.size() - 1:
-			line += "   %s   Esc menu" % enter
+			line += "   I about this plant   %s   Esc menu" % enter
 		text(canvas, at + Vector2(0, step * i), line, color, size, width)
+
+
+## Each plant's one-line description by its file, read once (M87).
+static var _descriptions := {}
+
+
+## A plant's one-line description, its file's `[meta]` (M87): what a player
+## reads to know what the plant is there to show. Read by the bridge, never
+## parsed here; "" where the file does not read.
+static func description(scenario: String) -> String:
+	if not _descriptions.has(scenario):
+		var read = JSON.parse_string(RefinerySim.describe(scenario))
+		_descriptions[scenario] = str(read.get("description", "")) if read is Dictionary else ""
+	return _descriptions[scenario]
 
 
 ## The options every screen reads after `--`: {auto, shots, shot}, and "plant"

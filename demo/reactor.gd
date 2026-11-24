@@ -492,10 +492,11 @@ func _load(key: String, fresh: bool = true) -> void:
 
 	started_tick = sim.tick_index()
 	if fresh:
-		_say("started %s from the beginning" % plant["scenario"], false)
+		# What the plant is there to show, its file's description (M87).
+		_say(Screen.description(plant["scenario"]), false)
 		print("reactor: loaded %s" % plant["scenario"])
 	else:
-		_say("took over %s as it stands, t = %.1f s" % [plant["scenario"], float(snapshot["sim_time"])], false)
+		_say("took over %s as it stands, t = %.1f s   (I: about this plant)" % [plant["scenario"], float(snapshot["sim_time"])], false)
 		print("reactor: took over %s at tick %d" % [plant["scenario"], started_tick])
 	queue_redraw()
 
@@ -665,6 +666,8 @@ func _input(event: InputEvent) -> void:
 		KEY_ESCAPE:
 			Screen.to_menu(get_tree())
 			return
+		KEY_I:
+			_say(Screen.description(PLANTS[plant_key]["scenario"]), false)
 		KEY_F11:
 			Screen.toggle_fullscreen(get_window())
 		KEY_SPACE:

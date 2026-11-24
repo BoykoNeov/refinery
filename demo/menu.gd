@@ -41,7 +41,10 @@ const GOOD := Screen.GOOD
 const WARN := Screen.WARN
 
 const LEFT := 40.0
-const TOP := 66.0
+## Under the keys' line, two lines for the chosen row's plant's description
+## (M87), then the list.
+const TOP := 112.0
+const ABOUT_Y := 82.0
 const ROW := 17.0
 const HEADING := 21.0
 ## The lowest a row may sit: past it the list is drawn closer together, so a
@@ -88,9 +91,9 @@ func _ready() -> void:
 		y += 4.0
 		if screen_scene != "":
 			y += ROW
-			rows.append({"scene": screen_scene, "plant": "", "running": true, "label": "Carry on, on the %s screen" % _screen_name(screen_scene), "y": y})
+			rows.append({"scene": screen_scene, "plant": "", "running": true, "label": "Carry on, on the %s screen" % _screen_name(screen_scene), "y": y, "scenario": running_scenario})
 		y += ROW
-		rows.append({"scene": Screen.MAP, "plant": "", "running": true, "label": "Carry on, on the plant map", "y": y})
+		rows.append({"scene": Screen.MAP, "plant": "", "running": true, "label": "Carry on, on the plant map", "y": y, "scenario": running_scenario})
 		selected = 0
 		for i in rows.size():
 			if rows[i]["scene"] == came_from:
@@ -111,11 +114,12 @@ func _ready() -> void:
 		var plants := _plants_of(screen["script"])
 		if plants.is_empty():
 			y += ROW
-			var row := {"scene": screen["scene"], "plant": "", "label": screen["row"], "y": y}
+			var row := {"scene": screen["scene"], "plant": "", "label": screen["row"], "y": y, "scenario": str(screen.get("scenario", ""))}
 			if screen["scene"] == Screen.MAP and is_running:
 				# The map opens on the plant running (M84): no plant named.
 				row["label"] = "The plant running, as you left it; Left/Right there start another plant over"
 				row["running"] = true
+				row["scenario"] = running_scenario
 			elif screen["scene"] == Screen.MAP:
 				row["label"] = "Any plant in scenarios/ (Left/Right there to choose)"
 			elif is_running and screen.get("scenario", "") == running_scenario:
@@ -123,10 +127,19 @@ func _ready() -> void:
 			rows.append(row)
 		for key in plants:
 			y += ROW
-			var row := {"scene": screen["scene"], "plant": key, "label": str(plants[key].get("title", key)), "y": y}
+			var row := {"scene": screen["scene"], "plant": key, "label": str(plants[key].get("title", key)), "y": y, "scenario": str(plants[key].get("scenario", ""))}
 			if is_running and str(plants[key].get("scenario", "")) == running_scenario:
 				row["note"] = RESTARTS
 			rows.append(row)
+	# `--select=<plant>` (M87, for a screenshot): the first row running that
+	# plant's file is the one chosen.
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--select="):
+			var wanted := "/%s.toml" % arg.trim_prefix("--select=")
+			for i in rows.size():
+				if str(rows[i].get("scenario", "")).ends_with(wanted):
+					selected = i
+					break
 	if y > BOTTOM:
 		var squeeze := (BOTTOM - TOP) / (y - TOP)
 		row_step = ROW * squeeze
@@ -252,6 +265,10 @@ func _draw() -> void:
 	else:
 		_text(Vector2(LEFT + 150, 40), "pick a plant to run", DIM, 16)
 	_text(Vector2(LEFT, 62), "Up / Down or the mouse to choose    Enter to open    Esc inside a screen comes back here    F11 full screen", DIM, 13)
+	# The chosen row's plant, in its file's words (M87): two lines at most.
+	var about := Screen.description(str(rows[selected].get("scenario", ""))) if not rows.is_empty() and str(rows[selected].get("scenario", "")) != "" else ""
+	if about != "":
+		draw_multiline_string(ThemeDB.fallback_font, Vector2(LEFT, ABOUT_Y), about, HORIZONTAL_ALIGNMENT_LEFT, size.x - 2.0 * LEFT, 14, 2, INK)
 
 	for heading in headings:
 		var y: float = heading["y"]

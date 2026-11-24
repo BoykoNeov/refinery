@@ -19,6 +19,8 @@ extends Node2D
 const Screen := preload("res://demo/screen.gd")
 
 const SCENARIO := "res://scenarios/leaking_line.toml"
+## Whether the plant's description is drawn under the keys (M87; I toggles).
+var show_about := true
 ## 10 cm². The hole `leak_reference` sizes so that ~37% of the transfer goes
 ## out of it — chosen there to be visible rather than nominal, and reused here
 ## for the same reason.
@@ -125,6 +127,9 @@ func _input(event: InputEvent) -> void:
 			_to_map()
 		KEY_ESCAPE:
 			Screen.to_menu(get_tree())
+		KEY_I:
+			show_about = not show_about
+			queue_redraw()
 		KEY_F11:
 			Screen.toggle_fullscreen(get_window())
 		KEY_P:
@@ -284,6 +289,10 @@ func _draw() -> void:
 
 	_text(Vector2(30, 40), _readout(sim.tick_index()), INK)
 	Screen.legend(self, Vector2(30, 64), ["P puncture    F fire    R repair + extinguish"], PIPE)
+	# What the plant is there to show, its file's description (M87); I hides
+	# it and shows it again.
+	if show_about:
+		draw_multiline_string(ThemeDB.fallback_font, Vector2(30, 92), Screen.description(SCENARIO), HORIZONTAL_ALIGNMENT_LEFT, get_viewport_rect().size.x - 60.0, 15, 2, Screen.DIM)
 
 
 func _draw_tank(rect: Rect2, id: int, label: String) -> void:

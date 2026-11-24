@@ -145,7 +145,8 @@ cargo clippy -p refinery-godot-ext --features godot --all-targets -- -D warnings
 
 ```
 godot --headless --path . --editor --quit    # once, after cloning
-godot --path .                               # the menu: every screen and plant (Esc in a screen returns to it, F11 full screen)
+godot --path .                               # the menu: every screen and plant (Esc in a screen returns to it, F11 full screen; I on any screen: the plant's description, M87)
+#   menu screenshot: --quit-after 3000 -- --shot=W:/temp/claude/<task>/menu.png [--select=<plant stem>]
 #   the plant running waits behind the menu: its green rows (and the map's row) carry on with it, every other row and a screen's number keys start a plant over
 #   menu round trip, scripted: <screen> -- --escape=<tick>,…  (Esc pressed at those ticks; the menu presses Enter on the green row for that screen, or with --shot= saves a picture)
 godot --headless --path . res://demo/plant.tscn -- --auto   # the M6.2 demo; ends at t=350
@@ -203,8 +204,8 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M87 — each plant's description shown in the game (`docs/ROADMAP.md` M87; the user, 2026-11-24: the file's one-line `[meta] description`, as written, in the menu and on every screen and the map). Queued after it by the user (2026-11-20): F11 (the map: a column's ports by tray, a bigger field with zoom and scroll — one milestone); then the plan `docs/plans/column-pressure-from-physics.md` (forks answered 2026-11-23)** (C30's base side is still open; `docs/plans/` lists the review's plans; the user's aim, 2026-11-19: one complex plant that shows a fault spreading — next would be a screen finding its unit inside a bigger plant, and a plant joining the units).
-**Latest closed: M86 (2026-11-24)**: a stopped product pump stops its product (C35) — a locked-rotor pump, a draw line that delivers what it can, four plants whose lines need their pumps, the holding pair on the column screen (F1–F5); C37 open for the six older crude units. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none open. Next in the user's queue (2026-11-20): F11 (the map: a column's ports by tray, a bigger field with zoom and scroll — one milestone, to be opened as M88); then the plan `docs/plans/column-pressure-from-physics.md` (forks answered 2026-11-23)** (C30's base side is still open; C37, the six older crude units' product pumps; `docs/plans/` lists the review's plans; the user's aim, 2026-11-19: one complex plant that shows a fault spreading — next would be a screen finding its unit inside a bigger plant, and a plant joining the units).
+**Latest closed: M87 (2026-11-24)**: each plant's file description shown in the game — the menu's chosen row, every screen's message line on load, I to bring it back. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

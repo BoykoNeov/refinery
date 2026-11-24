@@ -330,6 +330,11 @@ func _ready() -> void:
 
 ## Load plant `index` fresh, or (`fresh` false) take over the plant running,
 ## which is that plant (M84): laid out as it stands, nothing loaded or ticked.
+## The running plant's file, as the map loaded it.
+func _scenario_path() -> String:
+	return "%s/%s.toml" % [SCENARIOS, plants[plant_index]]
+
+
 func _load(index: int, fresh: bool = true) -> void:
 	plant_index = posmod(index, plants.size())
 	halted = ""
@@ -352,9 +357,11 @@ func _load(index: int, fresh: bool = true) -> void:
 		started_tick = sim.tick_index()
 		if not _step():
 			return
+		# What the plant is there to show, its file's description (M87).
+		_say(Screen.description(_scenario_path()), INK)
 	else:
 		snapshot = JSON.parse_string(sim.snapshot_json())
-		_say("took over %s as it stands, t = %.1f s" % [plants[plant_index], float(snapshot["sim_time"])], DIM)
+		_say("took over %s as it stands, t = %.1f s   (I: about this plant)" % [plants[plant_index], float(snapshot["sim_time"])], DIM)
 		print("map: took over %s at tick %d (%d hole(s) on record)" % [plants[plant_index], sim.tick_index(), running.holes.size()])
 	started_tick = sim.tick_index()
 	_lay_out()
@@ -525,6 +532,8 @@ func _input(event: InputEvent) -> void:
 		KEY_ESCAPE:
 			Screen.to_menu(get_tree())
 			return
+		KEY_I:
+			_say(Screen.description(_scenario_path()), INK)
 		KEY_F11:
 			Screen.toggle_fullscreen(get_window())
 		KEY_RIGHT, KEY_PAGEDOWN:
@@ -1251,7 +1260,7 @@ func _draw_legend(size: Vector2) -> void:
 	_text(Vector2(x + 272, 60), "20", DIM, 12)
 	_text(Vector2(x + 486, 60), "450 °C", DIM, 12)
 	if message != "":
-		draw_multiline_string(ThemeDB.fallback_font, Vector2(30, size.y - 60.0), message, HORIZONTAL_ALIGNMENT_LEFT, size.x - 60.0, 13, 2, message_color)
+		draw_multiline_string(ThemeDB.fallback_font, Vector2(30, size.y - 66.0), message, HORIZONTAL_ALIGNMENT_LEFT, size.x - 60.0, 13, 2, message_color)
 	# Two lines: the plant's controls, then the keys that move between plants
 	# and screens — what keeps the plant running and what starts one over.
 	var controls := "click a valve/furnace/cooler: Up/Down, M by hand   click a pump: on/off   P+click a pipe: hole/mend   Tab A Q Z loops   R reset trips   Ctrl+drag/Ctrl+S layout"
