@@ -64,8 +64,10 @@
 #               falls to about half (the column still pushes some through it);
 #               what its line cannot take stays in the column: the drum or the
 #               base fills, or a side product's rest leaves with the naphtha
-#               and the residue. Its other keys stay at the file's settings:
-#               their range is not measured with product lines on.
+#               and the residue. Its other keys work too, inside the holding
+#               plant's box (the user's decision, §84.7), but that box was
+#               measured without product lines: the screen says each result
+#               is untested here, and a setting may stop the plant.
 #   pumps_lifted scenarios/crude_unit_holdup_pumps_lifted.toml — the same with
 #               its tanks on high ground: a stopped pump stops its product, and
 #               the drum or the base fills to slop.
@@ -393,13 +395,19 @@ const PLANTS := {
 		"product_pumps": ["naphtha_pump", "kerosene_pump", "diesel_pump", "gas_oil_pump", "residue_pump"],
 		# The holding plant's frame budget (M74.4): its column, five lines more.
 		"ticks_per_frame": 5,
-		# Only the pumps are on keys: the holding plant's measured box (§79.8)
-		# was measured without product lines, so every other key stays at the
-		# file's setting and says so.
-		"furnace_mw": [20.0, 20.0],
-		"loop_flow": [1.0, 1.0],
-		"loop_return_k": [0.0, 0.0],
-		"range_ref": "§84.5: only its product pumps are on keys",
+		# Every key on, inside the holding plant's box (§79.8) — measured
+		# without product lines, so untested here (the user's decision,
+		# §84.7): the screen says so with every result, and a setting may
+		# stop the plant.
+		"untested": true,
+		"reboiler": true,
+		"furnace_step_mw": 5.0,
+		"furnace_mw": [0.0, 40.0],
+		"reflux": [0.5, 15.0],
+		"loop_flow": [0.0, 2.0],
+		"loop_return_k": [-60.0, 60.0],
+		"reboiler_mw": [0.0, 215.0],
+		"range_ref": "§79.8, untested with product lines: §84.7",
 		"level_chart": true,
 	},
 	"pumps_lifted":
@@ -420,13 +428,16 @@ const PLANTS := {
 		"product_pumps": ["naphtha_pump", "kerosene_pump", "diesel_pump", "gas_oil_pump", "residue_pump"],
 		# The holding plant's frame budget (M74.4): its column, five lines more.
 		"ticks_per_frame": 5,
-		# Only the pumps are on keys: the holding plant's measured box (§79.8)
-		# was measured without product lines, so every other key stays at the
-		# file's setting and says so.
-		"furnace_mw": [20.0, 20.0],
-		"loop_flow": [1.0, 1.0],
-		"loop_return_k": [0.0, 0.0],
-		"range_ref": "§84.5: only its product pumps are on keys",
+		# Every key on, untested, as the plant at grade (§84.7).
+		"untested": true,
+		"reboiler": true,
+		"furnace_step_mw": 5.0,
+		"furnace_mw": [0.0, 40.0],
+		"reflux": [0.5, 15.0],
+		"loop_flow": [0.0, 2.0],
+		"loop_return_k": [-60.0, 60.0],
+		"reboiler_mw": [0.0, 215.0],
+		"range_ref": "§79.8, untested with product lines: §84.7",
 		"level_chart": true,
 	},
 }
@@ -570,14 +581,11 @@ const AUTO_OVERFILL := {
 	15000: ["quit"],
 }
 ## pumps_grade (M86.5, §84.5), the holding plant's product pumps with its
-## tanks at grade: every other key pressed at 300 is held, nothing sent (only
-## the pumps are on keys here); the residue pump stopped at 600 cuts the bottoms to about
+## tanks at grade: the residue pump stopped at 600 cuts the bottoms to about
 ## half and the base climbs; started at 6 600, the bottoms runs above its flow,
 ## emptying the base; the kerosene pump stopped at 7 200 cuts the kerosene to
 ## about half, its rest raising the naphtha and the residue; started at 10 200.
 const AUTO_PUMPS_GRADE := {
-	# Every other key pressed once (M86.6): each held, nothing sent.
-	300: ["furnace_up", "reflux_up", "loops_flow_up", "loops_return_up", "reboiler_up", "reboiler_free", "cooling_cut", "total_reflux_on", "drain_shut"],
 	600: ["pump_4"],
 	6600: ["pump_4"],
 	7200: ["pump_1"],
@@ -1066,11 +1074,8 @@ func _do(action: String) -> void:
 				freed = "free the reboiler: it holds the base's level, the bottoms at its share of the feed"
 			_send(freed, {"cmd": "set_reboiler_duty", "node": column_id, "duty": null})
 		# The overhead's keys (M75.4): on a plant whose condenser is a limit;
-		# elsewhere the engine's own refusal says why — but on the plants whose
-		# product pumps are on keys (M86.6) the screen holds them: their range
-		# is not measured with product lines on.
-		"cooling_cut", "cooling_back", "total_reflux_on", "total_reflux_off", "drain_shut", "drain_open" when plant.has("product_pumps"):
-			_say("the overhead stays as the plant file sets it: only the product pumps are on keys here (DESIGN %s)" % plant["range_ref"], true)
+		# elsewhere the engine's own refusal says why. On the pump plants
+		# they are sent, untested (§84.7).
 		"cooling_cut":
 			_send("cut the condenser's cooling water: it condenses nothing", {"cmd": "set_condenser_cooling", "node": column_id, "on": false})
 		"cooling_back":
@@ -1276,7 +1281,10 @@ func _set_loops_return(kelvin: float) -> void:
 ## The screen's own refusal: the key is at the edge of the safe range.
 func _hold(what: String, at: String) -> void:
 	var ref: String = PLANTS[plant_key].get("range_ref", "§65.9, §66.7")
-	var text := "%s stays at %s — the edge of this plant's safe range (DESIGN %s)" % [what, at, ref]
+	var edge := "the edge of this plant's safe range"
+	if _untested():
+		edge = "the edge of its keys' range, the holding plant's, not tested on this one"
+	var text := "%s stays at %s — %s (DESIGN %s)" % [what, at, edge, ref]
 	_say(text, true)
 	if auto_run:
 		print("column: t=%d  HELD: %s" % [sim.tick_index(), text])
@@ -1503,6 +1511,10 @@ func _send(what: String, command: Dictionary) -> void:
 	if err == null:
 		# The settings as sent: a second press before the next tick reads them.
 		snapshot = JSON.parse_string(sim.snapshot_json())
+		# On a plant whose keys are not tested (§84.7), every key but its
+		# product pumps says so with its result.
+		if _untested() and command["cmd"] != "set_pump_on":
+			what += " — NOT TESTED here: may be unrealistic, or stop the plant"
 		_say(what, false)
 		if auto_run:
 			print("column: t=%d  %s  %s" % [sim.tick_index(), what, text])
@@ -1515,6 +1527,12 @@ func _send(what: String, command: Dictionary) -> void:
 func _say(text: String, bad: bool) -> void:
 	message = text
 	message_bad = bad
+
+
+## Whether this plant's keys other than its product pumps are untested: on,
+## but outside any range measured on it (the user's decision, §84.7).
+func _untested() -> bool:
+	return PLANTS.get(plant_key, {}).get("untested", false)
 
 
 # ---------------------------------------------------------------- reading
@@ -2016,7 +2034,7 @@ func _draw() -> void:
 	if PLANTS[plant_key].has("overhead"):
 		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   T/G reboiler   Y free it   C cooling   X total reflux   V drain   Space pause   [ ] speed"
 	elif not pump_ids.is_empty():
-		keys = "F1–F5 stop/start the naphtha, kerosene, diesel, gas oil, residue pumps   Space pause   [ ] speed"
+		keys = "F1–F5 pumps   Up/Down furnace   W/S reflux   E/D R/F loops   T/G Y reboiler   (all but F1–F5 untested here)   Space pause   [ ] speed"
 	elif _holds_liquid():
 		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   T/G reboiler   Y free it   Space pause   [ ] speed"
 	elif PLANTS[plant_key].has("reboiler"):
@@ -2031,8 +2049,11 @@ func _draw() -> void:
 		"start over:  1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops   7 trays   8 holdup   9 overfill   0 pumps at grade   - pumps lifted",
 	], DIM, 16, 20.0, PANEL_X - 30.0 - 24.0)
 	if halted != "":
+		var stop := "HALTED — %s" % halted
+		if _untested():
+			stop += "   (this plant's keys are not tested: %s starts it over)" % ("0" if plant_key == "pumps_grade" else "-")
 		draw_multiline_string(
-			ThemeDB.fallback_font, Vector2(30, 90), "HALTED — %s" % halted, HORIZONTAL_ALIGNMENT_LEFT,
+			ThemeDB.fallback_font, Vector2(30, 90), stop, HORIZONTAL_ALIGNMENT_LEFT,
 			get_viewport_rect().size.x - 60, 15, 3, BAD
 		)
 
@@ -2626,10 +2647,28 @@ func _draw_panel() -> void:
 		y += 22
 		_text(Vector2(PANEL_X, y), "coil           %s" % _c(_coil_k()), INK)
 
+	var plant: Dictionary = PLANTS[plant_key]
+	if _untested():
+		# Kept short, so it ends above the message line (§84.7).
+		y += 24
+		_text(Vector2(PANEL_X, y), "KEY LIMITS — NOT TESTED ON THIS PLANT", WARN)
+		y += 18
+		_text(Vector2(PANEL_X, y), "furnace  %.0f–%.0f MW    reflux  %.1f–%.1f" % [plant["furnace_mw"][0], plant["furnace_mw"][1], plant["reflux"][0], plant["reflux"][1]], DIM, 14)
+		y += 18
+		_text(
+			Vector2(PANEL_X, y),
+			"loops  %.0f–%.0f %%, return %+.0f to %+.0f K" % [
+				plant["loop_flow"][0] * 100.0, plant["loop_flow"][1] * 100.0, plant["loop_return_k"][0], plant["loop_return_k"][1]
+			],
+			DIM,
+			14
+		)
+		y += 18
+		_text(Vector2(PANEL_X, y), "reboiler held  %.0f–%.0f MW, or free" % [plant["reboiler_mw"][0], plant["reboiler_mw"][1]], DIM, 14)
+		return
 	y += 40
 	_text(Vector2(PANEL_X, y), "SAFE RANGE OF THE KEYS", DIM)
 	y += 22
-	var plant: Dictionary = PLANTS[plant_key]
 	if not region.is_empty():
 		_text(Vector2(PANEL_X, y), "measured, each key's edge set by the others:", DIM, 14)
 		y += 18

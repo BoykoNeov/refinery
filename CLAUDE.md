@@ -163,7 +163,7 @@ godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--p
 #   M77: [--save-at=120 --save-file=W:/temp/claude/<task>/pump.json], then [--continue --save-file=…] prints the same lines after 120 (F5/F9 save and load by hand)
 godot --path . res://demo/reactor.tscn       # the M57.5 reactor screen (keys on screen; 4 = M58 wall; 5/6 = M59 hydrogen)
 godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
-godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops, 7 M73 trays, 8 M74 holdup, 9 M75 overfill, 0 / - M86 holding plants with product pumps, F1–F5 the pumps)
+godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops, 7 M73 trays, 8 M74 holdup, 9 M75 overfill, 0 / - M86 holding plants with product pumps, F1–F5 the pumps, their other keys on but untested and saying so, §84.7)
 godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped|cold|loops|trays|holdup|overfill|pumps_grade|pumps_lifted]
 ```
 

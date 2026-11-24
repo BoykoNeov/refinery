@@ -32894,7 +32894,38 @@ its declared setting, its range not measured. And C, X and V (the overhead's
 keys) sent their commands whatever the plant, so X would have put these
 plants on total reflux, unmeasured; on a plant with `product_pumps` they are
 now held with a message. `AUTO_PUMPS_GRADE` presses every other key once at
-tick 300: each is held, nothing sent.
+tick 300: each is held, nothing sent. (Reversed by §84.7.)
+
+### 84.7 Landed — every key on, untested (the user's decision, 2026-11-24)
+
+**The user's answer:** "it would be good if the player has more options to
+experiment, even if not all results are validated (this should be
+mentioned)". So on `pumps_grade` and `pumps_lifted` every key is on again,
+inside the holding plant's box (§79.8: furnace 0–40 MW in 5 MW steps, reflux
+0.5–15, the loops' flow 0–200 % and return ±60 K, the reboiler held 0–215 MW
+or free) — a box measured WITHOUT product lines, so untested here. This
+departs, for these two plants only, from the rule that a key stays inside the
+range measured on its plant (§65.9); every other plant keeps it.
+
+What the screen says (`untested` on the plant's entry):
+- every command but a product pump's, accepted, reads "… — NOT TESTED here:
+  may be unrealistic, or stop the plant";
+- a key at the box's edge reads "the edge of its keys' range, the holding
+  plant's, not tested on this one";
+- the panel's heading reads "KEY LIMITS — NOT TESTED ON THIS PLANT" in
+  warning, its limits on three short lines so the message line keeps its
+  width (a plant's description takes both its lines);
+- the key line ends "(all but F1–F5 untested here)";
+- a halt adds "this plant's keys are not tested: 0 (or -) starts it over".
+
+C, X and V reach the engine, which refuses cutting the cooling, total reflux
+and shutting the drain on these plants with its own reasons (no
+`condenser_limit`, no `holdup.steel`), so the key line does not list them.
+`AUTO_PUMPS_GRADE` no longer presses the other keys at 300; both timelines
+are otherwise unchanged and print as before. A throwaway run on
+`pumps_lifted` pressed each key once (furnace to 25 then to the 40 MW edge,
+reflux 4.5, loops 125 % and +20 K, reboiler held 89 MW then freed, the
+naphtha pump stopped): it kept running, every message as above.
 
 ## 85. Each plant's description shown in the game (M87)
 
