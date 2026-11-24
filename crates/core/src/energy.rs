@@ -2391,27 +2391,30 @@ pub fn resolve_node_states(
                                 // model could not put it anywhere (a column
                                 // that holds no liquid has no draw below its
                                 // bottoms), or ignores the limit (M86.2,
-                                // docs/DESIGN.md §84.2).
+                                // docs/DESIGN.md §84.2). A column that holds
+                                // liquid keeps what its line cannot take, so
+                                // there it is only ever the model's fault
+                                // (M86.5, §84.5).
                                 if let Some(Some(delivered)) = draw_limits.get(*index) {
                                     let delivered = delivered.value();
                                     let stopped = crate::traits::STOPPED_DRAW_SHARE * feed_flow;
                                     if drawn
                                         > delivered.max(stopped) * (1.0 + DRAW_LIMIT_SLACK) + 1e-12
                                     {
-                                        let store = line.last().map(|&e| graph.endpoints(e).1);
+                                        let column = &graph.node(id).name;
+                                        let pump = line.first().map_or("?", |&e| {
+                                            graph.node(graph.endpoints(e).1).name.as_str()
+                                        });
+                                        let store = line.last().map_or("?", |&e| {
+                                            graph.node(graph.endpoints(e).1).name.as_str()
+                                        });
+                                        let why = if pass.draw_flows.is_empty() {
+                                            "and the column has no draw below to take the rest.                                              A line's pump must push its draw through its pipes                                              and coolers to its store (docs/DESIGN.md §67.13,                                              §84.2): start or strengthen the pump, or widen the                                              line"
+                                        } else {
+                                            "and the column drew more. A column that holds                                              liquid keeps what its line cannot take on its tray,                                              in its drum or in its base (docs/DESIGN.md §84.2,                                              §84.5): its separation model ignored the line's                                              limit"
+                                        };
                                         return Err(SimError::Numerical(format!(
-                                            "the draw line of column '{}' through '{}' cannot \
-                                             deliver its {drawn:.4} kg/s to '{}': it delivers \
-                                             {delivered:.4} kg/s at most, and the column has no \
-                                             draw below to take the rest. A line's pump must \
-                                             push its draw through its pipes and coolers to its \
-                                             store (docs/DESIGN.md §67.13, §84.2): start or \
-                                             strengthen the pump, or widen the line",
-                                            graph.node(id).name,
-                                            line.first().map_or("?", |&e| &graph
-                                                .node(graph.endpoints(e).1)
-                                                .name),
-                                            store.map_or("?", |n| &graph.node(n).name),
+                                            "the draw line of column '{column}' through '{pump}'                                              cannot deliver its {drawn:.6} kg/s to '{store}': it                                              delivers {delivered:.6} kg/s at most, {why}"
                                         )));
                                     }
                                 }

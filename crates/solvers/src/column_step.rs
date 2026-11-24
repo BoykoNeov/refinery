@@ -107,6 +107,12 @@ const EMPTY_SLOPE_KG: f64 = 1.0;
 /// Newton steps before a tick's step is refused.
 const MAX_ITERATIONS: u32 = 40;
 
+/// Times a tick is solved again with a draw past its line's limit scaled
+/// back to it (M86.5, docs/DESIGN.md §84.5): one lands within round-off.
+const LIMIT_CORRECTIONS: u32 = 1;
+/// How near its line's limit a limited draw counts as at it [-].
+const LIMIT_ROUND_OFF: f64 = 1e-12;
+
 /// Step halvings before a Newton step is declared to have no descent.
 const MAX_HALVINGS: u32 = 30;
 
@@ -332,18 +338,87 @@ impl ColumnStep<'_> {
             .map(|j| self.moles_of(state.stage_liquid[j], &state.stage_composition[j]))
             .collect();
         let drum = self.moles_of(state.drum_liquid, &state.drum_composition);
-        let set = self.set_flows(&amounts, &drum)?;
+        let mut set = self.set_flows(&amounts, &drum)?;
 
         let mut u: Vec<f64> = start.temperatures.to_vec();
         u.extend_from_slice(start.vapour);
-        let mut evaluation = self.evaluate(&u, &amounts, &drum, &set)?;
+        let (mut u, mut evaluation) = self.converge(u, &amounts, &drum, &set)?;
+        // A draw its line limits is set in moles at the start-of-tick liquid
+        // and leaves at the end-of-tick liquid, so in mass it can end a hair
+        // past the limit — 1.3e-7 of itself on the M86.5 plant's stopped
+        // kerosene, past the sweep's 1e-9 (M86.5, docs/DESIGN.md §84.5). Each
+        // such draw's molar rate is scaled to its limit at the liquid it left
+        // at and the tick solved again from where it converged; the liquid
+        // barely answers so small a change. A tick with no line short solves
+        // once, as before.
+        for _ in 0..LIMIT_CORRECTIONS {
+            if !self.scale_to_limits(&evaluation, &mut set) {
+                break;
+            }
+            (u, evaluation) = self.converge(u, &amounts, &drum, &set)?;
+        }
+        self.finish(&u, evaluation, &set)
+    }
+
+    /// Scale each draw its line limits to run, in mass at the liquid
+    /// `evaluation` leaves it at, at that limit — its molar rate in `set`;
+    /// `true` if any moved by more than round-off. A side draw its tray also
+    /// cut back runs under its limit, at what the tray gives, and is left.
+    fn scale_to_limits(&self, evaluation: &Evaluation, set: &mut SetFlows) -> bool {
+        let mw = self.molar_masses();
+        let mean = |x: &[f64]| x.iter().zip(&mw).map(|(x, m)| x * m).sum::<f64>();
+        let bottoms = self.plan.locations.len() - 1;
+        let mut moved = false;
+        for &(i, _, limit) in &set.short {
+            if set.cut_back.iter().any(|&(cut, _)| cut == i) {
+                continue;
+            }
+            // The draw's product molar rate [mol/s] and the slop riding on it.
+            let (rate, slop, x) = match self.plan.locations[i] {
+                DrawLocation::Condenser => (
+                    set.distillate - set.drum_slop,
+                    set.drum_slop,
+                    &evaluation.x_drum,
+                ),
+                DrawLocation::Stage(j) if i == bottoms => (
+                    set.drawn[j] - set.base_slop,
+                    set.base_slop,
+                    &evaluation.x[j],
+                ),
+                DrawLocation::Stage(j) => (set.drawn[j], 0.0, &evaluation.x[j]),
+            };
+            let mass = rate * mean(x);
+            if (mass - limit).abs() <= LIMIT_ROUND_OFF * limit {
+                continue;
+            }
+            let scaled = rate * limit / mass + slop;
+            match self.plan.locations[i] {
+                DrawLocation::Condenser => set.distillate = scaled,
+                DrawLocation::Stage(j) => set.drawn[j] = scaled,
+            }
+            moved = true;
+        }
+        moved
+    }
+
+    /// Newton on the temperatures and vapours from `u`, the flows `set`: the
+    /// converged point and its evaluation.
+    fn converge(
+        &self,
+        mut u: Vec<f64>,
+        amounts: &[Vec<f64>],
+        drum: &[f64],
+        set: &SetFlows,
+    ) -> Result<(Vec<f64>, Evaluation), SimError> {
+        let n = self.plan.stages;
+        let mut evaluation = self.evaluate(&u, amounts, drum, set)?;
         let mut iterations = 0;
         while norm(&evaluation.residual) > self.tolerance {
             if iterations == MAX_ITERATIONS {
                 return Err(self.unconverged(&evaluation, iterations));
             }
             iterations += 1;
-            let jacobian = self.jacobian(&u, &evaluation.residual, &amounts, &drum, &set)?;
+            let jacobian = self.jacobian(&u, &evaluation.residual, amounts, drum, set)?;
             let negated: Vec<f64> = evaluation.residual.iter().map(|r| -r).collect();
             let Some(mut delta) = solve_dense(jacobian, negated) else {
                 return Err(self.unconverged(&evaluation, iterations));
@@ -371,15 +446,15 @@ impl ColumnStep<'_> {
             // takes the second search.
             let residual = &evaluation.residual;
             let accepted = self
-                .line_search(&u, &delta, &amounts, &drum, &set, residual, norm)
-                .or_else(|| self.line_search(&u, &delta, &amounts, &drum, &set, residual, squares));
+                .line_search(&u, &delta, amounts, drum, set, residual, norm)
+                .or_else(|| self.line_search(&u, &delta, amounts, drum, set, residual, squares));
             let Some((trial, next)) = accepted else {
                 return Err(self.unconverged(&evaluation, iterations));
             };
             u = trial;
             evaluation = next;
         }
-        self.finish(&u, evaluation, &set)
+        Ok((u, evaluation))
     }
 
     /// The first length along `delta` (halved from the whole step) at which

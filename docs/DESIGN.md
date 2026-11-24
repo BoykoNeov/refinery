@@ -32751,3 +32751,46 @@ removed; the grade kerosene rundown widened to 0.15 m; the grade pumps cut to
 changed); the two new plants run 6000 ticks on both. The map lays both out
 (24 nodes, 29 pipes) and `--hands` works them; the Godot library had to be
 rebuilt first (it predated M86.3 and refused the check valves).
+
+### 84.5 A column that holds liquid, its product lines needing their pumps
+
+**The bug the probe found (fixed first).** On the holdup plant
+(`crude_unit_holdup.toml`) with the grade plant's product lines, a stopped
+kerosene, diesel or gas oil pump halted the run within its first minute:
+"cannot deliver its 9.625250 kg/s … it delivers 9.625249 kg/s at most". The
+column that holds liquid (`column_step::set_flows`) sets a limited draw in
+MOLES, its limit over the mean molar mass of the tray's start-of-tick liquid,
+and reports it in MASS at the liquid the tick leaves (`finish`, `flows_of` on
+the solve's unnormalised fractions). A stopped pump moves that liquid within
+the tick, so the draw came out 1e-8–1.3e-7 of itself past its line's limit,
+past the sweep's 1e-9 (`DRAW_LIMIT_SLACK`). The distillate and the bottoms
+share the fault; they only slipped through because the drum's and the base's
+liquid move less. M86.2's only holdup gate stopped a distillate under a raised
+tank, a limit of zero, which no composition moves.
+
+**The fix, in the column, not the check** (`ColumnStep::scale_to_limits`):
+after the tick converges, each draw its line limits whose mass at the liquid
+it leaves at is off its limit by more than 1e-12 of it has its molar rate
+scaled by `limit ÷ mass` (a full vessel's slop riding on it left as it was),
+and the tick is solved again from where it converged — once
+(`LIMIT_CORRECTIONS`): the liquid barely answers so small a change, and one
+correction lands every tick of the gates within round-off. Scaled both ways,
+so the draw runs AT what its line delivers, not a hair under. A side draw its
+tray also cut back runs at what the tray gives and is left alone. The sweep's
+slack is not widened: it is what stops a model running a line past what it
+carries. A tick with no line short solves once, as before — 74 of 74 plants
+byte-identical on both solvers.
+
+**The refusal's words.** "The column has no draw below to take the rest" is
+true only of a column that holds no liquid; on one that holds liquid the
+refusal now says the column drew more, and that its model ignored the line's
+limit (a column that holds liquid keeps what its line cannot take).
+
+**Gates** (`crates/scenarios/tests/product_pumps_holdup.rs`, the fixture
+built inline): a stopped kerosene, naphtha and residue pump each run 600
+ticks, the draw at its line's limit to 1e-9 every tick, 0.50–0.60 of its
+flow, every component's books closing to 1e-8 kg/s. Mutation pass, four
+mutants: no correction (all three killed); scaled only down (all three); the
+distillate read at the top tray's liquid, not the drum's (killed by the
+naphtha); a draw its tray cut back scaled too — survived: no tray of these
+plants runs short of its draws, so the guard is unexercised here.
