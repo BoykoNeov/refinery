@@ -86,6 +86,21 @@ impl RefinerySim {
         GString::from(&outcome)
     }
 
+    /// A plant's name and one-line description from a Godot path, without
+    /// loading it (M87): `{name, description}`, or `{code, message}`.
+    #[func]
+    fn describe(res_path: GString) -> GString {
+        let path = res_path.to_string();
+        let outcome = match FileAccess::open(&res_path, ModeFlags::READ) {
+            Some(file) => bridge::describe_json(&file.get_as_text().to_string()),
+            None => bridge::outcome_json(Err(BridgeError::FileUnreadable(format!(
+                "Godot could not open '{path}' (FileAccess error {:?})",
+                FileAccess::get_open_error()
+            )))),
+        };
+        GString::from(&outcome)
+    }
+
     /// Load a scenario from TOML source already in hand — for a game that
     /// generates plants, or holds them somewhere `FileAccess` cannot reach.
     #[func]

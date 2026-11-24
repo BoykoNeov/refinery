@@ -2456,3 +2456,42 @@ fn a_save_note_that_is_not_json_is_refused() {
         Some("bad_json")
     );
 }
+
+/// **Every shipped plant describes itself** (M87): `describe_json` reads each
+/// file in `scenarios/` to its `[meta]` name — the file's own stem — and a
+/// one-line description a player can read: present, and not a placeholder
+/// left from generating it (M86.5's plants were generated with "PENDING"
+/// until their probe ran). A source that is no plant reads as the load's
+/// error, not as an empty description.
+#[test]
+fn every_shipped_plant_describes_itself() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scenarios");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .collect();
+    files.sort();
+    assert!(files.len() >= 76, "{} plants", files.len());
+    for path in files {
+        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+        let src = std::fs::read_to_string(&path).unwrap();
+        let read: Value = serde_json::from_str(&refinery_godot_ext::bridge::describe_json(&src))
+            .unwrap_or_else(|e| panic!("{stem}: {e}"));
+        assert_eq!(read["name"], stem.as_str(), "{stem}: {read}");
+        let description = read["description"].as_str().unwrap_or_default();
+        assert!(
+            description.len() > 20,
+            "{stem}: no description to show: {read}"
+        );
+        assert!(
+            !description.contains("PENDING"),
+            "{stem}: a placeholder: {description}"
+        );
+    }
+    let refused: Value =
+        serde_json::from_str(&refinery_godot_ext::bridge::describe_json("not a plant")).unwrap();
+    assert!(refused["code"].is_string(), "{refused}");
+    assert!(refused.get("description").is_none(), "{refused}");
+}

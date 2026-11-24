@@ -853,6 +853,22 @@ pub fn outcome_json(result: Result<(), BridgeError>) -> String {
     }
 }
 
+/// A plant's name and its one-line description, its file's `[meta]` (M87,
+/// docs/ROADMAP.md): what a frontend shows of a plant before, or without,
+/// loading it. `{"name", "description"}`, or the load's [`ErrorReport`] when
+/// the source does not read as a plant. Nothing is built: the file is read
+/// and checked, not run.
+pub fn describe_json(toml_src: &str) -> String {
+    match refinery_scenarios::load_str(toml_src) {
+        Ok(file) => serde_json::json!({
+            "name": file.meta.name,
+            "description": file.meta.description,
+        })
+        .to_string(),
+        Err(err) => outcome_json(Err(BridgeError::from(err))),
+    }
+}
+
 /// A [`Bridge`] that may not exist yet, with every method total.
 ///
 /// **This type exists so the gdext binding contains no decisions.** A Godot
