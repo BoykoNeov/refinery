@@ -1,17 +1,17 @@
 {
 	"column": [430, 300],
-	"crude_source": [60, 250],
-	"diesel_pa_cooler": [250, 445],
-	"diesel_pa_pump": [350, 445],
+	"crude_source": [60, 470],
+	"diesel_pa_cooler": [250, 285],
+	"diesel_pa_pump": [350, 295],
 	"diesel_tank": [650, 290],
-	"furnace": [170, 250],
-	"gas_oil_pa_cooler": [250, 520],
-	"gas_oil_pa_pump": [350, 520],
+	"furnace": [170, 470],
+	"gas_oil_pa_cooler": [250, 370],
+	"gas_oil_pa_pump": [350, 380],
 	"gas_oil_tank": [650, 365],
-	"kero_pa_cooler": [250, 370],
-	"kero_pa_pump": [350, 370],
+	"kero_pa_cooler": [250, 200],
+	"kero_pa_pump": [350, 210],
 	"kerosene_tank": [650, 215],
 	"naphtha_tank": [650, 140],
 	"residue_tank": [650, 440],
-	"transfer_line__leak_point": [300, 250]
+	"transfer_line__leak_point": [300, 470]
 }

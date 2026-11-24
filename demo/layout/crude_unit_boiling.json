@@ -25,5 +25,5 @@
 	"residue_cooler": [450, 470],
 	"residue_pump": [330, 470],
 	"residue_tank": [650, 470],
-	"transfer_line__leak_point": [800, 548]
+	"transfer_line__leak_point": [40, 395]
 }

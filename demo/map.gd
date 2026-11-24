@@ -50,7 +50,11 @@
 # cross, the one on top — the forward line over a recycle — cuts a gap in the
 # other with its dark border; where a pipe joins a node, a flange marks the
 # spot; its arrow and number sit on its longest run. A column or a reactor is
-# drawn as tall as what is piped to it, so each draw meets it level.
+# drawn as tall as what is piped to it, so each draw meets it level. And a
+# column's pipes join it in TRAY order (M88): the snapshot says which tray
+# each draw, return, steam line and feed is on, and the router lays those on
+# the column's walls top to bottom by it — a pumparound's return enters one
+# tray above its draw, wherever its cooler stands.
 #
 # Same rule as every screen: nothing physical is computed here. A pipe's
 # width is its reported flow, its colour its reported temperature; a tank's
@@ -84,6 +88,9 @@
 #               on pump_gas_lock the next tick cannot be solved) and see the
 #               map recover. With --shot=<file.png> on a windowed run, the
 #               page is saved at tick 200 after the tour.
+# Routes:       --auto --routes adds a fingerprint of every plant's routed pipes
+#               (M88): run it before and after a change to route.gd or a layout
+#               file, and the lines that differ are the plants to look at.
 # Layout:       --drag=<node>@<x>,<y> (repeatable) moves a node as Ctrl+drag
 #               would, --save-layout then saves as Ctrl+S would, and
 #               --layout-dir=<dir> reads and writes the layout files there
@@ -266,6 +273,10 @@ var layout_moved := false
 ## made through the same calls as Ctrl+drag and Ctrl+S, once, at the first load.
 var drags: Array = []
 var save_layout := false
+## `--routes` (with `--auto`): each plant's line also carries a fingerprint of
+## every pipe's routed corners (M88), so a change to the router or a layout
+## shows which plants' pipes moved, without a screenshot of each.
+var print_routes := false
 
 
 func _ready() -> void:
@@ -298,6 +309,8 @@ func _ready() -> void:
 			drags.append(arg.trim_prefix("--drag="))
 		elif arg == "--save-layout":
 			save_layout = true
+		elif arg == "--routes":
+			print_routes = true
 	if plants.is_empty():
 		_halt("no plant files in %s" % SCENARIOS)
 		return
@@ -470,6 +483,8 @@ func _run_all() -> void:
 		if not layout_problems.is_empty():
 			verdict = "LAYOUT: " + "; ".join(layout_problems)
 		print("map: %-36s %3d nodes drawn%s, %3d pipes, %s" % [plants[i], places.size(), placed, snapshot.get("edges", []).size(), verdict])
+		if print_routes:
+			print("map: routes %-36s %s" % [plants[i], _routes_fingerprint()])
 	print("map: %d plants, %d stopped" % [plants.size(), failed])
 	get_tree().quit(1 if failed > 0 else 0)
 
@@ -1449,7 +1464,71 @@ func _route_pipes() -> void:
 		keyed.append([1 if back else 0, absf(b.x - a.x) + absf(b.y - a.y), int(edge["id"]), from, to])
 	keyed.sort()
 	var pipes: Array = keyed.map(func(k): return [k[2], k[3], k[4]])
-	routes = Route.route(boxes, labels, pipes, ROUTED)
+	routes = Route.route(boxes, labels, pipes, ROUTED, _tray_ranks())
+
+
+## Where on its column each pipe joins it, as far as the snapshot says (M88):
+## "<pipe id>/<0 its upstream end, 1 its downstream one>" → the tray, counted
+## from the top (0, the reflux drum's draw), so the router puts those pipes on
+## the column's walls, in tray order down each. Read, never guessed: a product
+## draw's `stage`; a pumparound loop's draw (the first pipe of its `line`) and
+## return (the last); the stripping steam's pipe; and the feed — the one pipe
+## left coming in, when one is left, at the cascade's `feed_stage`. The relief
+## line off the overhead has no tray (it leaves by the top, as a real one
+## does), and a column whose draws name no tray gives none: the router places
+## those pipes by where they come from.
+func _tray_ranks() -> Dictionary:
+	var ranks := {}
+	for node in snapshot.get("nodes", []):
+		if _kind(node) != "column" or not places.has(int(node["id"])):
+			continue
+		var id := int(node["id"])
+		var kind: Dictionary = node["kind"]
+		var cascade = kind.get("cascade")
+		var draw_tray := {}
+		for draw in kind.get("draws", []):
+			if draw.get("stage") != null:
+				draw_tray[int(draw["outlet"])] = float(draw["stage"])
+		var by_edge := {}
+		if cascade is Dictionary:
+			for loop in cascade.get("loops", []):
+				var line: Array = loop["line"]
+				by_edge["%d/0" % int(line[0])] = float(loop["draw_stage"])
+				by_edge["%d/1" % int(line[line.size() - 1])] = float(loop["return_stage"])
+			var steam = cascade.get("steam")
+			if steam is Dictionary:
+				by_edge["%d/1" % int(steam["edge"])] = float(steam["stage"])
+		var feeds: Array = []
+		for edge in snapshot["edges"]:
+			var edge_id := int(edge["id"])
+			if int(edge["from"]) == id:
+				var key := "%d/0" % edge_id
+				if by_edge.has(key):
+					ranks[key] = by_edge[key]
+				elif draw_tray.has(int(edge["to"])):
+					ranks[key] = draw_tray[int(edge["to"])]
+			elif int(edge["to"]) == id:
+				var key := "%d/1" % edge_id
+				if by_edge.has(key):
+					ranks[key] = by_edge[key]
+				else:
+					feeds.append(key)
+		if feeds.size() == 1 and cascade is Dictionary and cascade.has("feed_stage"):
+			ranks[feeds[0]] = float(cascade["feed_stage"])
+	return ranks
+
+
+## Every routed pipe's corners, by pipe id, to a hundredth of a px, hashed:
+## the same plant routed the same way gives the same text (`--routes`).
+func _routes_fingerprint() -> String:
+	var ids: Array = routes.keys()
+	ids.sort()
+	var text := ""
+	for id in ids:
+		text += "%d:" % id
+		for point in routes[id]:
+			text += "%.2f,%.2f;" % [point.x, point.y]
+	return text.md5_text()
 
 
 ## Where a node's name and its reading are written under it: the boxes a pipe

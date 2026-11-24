@@ -11897,14 +11897,28 @@ back. Ahead of F11 (queued 2026-11-20), being newer.
 Picked by the user (2026-11-20, taken 2026-11-24): both parts of F11 as one
 milestone, since each forces a look at every plant on the map. No Rust.
 
-- [ ] **M88.1** — a column's pipes join it in tray order. The map reads each
-  pipe's tray from the snapshot (a draw's `stage`, a loop's draw and return
-  stages, the stripping steam's, the feed's), and `demo/route.gd` orders a
-  column's ports on a side by it; a tie left over goes by the side the pipe
-  arrives from, not by file order. A route fingerprint per plant (`--auto
-  --routes`) shows which plants' pipes moved; those are screenshotted and
-  their hand layouts fixed (on the loop plants the feed enters below the
-  loops, so the furnace row goes under them).
+- [x] **M88.1** — a column's pipes join it in tray order. The map reads each
+  pipe's tray from the snapshot (a draw's `stage`, a loop's `line` ends at its
+  draw and return stages, the stripping steam's `edge`, and the one pipe left
+  coming in at `feed_stage`; the overhead relief has none and leaves by the
+  top). `demo/route.gd` takes them as ranks: a ranked end joins a column's
+  left or right wall only (not its roof or base), and the ranked ends on a
+  wall go down it in tray order, dealt the places among any unranked ones.
+  A tie left over goes by the way each pipe turns out of its stub in the
+  first pass, not by file order. `--auto --routes` fingerprints every plant's
+  routes: 13 crude units moved, no other plant. Layouts redone: the five loop
+  plants (`loops`, `empty`, `holdup`, `trays`, `overfill`) in `loops`' shape,
+  each loop a row (cooler, pump) whose return runs over its row into the tray
+  above its draw, the feed row under the loops (it enters tray 11), the
+  overfill's relief valve and flare at the top right; the six furnace-train
+  plants (`boiling`, `cold`, `steam`, `stripped`, `wet`, `wetter`) with the
+  transfer line's leak point at the left, so the feed meets the column's left
+  wall between the water draw and the steam. Left for M88.3: the two holding
+  plants with product pumps (computed layouts, crowded before and after), and
+  the furnace-train feed grazing the furnace's reading.
+  **Verified**: `map --auto` 76 plants, 0 stopped; `--hands` on
+  crude_unit_loops and the `--enter=40,120,200` hand-over print the same lines
+  as before, byte for byte; the 13 moved plants screenshotted and looked at.
 - [ ] **M88.2** — a field bigger than the screen: the wheel zooms at the
   mouse (over the panel it still scrolls the panel), a right- or middle-drag
   scrolls, Home fits the whole plant; the headings, panel and legend stay put.

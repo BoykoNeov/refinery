@@ -154,6 +154,7 @@ godot --path . res://demo/map.tscn           # the plant map: any shipped plant 
 #   screenshot: --quit-after 4000 -- --plant=<stem> --shot=W:/temp/claude/<task>/x.png [--hover=<node or pipe> --scroll=<lines> --pick=<valve/furnace/cooler>]
 godot --headless --path . res://demo/map.tscn -- --hands --plant=<stem> [--hands-at=<tick>] [--break-at=<tick>]   # M79: valve, pump, furnace, pipes, loops, trips worked; M80: a loop-held valve taken by hand; every answer printed
 godot --headless --path . res://demo/map.tscn -- --auto     # every plant loaded, laid out, run 200 ticks; nonzero if one stops or a layout file is stale
+#   [--routes]: each plant's routed pipes fingerprinted (M88) — diff before/after a router or layout change to see which plants moved
 #   M81 layout, scripted: -- --plant=<stem> --drag=<node>@<x>,<y> [--save-layout] [--layout-dir=W:/temp/claude/<task>]
 #   M84 hand-over, scripted: --quit-after 1500 -- --plant=crude_unit_loops --enter=40,120,200   (Enter pressed at those ticks; each screen prints the tick it took the plant over at)
 godot --path . res://demo/furnace.tscn       # the M39 furnace screen (keys on screen)

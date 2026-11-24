@@ -27,6 +27,19 @@
 # spreads the pipes that share a side along it, in the order their other ends
 # sit, never closer than PORT_GAP, and routes again on those ports.
 #
+# The order along a side (M88). Where the map knows where on a node each pipe
+# end belongs — a column's trays, top to bottom — it hands that in as a RANK.
+# A ranked end joins its node on the left or right side only (a tray is on the
+# column's wall, not its roof or its base), and the ranked ends on one side go
+# down it in rank order, wherever their other ends sit: a pumparound's return
+# enters the tray above its draw even when its cooler and pump stand level. An
+# unranked end on that side keeps the place its far end's position gives it,
+# and the ranked ones are dealt, in rank order, the places left. Two ends that
+# still tie go by the way each pipe turns once out of its stub in the first
+# pass (one turning up takes the upper port, one turning left the left-hand
+# one), so they do not cross on the way out — never by the order the plant
+# file lists them.
+#
 # Deterministic: the same boxes and pipes give the same corners, every load
 # (the candidates are generated and compared in a fixed order, ties kept by
 # who came first).
@@ -34,8 +47,10 @@
 # CHANGING THIS FILE? The hand layouts in demo/layout/ were tuned against it
 # as it stands (M85): nodes nudged until their pipes ran straight, and a few
 # px either way could turn a straight run into a hop. No test sees an ugly
-# pipe — `map --auto` only checks every plant loads and runs. After any change
-# here, screenshot every plant (the `--shot=` line in CLAUDE.md) and look.
+# pipe — `map --auto` only checks every plant loads and runs. Before and after
+# any change here, run `map --auto --routes`: the plants whose fingerprint
+# changed are the ones whose pipes moved; screenshot those (the `--shot=` line
+# in CLAUDE.md) and look.
 extends RefCounted
 
 ## A port's stub: how far a pipe runs straight out of a side before it may turn [px].
@@ -76,22 +91,27 @@ const REROUND := 1
 ## `boxes`: node id → Rect2 it is drawn in. `labels`: [node id, Rect2] for
 ## each name and reading a pipe should keep off. `pipes`: [pipe id, from id, to id], in the order
 ## to route them (the first routed gets first choice of the lanes). `area`:
-## where a pipe may run. Returns pipe id → PackedVector2Array [px].
-static func route(boxes: Dictionary, labels: Array, pipes: Array, area: Rect2) -> Dictionary:
+## where a pipe may run. `ranks`: "<pipe id>/<0 upstream, 1 downstream>" →
+## a number, for the pipe ends whose order down a node's left or right side
+## is known (a column's trays: smaller is higher); see the header.
+## Returns pipe id → PackedVector2Array [px].
+static func route(boxes: Dictionary, labels: Array, pipes: Array, area: Rect2, ranks: Dictionary = {}) -> Dictionary:
 	# Pass 1: each end's side, its port at the far node's position, each pipe
 	# alone (the pipes sharing a side all start from one spot until they are
 	# spread, so meeting one another here means nothing yet).
 	var sides := {}
+	var paths := {}
 	for pipe in pipes:
 		var from_box: Rect2 = boxes[pipe[1]]
 		var to_box: Rect2 = boxes[pipe[2]]
-		var best := _search(pipe, boxes, labels, [], area, _ports(from_box, to_box, -1), _ports(to_box, from_box, -1))
+		var best := _search(pipe, boxes, labels, [], area, _walls(_ports(from_box, to_box, -1), ranks, pipe, 0), _walls(_ports(to_box, from_box, -1), ranks, pipe, 1))
 		sides[pipe[0]] = [best[1], best[2]]
+		paths[pipe[0]] = best[0]
 
 	# Pass 2: the ports spread along their sides, each pipe routed round the
 	# ones before it.
-	var ports := _spread_ports(boxes, pipes, sides)
-	var paths := {}
+	var ports := _spread_ports(boxes, pipes, sides, paths, ranks)
+	paths = {}
 	for pipe in pipes:
 		paths[pipe[0]] = _search(pipe, boxes, labels, paths.values(), area, [[ports["%d/0" % pipe[0]], sides[pipe[0]][0]]], [[ports["%d/1" % pipe[0]], sides[pipe[0]][1]]])[0]
 
@@ -111,7 +131,7 @@ static func route(boxes: Dictionary, labels: Array, pipes: Array, area: Rect2) -
 			var ends := _ports(boxes[pipe[2]], boxes[pipe[1]], -1)
 			starts[sides[pipe[0]][0]][0] = ports["%d/0" % pipe[0]]
 			ends[sides[pipe[0]][1]][0] = ports["%d/1" % pipe[0]]
-			var best := _search(pipe, boxes, labels, others, area, starts, ends)
+			var best := _search(pipe, boxes, labels, others, area, _walls(starts, ranks, pipe, 0), _walls(ends, ranks, pipe, 1))
 			paths[pipe[0]] = best[0]
 			if best[1] != sides[pipe[0]][0] or best[2] != sides[pipe[0]][1]:
 				sides[pipe[0]] = [best[1], best[2]]
@@ -119,10 +139,18 @@ static func route(boxes: Dictionary, labels: Array, pipes: Array, area: Rect2) -
 		# No side changed: every port is where it was, nothing to lay again.
 		if not moved:
 			break
-		ports = _spread_ports(boxes, pipes, sides)
+		ports = _spread_ports(boxes, pipes, sides, paths, ranks)
 		for pipe in pipes:
 			paths[pipe[0]] = _search(pipe, boxes, labels, _others(pipes, paths, pipe), area, [[ports["%d/0" % pipe[0]], sides[pipe[0]][0]]], [[ports["%d/1" % pipe[0]], sides[pipe[0]][1]]])[0]
 	return paths
+
+
+## `ports` ([point, side] each) for `pipe`'s `end`: only the left and right
+## sides when that end is ranked (a tray is on a column's wall), else all.
+static func _walls(ports: Array, ranks: Dictionary, pipe: Array, end: int) -> Array:
+	if not ranks.has("%d/%d" % [pipe[0], end]):
+		return ports
+	return ports.filter(func(port): return port[1] % 2 == 0)
 
 
 ## Every pipe's path but `pipe`'s own.
@@ -136,8 +164,10 @@ static func _others(pipes: Array, paths: Dictionary, pipe: Array) -> Array:
 
 ## Each pipe end's port ("<pipe id>/<0 upstream, 1 downstream>" → point): the
 ## pipes that share a node's side spread along it in the order their far ends
-## sit, each as near where it would like as PORT_GAP allows.
-static func _spread_ports(boxes: Dictionary, pipes: Array, sides: Dictionary) -> Dictionary:
+## sit, a tie by the way each turns out of its stub in `paths`; on a left or
+## right side the ranked ends then dealt the places they hold, in rank order —
+## each as near where it would like as PORT_GAP allows.
+static func _spread_ports(boxes: Dictionary, pipes: Array, sides: Dictionary, paths: Dictionary, ranks: Dictionary) -> Dictionary:
 	var shared := {}
 	for pipe in pipes:
 		for end in 2:
@@ -147,7 +177,8 @@ static func _spread_ports(boxes: Dictionary, pipes: Array, sides: Dictionary) ->
 			var key := "%d/%d" % [node, side]
 			if not shared.has(key):
 				shared[key] = []
-			shared[key].append([_across(boxes[other].get_center(), side), pipe[0], end, _wanted(boxes[node], boxes[other], side)])
+			var lean := _lean(paths.get(pipe[0], PackedVector2Array()), end, side)
+			shared[key].append([_across(boxes[other].get_center(), side), lean, pipe[0], end, _wanted(boxes[node], boxes[other], side)])
 	var ports := {}
 	for key in shared:
 		var parts: PackedStringArray = str(key).split("/")
@@ -155,12 +186,37 @@ static func _spread_ports(boxes: Dictionary, pipes: Array, sides: Dictionary) ->
 		var side := int(parts[1])
 		var wanted: Array = shared[key]
 		wanted.sort()
+		if side % 2 == 0:
+			var slots: Array = []
+			var ranked: Array = []
+			for i in wanted.size():
+				var rank_key := "%d/%d" % [wanted[i][2], wanted[i][3]]
+				if ranks.has(rank_key):
+					slots.append(i)
+					ranked.append([float(ranks[rank_key]), wanted[i][1], wanted[i][2], wanted[i]])
+			ranked.sort()
+			for j in slots.size():
+				wanted[slots[j]] = ranked[j][3]
 		var low := (box.position.y if side % 2 == 0 else box.position.x) + PORT_INSET
 		var high := (box.end.y if side % 2 == 0 else box.end.x) - PORT_INSET
-		var places := _spread(wanted.map(func(w): return w[3]), low, high)
+		var places := _spread(wanted.map(func(w): return w[4]), low, high)
 		for i in wanted.size():
-			ports["%d/%d" % [wanted[i][1], wanted[i][2]]] = _port(box, side, places[i])
+			ports["%d/%d" % [wanted[i][2], wanted[i][3]]] = _port(box, side, places[i])
 	return ports
+
+
+## Which way a pipe's `end` (0 its upstream, 1 its downstream) turns once out
+## of its port on `side`: -1 up (or left, on a top or bottom side), +1 down (or
+## right), 0 for none — the first move along the side, walking out of the port.
+static func _lean(path: PackedVector2Array, end: int, side: int) -> float:
+	var count := path.size()
+	for i in range(1, count):
+		var a: Vector2 = path[i - 1] if end == 0 else path[count - i]
+		var b: Vector2 = path[i] if end == 0 else path[count - 1 - i]
+		var move := (b.y - a.y) if side % 2 == 0 else (b.x - a.x)
+		if absf(move) > 0.001:
+			return signf(move)
+	return 0.0
 
 
 ## A quick path while a node is dragged (routing every frame would stall it):
@@ -239,8 +295,11 @@ static func _port(box: Rect2, side: int, along: float) -> Vector2:
 	return Vector2(along, box.position.y)
 
 
-## `wanted` positions (sorted) moved apart to at least PORT_GAP, inside
-## [low, high]; evenly spread when the side is too short for that.
+## `wanted` positions moved apart to at least PORT_GAP, in the order given,
+## inside [low, high]; evenly spread when the side is too short for that.
+## Sorted, a wanted spot is kept where it can be; out of order (a rank put a
+## pipe whose far end sits low above one whose far end sits high), each is
+## pushed below the one before it, and the side's end pushes them back up.
 static func _spread(wanted: Array, low: float, high: float) -> Array:
 	var count := wanted.size()
 	if count == 1:
