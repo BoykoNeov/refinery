@@ -26,7 +26,7 @@ as showing each file's existing one-line `[meta] description`, as written.
   runs into its legend.
 - **Checked**: screenshots with each screen's longest description; every
   `--auto`, the map's over 76 plants; corpus 76 of 76 identical on both
-  solvers (no engine change).
+  solvers (no engine change); the godot-feature clippy clean.
 - **Left as written**, for the user to judge: six descriptions name another
   plant file or a milestone (`crude_column_boiloff`, `_recovery`,
   `_recovery_train`, `furnace_burst_during_stop`,
