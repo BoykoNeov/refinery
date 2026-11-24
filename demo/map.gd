@@ -56,6 +56,14 @@
 # the column's walls top to bottom by it — a pumparound's return enters one
 # tray above its draw, wherever its cooler stands.
 #
+# And it may be BIGGER than the screen (M88): the field is the page, grown by
+# as far as the nodes reach past it, and the view draws it zoomed and scrolled
+# where the page was, under the headings and the panel, which stay put. The
+# wheel zooms about the mouse (over the panel it scrolls the panel), a right-
+# or middle-drag scrolls, Home fits the whole plant; every load opens fitted,
+# so a screenshot repeats. A plant inside the page fits at 1 : 1 and is drawn
+# as before, to the pixel; the layout files keep their coordinates.
+#
 # Same rule as every screen: nothing physical is computed here. A pipe's
 # width is its reported flow, its colour its reported temperature; a tank's
 # fill is the level the plant.gd demo derives from snapshot fields only. The
@@ -68,6 +76,8 @@
 #               click a pump: on/off   P+click a pipe: hole/mend
 #               Tab loop   A auto/manual   Q/Z target   R reset tripped trips
 #               Ctrl+drag a node: move it   Ctrl+S keep the layout (demo/layout/)
+#               wheel: zoom (over the panel: scroll it)   right/middle-drag: scroll
+#               Home: the whole plant   + / -: zoom about the middle (M88)
 #               Enter: the screen that draws this plant up close (M84)
 # Recorded:     godot --headless --path . res://demo/map.tscn -- --auto
 #               ...loads every plant in turn, runs it 200 ticks, prints one
@@ -77,7 +87,10 @@
 # Screenshot:   add --plant=<file stem> --shot=<file.png> to a windowed run;
 #               --hover=<node or pipe name> points at it as the mouse would,
 #               --scroll=<lines> scrolls its panel as the wheel would,
-#               --pick=<valve or furnace name> clicks it as the mouse would.
+#               --pick=<valve or furnace name> clicks it as the mouse would,
+#               --zoom=<factor> zooms the fitted view about its middle, and
+#               --point=<x>,<y> takes the mouse to be at that screen point
+#               (through the zoom, as a real one would be: M88).
 # Hands:        godot --headless --path . res://demo/map.tscn -- --hands --plant=<stem>
 #               ...runs 20 ticks (--hands-at=<tick>: that many), then works the first valve, pump and furnace,
 #               a pipe or two, the loops and trips, and the first valve or furnace a
@@ -125,11 +138,26 @@ const IDLE := Color(0.30, 0.32, 0.36)
 const COLD_K := 293.15
 const HOT_K := 723.15
 
-## Where a pipe may be routed (M85): the page between the headings and the
-## message line, left of the panel's backing.
-const ROUTED := Rect2(24, 96, 836, 474)
+## The page (M85): between the headings and the message line, left of the
+## panel's backing. A plant laid out inside PLACEABLE is routed on exactly this
+## and, fitted, drawn on it 1 : 1 — as it was before the field could grow
+## (M88). Also the VIEW: where on the screen the field is drawn, zoomed.
+const PAGE := Rect2(24, 96, 836, 474)
+## Where the screen furniture is: above this the headings, below this many px
+## from the bottom the message line and the keys. The plant is masked there.
+const HEADINGS_BOTTOM := 92.0
+const FOOTER := 78.0
+## The view's zoom: no further in than this, nor further out than the whole
+## plant (or 1 : 1, whichever is less); one wheel notch zooms by ZOOM_STEP.
+const ZOOM_MOST := 3.0
+const ZOOM_STEP := 1.15
+## A field scrolled away keeps at least this much of itself in view [px].
+const VIEW_HOLD := 80.0
+## Below the lowest node of a field grown down, room for its name and reading [px].
+const NAME_ROOM := 40.0
 ## A tower (column, reactor) reaches this far above its highest neighbour and
-## below its lowest [px], and no lower than TOWER_FLOOR (its name under it).
+## below its lowest [px], and no lower than TOWER_FLOOR (its name under it) —
+## on the page; as far again lower as the field reaches below it (M88).
 const TOWER_OVERHANG := 14.0
 const TOWER_FLOOR := 532.0
 ## The dark border each pipe is drawn with, either side [px]: where two cross,
@@ -148,10 +176,15 @@ const AREA := Rect2(70, 110, 735, 440)
 ## Where each plant's hand-placed layout is kept (M81): `<plant stem>.json`,
 ## node name → [x, y] on the page. Beside the map, never in the plant file.
 const LAYOUTS := "res://demo/layout"
-## Where a node may be dragged or placed by a layout file: below the headings,
+## Where a node may sit and still be drawn on the page: below the headings,
 ## above the message line, and as far right as AREA reaches (a name runs ~55 px
-## either side of its node; right of that is the panel).
+## either side of its node; right of that is the panel). A node further right
+## or lower grows the field by as much (M88, `_field_rect`).
 const PLACEABLE := Rect2(30, 100, 785, 460)
+## Where a node may be dragged or placed by a layout file at all (M88): the
+## page's top-left corner, and room right and down for a plant several pages
+## big — the view zooms and scrolls over it.
+const FIELD_MOST := Rect2(30, 100, 2785, 1660)
 
 ## The inspection panel: its left edge at the base width [px], its width, and
 ## the line height of its text.
@@ -277,6 +310,20 @@ var save_layout := false
 ## every pipe's routed corners (M88), so a change to the router or a layout
 ## shows which plants' pipes moved, without a screenshot of each.
 var print_routes := false
+## The field the plant is laid out on (M88): the page, grown right and down by
+## as far as its nodes reach past PLACEABLE (`_field_rect`). Where its pipes
+## may be routed. And the view of it: screen = field point × zoom + offset.
+var field := PAGE
+var view_zoom := 1.0
+var view_offset := Vector2.ZERO
+## A right- or middle-drag scrolling the view: where the mouse last was, or
+## Vector2.INF while none is.
+var pan_from := Vector2.INF
+## `--zoom=<factor>` and `--point=<x>,<y>`: the view zoomed by that much about
+## its middle once fitted, and the mouse taken to be at that point of the
+## screen — a screenshot of hover and zoom without a mouse.
+var zoom_asked := 1.0
+var point_asked := Vector2.INF
 
 
 func _ready() -> void:
@@ -311,6 +358,12 @@ func _ready() -> void:
 			save_layout = true
 		elif arg == "--routes":
 			print_routes = true
+		elif arg.begins_with("--zoom="):
+			zoom_asked = float(arg.trim_prefix("--zoom="))
+		elif arg.begins_with("--point="):
+			var xy := arg.trim_prefix("--point=").split(",")
+			if xy.size() == 2:
+				point_asked = Vector2(float(xy[0]), float(xy[1]))
 	if plants.is_empty():
 		_halt("no plant files in %s" % SCENARIOS)
 		return
@@ -361,6 +414,7 @@ func _load(index: int, fresh: bool = true) -> void:
 	selected_loop = 0
 	message = ""
 	dragging = -1
+	pan_from = Vector2.INF
 	dash_travel = {}
 	if fresh:
 		var err = JSON.parse_string(running.load_scenario("%s/%s.toml" % [SCENARIOS, plants[plant_index]]))
@@ -385,6 +439,12 @@ func _load(index: int, fresh: bool = true) -> void:
 	elif hand_placed > 0 and not auto_run:
 		print("map: %s: %d node(s) placed by %s" % [plants[plant_index], hand_placed, _layout_path()])
 	_scripted_layout()
+	_fit_view()
+	if zoom_asked != 1.0:
+		_zoom_at(PAGE.get_center(), zoom_asked)
+	if point_asked != Vector2.INF:
+		hovered = _hit(_to_field(point_asked))
+		panel_scroll = hover_scroll
 	if hover_name != "":
 		_hover_named(hover_name)
 		panel_scroll = hover_scroll
@@ -490,9 +550,20 @@ func _run_all() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion and pan_from != Vector2.INF:
+		# A right- or middle-drag scrolls the view (M88).
+		var mouse := get_local_mouse_position()
+		view_offset += mouse - pan_from
+		pan_from = mouse
+		_hold_view()
+		queue_redraw()
+		return
+	if event is InputEventMouseButton and not event.pressed and event.button_index in [MOUSE_BUTTON_RIGHT, MOUSE_BUTTON_MIDDLE]:
+		pan_from = Vector2.INF
+		return
 	if event is InputEventMouseMotion and dragging >= 0:
 		# A node on the move follows the mouse; nothing is hovered meanwhile.
-		_drag_to(get_local_mouse_position())
+		_drag_to(_to_field(get_local_mouse_position()))
 		queue_redraw()
 		return
 	if event is InputEventMouseButton and not event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
@@ -500,14 +571,15 @@ func _input(event: InputEvent) -> void:
 			_drag_end()
 			queue_redraw()
 		return
-	if event is InputEventMouseMotion and hover_name == "" and not places.is_empty():
+	if event is InputEventMouseMotion and hover_name == "" and point_asked == Vector2.INF and not places.is_empty():
 		# The local position, not the event's: the page is stretched to the
-		# window, and `places` are page coordinates. Over the panel itself
-		# the choice stays, so the wheel can scroll it.
+		# window; then through the view's zoom and scroll to the field, where
+		# `places` are. Over the panel itself the choice stays, so the wheel
+		# can scroll it.
 		var mouse := get_local_mouse_position()
 		if _panel_rect(get_viewport_rect().size).has_point(mouse):
 			return
-		var over := _hit(mouse)
+		var over := _hit(_to_field(mouse))
 		if over != hovered:
 			hovered = over
 			panel_scroll = 0
@@ -520,22 +592,35 @@ func _input(event: InputEvent) -> void:
 		var mouse := get_local_mouse_position()
 		if places.is_empty() or _panel_rect(get_viewport_rect().size).has_point(mouse):
 			return
+		var at := _to_field(mouse)
 		if event.ctrl_pressed:
-			var under := _hit(mouse)
+			var under := _hit(at)
 			if under.has("node"):
-				_drag_start(int(under["node"]), mouse)
+				_drag_start(int(under["node"]), at)
 			return
 		if halted == "":
-			_click(_hit(mouse), Input.is_key_pressed(KEY_P))
+			_click(_hit(at), Input.is_key_pressed(KEY_P))
 			queue_redraw()
 		return
 	if event is InputEventMouseButton and event.pressed:
-		# The wheel scrolls the panel: a column reports more than fits, and
-		# so may a plant's loops and trips.
+		var mouse := get_local_mouse_position()
+		var over_panel := _panel_rect(get_viewport_rect().size).has_point(mouse)
+		if event.button_index in [MOUSE_BUTTON_RIGHT, MOUSE_BUTTON_MIDDLE] and not over_panel:
+			pan_from = mouse
+			return
+		# The wheel over the panel scrolls it: a column reports more than
+		# fits, and so may a plant's loops and trips. Over the plant it zooms,
+		# about the point under the mouse (M88).
 		if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			panel_scroll += 3
+			if over_panel:
+				panel_scroll += 3
+			else:
+				_zoom_at(mouse, 1.0 / ZOOM_STEP)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			panel_scroll = maxi(0, panel_scroll - 3)
+			if over_panel:
+				panel_scroll = maxi(0, panel_scroll - 3)
+			else:
+				_zoom_at(mouse, ZOOM_STEP)
 		queue_redraw()
 		return
 	if not (event is InputEventKey and event.pressed and not event.echo):
@@ -551,6 +636,12 @@ func _input(event: InputEvent) -> void:
 			_say(Screen.description(_scenario_path()), INK)
 		KEY_F11:
 			Screen.toggle_fullscreen(get_window())
+		KEY_HOME:
+			_fit_view()
+		KEY_EQUAL, KEY_KP_ADD:
+			_zoom_at(PAGE.get_center(), ZOOM_STEP)
+		KEY_MINUS, KEY_KP_SUBTRACT:
+			_zoom_at(PAGE.get_center(), 1.0 / ZOOM_STEP)
 		KEY_RIGHT, KEY_PAGEDOWN:
 			_load(plant_index + 1)
 		KEY_LEFT, KEY_PAGEUP:
@@ -1079,6 +1170,62 @@ func _lay_out() -> void:
 	_route_pipes()
 
 
+# ------------------------------------------------------------- the field
+#
+# M88: a plant may be bigger than the screen. The field is the page grown by
+# as far as the nodes reach past it; the view draws it zoomed and scrolled into
+# the page's place on the screen, under the headings and the panel, which stay
+# put. A plant inside the page is fitted at 1 : 1, so it is drawn as before.
+
+## The page, grown right and down by as far as any drawn node sits right of or
+## below PLACEABLE (never left or up: a node cannot be placed there) — and,
+## grown down, by NAME_ROOM more: on the page a low node's name ran on under
+## the message line; on a grown field it would be cut off by it.
+func _field_rect() -> Rect2:
+	var reach := PLACEABLE.end
+	for id in places:
+		reach = reach.max(places[id])
+	var grow := reach - PLACEABLE.end
+	if grow.y > 0.0:
+		grow.y += NAME_ROOM
+	return Rect2(PAGE.position, PAGE.size + grow)
+
+
+## The screen point a field point is drawn at, and back.
+func _to_screen(point: Vector2) -> Vector2:
+	return point * view_zoom + view_offset
+
+
+func _to_field(point: Vector2) -> Vector2:
+	return (point - view_offset) / view_zoom
+
+
+## The zoom at which the whole field fits the page, never past 1 : 1.
+func _fit_zoom() -> float:
+	return minf(1.0, minf(PAGE.size.x / field.size.x, PAGE.size.y / field.size.y))
+
+
+## Home: the whole field in the page, in its middle.
+func _fit_view() -> void:
+	view_zoom = _fit_zoom()
+	view_offset = PAGE.position + (PAGE.size - field.size * view_zoom) * 0.5 - field.position * view_zoom
+
+
+## Zoom by `factor` about the screen point `at` (what is under it stays).
+func _zoom_at(at: Vector2, factor: float) -> void:
+	var zoom := clampf(view_zoom * factor, _fit_zoom(), ZOOM_MOST)
+	view_offset = at - (at - view_offset) * (zoom / view_zoom)
+	view_zoom = zoom
+	_hold_view()
+
+
+## Keep VIEW_HOLD px of the field in the page, however far it is scrolled.
+func _hold_view() -> void:
+	var low := PAGE.position + Vector2.ONE * VIEW_HOLD - field.end * view_zoom
+	var high := PAGE.end - Vector2.ONE * VIEW_HOLD - field.position * view_zoom
+	view_offset = view_offset.clamp(low.min(high), high.max(low))
+
+
 # ------------------------------------------------------- a layout by hand
 #
 # Computed layout will never suit every plant (docs/plans/plant-map-screen.md,
@@ -1128,9 +1275,9 @@ func _apply_layout() -> void:
 		hand_placed += 1
 
 
-## `point`, moved onto the part of the page a node may sit on.
+## `point`, moved onto the part of the field a node may sit on.
 func _placeable(point: Vector2) -> Vector2:
-	return point.clamp(PLACEABLE.position, PLACEABLE.end)
+	return point.clamp(FIELD_MOST.position, FIELD_MOST.end)
 
 
 ## Ctrl+press on a node: it follows the mouse until the button is let go.
@@ -1220,6 +1367,12 @@ func _draw() -> void:
 	if plants.is_empty():
 		_text(Vector2(30, 40), "HALTED — %s" % halted, BAD)
 		return
+	if not snapshot.is_empty():
+		_draw_plant()
+		# The plant, zoomed or scrolled, stops at the headings and the message
+		# line: they are drawn over a strip of the background (M88).
+		draw_rect(Rect2(0, 0, size.x, HEADINGS_BOTTOM), BACKGROUND)
+		draw_rect(Rect2(0, size.y - FOOTER, size.x, FOOTER), BACKGROUND)
 	_text(Vector2(30, 34), plants[plant_index].replace("_", " "), INK, 20)
 	_text(
 		Vector2(30, 60),
@@ -1239,7 +1392,14 @@ func _draw() -> void:
 	if snapshot.is_empty():
 		_draw_legend(size)
 		return
+	_draw_panel(size)
+	_draw_legend(size)
 
+
+## The plant, drawn through the view (M88): every place, path and box is a
+## field point, scaled by the zoom and moved by the scroll.
+func _draw_plant() -> void:
+	draw_set_transform(view_offset, 0.0, Vector2.ONE * view_zoom)
 	largest_flow = _largest_flow()
 	# The pipes back first, the forward ones over them: where two cross, the
 	# one on top cuts a gap in the other with its dark border (`_draw_pipe`).
@@ -1260,8 +1420,7 @@ func _draw() -> void:
 			if hovered.get("node", -1) == int(node["id"]):
 				var grow := 2.0 if selected.get("node", -1) == int(node["id"]) else 5.0
 				draw_rect(_box(int(node["id"])).grow(grow), INK, false, 1.5)
-	_draw_panel(size)
-	_draw_legend(size)
+	draw_set_transform_matrix(Transform2D.IDENTITY)
 
 
 ## The pipes' key at the top right of the headings, the message line and the
@@ -1279,7 +1438,7 @@ func _draw_legend(size: Vector2) -> void:
 	# Two lines: the plant's controls, then the keys that move between plants
 	# and screens — what keeps the plant running and what starts one over.
 	var controls := "click a valve/furnace/cooler: Up/Down, M by hand   click a pump: on/off   P+click a pipe: hole/mend   Tab A Q Z loops   R reset trips   Ctrl+drag/Ctrl+S layout"
-	var moves := "Space pause   [ ] speed   Left/Right start another plant over"
+	var moves := "Space pause   [ ] speed   wheel zoom, right-drag scroll, Home whole plant   Left/Right start another plant over"
 	Screen.legend(self, Vector2(30, size.y - 30.0), [controls, moves], DIM, 13, 16.0, size.x - 60.0, "Enter closer look, same plant")
 
 
@@ -1422,7 +1581,7 @@ func _box(id: int) -> Rect2:
 			top = minf(top, places[other].y - TOWER_OVERHANG)
 			bottom = maxf(bottom, places[other].y + TOWER_OVERHANG)
 	top = maxf(top, PLACEABLE.position.y)
-	bottom = minf(bottom, TOWER_FLOOR)
+	bottom = minf(bottom, TOWER_FLOOR + field.end.y - PAGE.end.y)
 	return Rect2(box.position.x, top, box.size.x, maxf(bottom - top, extent.y * 2.0))
 
 
@@ -1442,6 +1601,7 @@ func _label_y(node: Dictionary) -> float:
 func _route_pipes() -> void:
 	routes = {}
 	backward = {}
+	field = _field_rect()
 	var boxes := {}
 	var labels: Array = []
 	for node in snapshot.get("nodes", []):
@@ -1464,7 +1624,7 @@ func _route_pipes() -> void:
 		keyed.append([1 if back else 0, absf(b.x - a.x) + absf(b.y - a.y), int(edge["id"]), from, to])
 	keyed.sort()
 	var pipes: Array = keyed.map(func(k): return [k[2], k[3], k[4]])
-	routes = Route.route(boxes, labels, pipes, ROUTED, _tray_ranks())
+	routes = Route.route(boxes, labels, pipes, field, _tray_ranks())
 
 
 ## Where on its column each pipe joins it, as far as the snapshot says (M88):

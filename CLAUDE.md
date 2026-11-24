@@ -151,7 +151,8 @@ godot --path .                               # the menu: every screen and plant 
 #   menu round trip, scripted: <screen> -- --escape=<tick>,…  (Esc pressed at those ticks; the menu presses Enter on the green row for that screen, or with --shot= saves a picture)
 godot --headless --path . res://demo/plant.tscn -- --auto   # the M6.2 demo; ends at t=350
 godot --path . res://demo/map.tscn           # the plant map: any shipped plant drawn from its snapshot (the mouse inspects, M78; clicks and keys work it, M79; M takes a loop's valve by hand, M80; Ctrl+drag moves a node, Ctrl+S keeps it in demo/layout/<plant>.json, M81; Enter opens the screen that draws the plant running, on the same running plant, and Enter there comes back, M84)
-#   screenshot: --quit-after 4000 -- --plant=<stem> --shot=W:/temp/claude/<task>/x.png [--hover=<node or pipe> --scroll=<lines> --pick=<valve/furnace/cooler>]
+#   screenshot: --quit-after 4000 -- --plant=<stem> --shot=W:/temp/claude/<task>/x.png [--hover=<node or pipe> --scroll=<lines> --pick=<valve/furnace/cooler> --zoom=<factor> --point=<x>,<y>]
+#   M88: the field may outgrow the screen — wheel zooms, right/middle-drag scrolls, Home fits; a load opens fitted (a plant inside the page: 1 : 1, as before)
 godot --headless --path . res://demo/map.tscn -- --hands --plant=<stem> [--hands-at=<tick>] [--break-at=<tick>]   # M79: valve, pump, furnace, pipes, loops, trips worked; M80: a loop-held valve taken by hand; every answer printed
 godot --headless --path . res://demo/map.tscn -- --auto     # every plant loaded, laid out, run 200 ticks; nonzero if one stops or a layout file is stale
 #   [--routes]: each plant's routed pipes fingerprinted (M88) — diff before/after a router or layout change to see which plants moved

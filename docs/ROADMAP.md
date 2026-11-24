@@ -11919,11 +11919,24 @@ milestone, since each forces a look at every plant on the map. No Rust.
   **Verified**: `map --auto` 76 plants, 0 stopped; `--hands` on
   crude_unit_loops and the `--enter=40,120,200` hand-over print the same lines
   as before, byte for byte; the 13 moved plants screenshotted and looked at.
-- [ ] **M88.2** — a field bigger than the screen: the wheel zooms at the
+- [x] **M88.2** — a field bigger than the screen: the wheel zooms at the
   mouse (over the panel it still scrolls the panel), a right- or middle-drag
-  scrolls, Home fits the whole plant; the headings, panel and legend stay put.
-  Hover, click and Ctrl+drag work through the zoom; a load and `--shot` open
-  fitted, so screenshots repeat. The layout files keep their coordinates.
+  scrolls, Home fits the whole plant, + / - zoom about the middle; the
+  headings, panel and legend stay put (the plant is drawn through the view's
+  transform, then a strip of background under the headings and the message
+  line). The field is the page grown right and down by as far as a node sits
+  past it (plus room for a low node's name); a node may be dragged or placed
+  up to `FIELD_MOST` (about 3.5 pages each way). Hover, click and Ctrl+drag go
+  through one screen-to-field conversion; a load and `--shot` open fitted. A
+  plant inside the page fits at 1 : 1: routes and pictures unchanged
+  (`--routes` identical on all 76; crude_unit_holdup's plant area identical to
+  the pixel), the layout files untouched. `--zoom=` and `--point=` script a
+  zoomed view and a mouse point for screenshots: at ×2 the point found the
+  pump under it. **Not tried by hand**: the wheel and the right-drag
+  themselves (no scripted mouse here) — the arithmetic they call is the one
+  `--zoom`/`--point` exercise. **Verified**: `map --auto` 76 plants, 0
+  stopped; `--hands` and the `--enter` hand-over byte-identical; a tank
+  dragged to (1500, 900) grows the field and the fitted view holds it all.
 - [ ] **M88.3** — the computed layout spaced by a least gap between nodes,
   the field growing to hold it, rather than squeezed onto one screen; every
   plant without a layout file looked at; close-out.
