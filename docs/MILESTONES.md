@@ -12,6 +12,34 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M86 is CLOSED (2026-11-24): a stopped product pump stops its product
+(DEFERRED C35).** Picked by the user (2026-11-23), option (c), holdup and
+spill-down; "closer to reality", and the unrealistic plants too.
+- **The pump** (M86.1): a stopped centrifugal pump resists as a locked rotor
+  (Chaudhry 2014, Table A-1), 1.57 times its curve forward, 2.03 reversed —
+  not a shut valve. Four plants moved, approved.
+- **The line** (M86.2): a draw line delivers what it can. On a zero-volume
+  column the rest goes to the next draw down; a short bottoms halts naming
+  its pump. A column that holds liquid keeps it on the tray, in the drum or
+  the base. A check valve may stand on a product line (M86.3).
+- **The plants** (M86.4, M86.5): the crude unit and the holding plant each
+  with product lines that need their pumps, tanks on high ground (a stopped
+  pump stops its product) and at grade (it falls to about half). On the
+  holding pair nothing halts: the drum or base fills, to slop on high ground,
+  and a side product's rest leaves with the naphtha and the residue.
+- **Fixed on the way** (M86.5): a holding column's limited draw, set in moles
+  at the start of a tick and reported in mass at its end, came out a hair
+  past its line's limit and halted the run; it is now scaled to the limit and
+  the tick solved again. 74 of 74 plants byte-identical on both solvers.
+- **On screen** (M86.6): the holding pair on the column screen, keys 0 and -,
+  F1–F5 the five product pumps, a stopped pump's product "pump off"; every
+  other key held there. A full vessel now reads that its excess goes to slop.
+- **Left open**: C36 (no back-flow through a stopped pump without a check
+  valve) and C37 (the six older crude units' lines still do not need their
+  pumps).
+
+---
+
 **M85 is CLOSED (2026-11-20): the map's pipes read — right angles,
 crossings with a gap, a flange at each end, towers as tall as what is piped
 to them.** Asked by the user (2026-11-20): make clear which line is

@@ -11836,7 +11836,7 @@ name (names sit under nodes); lay a chain so its pipes leave by a side.
 Positions off the 10 px channel grid, or two nodes ~50 px apart, can turn a
 straight run into a hop — space level neighbours ~60 px or more.
 
-## M86 — a stopped product pump stops its product (DEFERRED C35); OPEN
+## M86 — a stopped product pump stops its product (DEFERRED C35); CLOSED 2026-11-24
 
 Picked by the user (2026-11-23), option (c): holdup and spill-down. Spec and
 decisions: `docs/DESIGN.md` §84.
@@ -11875,5 +11875,19 @@ decisions: `docs/DESIGN.md` §84.
   F1–F5 stopping and starting the five product pumps, a stopped pump named in
   warning by its product (§84.6). The user's answer (2026-11-24): there, where
   the drum's and base's levels and their chart already are (DEFERRED F12).
-- [ ] **M86.7** — DEFERRED row: the six crude units' easy lines, and holdup
-  for them; close-out.
+- [x] **M86.7** — DEFERRED C35 taken; C37 opened: the six older crude units'
+  product lines still pass their share with the pump stopped, and holdup for
+  them waits on C22; close-out.
+
+## M87 — each plant's description shown in the game; OPEN
+
+Asked by the user (2026-11-24): "add description to every plant", answered
+as: show each plant's existing one-line description (its file's `[meta]
+description`) in the game, as written — in the menu beside the row chosen,
+and on each screen and the map when the plant loads, with a key to bring it
+back. Ahead of F11 (queued 2026-11-20), being newer.
+
+- [ ] **M87.1** — the bridge reads a plant's name and description; a test over
+  every shipped plant (none empty, none a placeholder).
+- [ ] **M87.2** — the menu, the five screens and the map show it; screenshots
+  with the longest; close-out.
