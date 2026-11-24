@@ -33035,3 +33035,12 @@ overfill plant's own, to the bit; held, with the coolant put out of reach by
 hand, the column stands at 1.8 bar to the bit every tick, its relief shut,
 while the limit plant's pressure leaves its set; the cooling refused when
 held.
+
+**The moved search checked off the easy path.** The corpus's one plant with
+a condenser stands at its set for all 6 000 ticks, so it exercised only the
+one-step exit. Two slow stories whose pressure moves were run on the code
+before (`0beb4cc`) and after, each tick's snapshot and column state hashed:
+the cooling lost and restored (`column_overfill`, 4 800 ticks, 1.8 → 3.65
+bar through the relief's band and back to the set) and the walk whose falsi
+and midpoint both stall (6 000 ticks, to 3.73 bar, both retreats taken).
+Every tick identical.
