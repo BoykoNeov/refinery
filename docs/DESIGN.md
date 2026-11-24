@@ -32886,3 +32886,12 @@ The screen's full vessel read "FULL: the excess leaves with its product",
 true before M74.6 sent a full drum's or base's excess to slop (§79.18); it now
 reads "FULL: the excess goes to slop, off-spec". Seen on these plants'
 screenshots, where the base fills to slop.
+
+**Every other key held (found after landing, the advisor's check).** As
+landed, W/S on these plants said "the reflux is a result on this column" —
+true only of a held column holding no liquid; it now says the reflux stays at
+its declared setting, its range not measured. And C, X and V (the overhead's
+keys) sent their commands whatever the plant, so X would have put these
+plants on total reflux, unmeasured; on a plant with `product_pumps` they are
+now held with a message. `AUTO_PUMPS_GRADE` presses every other key once at
+tick 300: each is held, nothing sent.

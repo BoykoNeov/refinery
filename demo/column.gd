@@ -570,11 +570,14 @@ const AUTO_OVERFILL := {
 	15000: ["quit"],
 }
 ## pumps_grade (M86.5, §84.5), the holding plant's product pumps with its
-## tanks at grade: the residue pump stopped at 600 cuts the bottoms to about
+## tanks at grade: every other key pressed at 300 is held, nothing sent (only
+## the pumps are on keys here); the residue pump stopped at 600 cuts the bottoms to about
 ## half and the base climbs; started at 6 600, the bottoms runs above its flow,
 ## emptying the base; the kerosene pump stopped at 7 200 cuts the kerosene to
 ## about half, its rest raising the naphtha and the residue; started at 10 200.
 const AUTO_PUMPS_GRADE := {
+	# Every other key pressed once (M86.6): each held, nothing sent.
+	300: ["furnace_up", "reflux_up", "loops_flow_up", "loops_return_up", "reboiler_up", "reboiler_free", "cooling_cut", "total_reflux_on", "drain_shut"],
 	600: ["pump_4"],
 	6600: ["pump_4"],
 	7200: ["pump_1"],
@@ -961,7 +964,9 @@ func _do(action: String) -> void:
 			_set_furnace_mw(110.0)
 		"reflux_up", "reflux_down":
 			if not plant.has("reflux"):
-				if _held():
+				# A held column holding liquid still runs at its reflux setting
+				# (§79.1): only one holding none makes the reflux a result.
+				if _reflux_is_result():
 					_say("the reflux is a result on this column: its reboiler is held at %.1f MW, so the heat the feed brings sets it" % _mw("reboiler_w"), true)
 				else:
 					_say("the reflux stays at its declared %.1f on this plant: its keys' range is not measured (DESIGN %s)" % [_reflux_set(), plant["range_ref"]], true)
@@ -1058,7 +1063,11 @@ func _do(action: String) -> void:
 				freed = "free the reboiler: it holds the base's level, the bottoms at its share of the feed"
 			_send(freed, {"cmd": "set_reboiler_duty", "node": column_id, "duty": null})
 		# The overhead's keys (M75.4): on a plant whose condenser is a limit;
-		# elsewhere the engine's own refusal says why.
+		# elsewhere the engine's own refusal says why — but on the plants whose
+		# product pumps are on keys (M86.6) the screen holds them: their range
+		# is not measured with product lines on.
+		"cooling_cut", "cooling_back", "total_reflux_on", "total_reflux_off", "drain_shut", "drain_open" when plant.has("product_pumps"):
+			_say("the overhead stays as the plant file sets it: only the product pumps are on keys here (DESIGN %s)" % plant["range_ref"], true)
 		"cooling_cut":
 			_send("cut the condenser's cooling water: it condenses nothing", {"cmd": "set_condenser_cooling", "node": column_id, "on": false})
 		"cooling_back":
