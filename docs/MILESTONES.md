@@ -25,9 +25,12 @@ field bigger than the screen (DEFERRED F11).** Picked by the user
   loops: it enters tray 11), the furnace-train plants' feed into the left
   wall, the overfill's relief valve at the top.
 - **A bigger field** (M88.2): it grows right and down as far as the nodes
-  reach; wheel zooms at the mouse (over the panel it scrolls the panel),
-  right/middle-drag scrolls, Home fits, +/- zoom; headings, panel and keys
-  stay put. A plant inside the page fits at 1 : 1 and is drawn as before.
+  reach; wheel zooms at the mouse, **Shift+wheel** (or the wheel over the
+  panel) scrolls the panel — so a hovered column's long readout can still
+  be read — right/middle-drag scrolls, Home fits, +/- zoom; headings, panel
+  and keys stay put, and the mouse over the headings or the keys finds
+  nothing (a node zoomed under them is hidden). A plant inside the page fits
+  at 1 : 1 and is drawn as before.
 - **Computed layout** (M88.3): a least gap between nodes (120 px across,
   64 px down) and the field grows to hold it; a crowded column is one tall
   column, not a zig-zag. Only 5 of the 50 computer-laid plants moved (the

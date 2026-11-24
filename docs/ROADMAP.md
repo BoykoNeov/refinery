@@ -11937,6 +11937,12 @@ milestone, since each forces a look at every plant on the map. No Rust.
   `--zoom`/`--point` exercise. **Verified**: `map --auto` 76 plants, 0
   stopped; `--hands` and the `--enter` hand-over byte-identical; a tank
   dragged to (1500, 900) grows the field and the fitted view holds it all.
+  Fixed at close-out (the reviewer's catch): the mouse over the headings or
+  the keys strip hit nodes zoomed in under them (a click could work a hidden
+  pump) — now it finds nothing (`--zoom=2 --point=` on the column's hidden
+  part: the overview; on its visible part: the column); and the plain wheel
+  over the plant zoomed, so a hovered column's long panel could no longer be
+  scrolled — Shift+wheel scrolls the panel from anywhere.
 - [x] **M88.3** — the computed layout spaced by a least gap between nodes
   (`COLUMN_STEP_LEAST` 120 px, `ROW_STEP_LEAST` 64 px; both at or under what
   the page gives a plant of six columns and five nodes in one, so those lay

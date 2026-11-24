@@ -59,8 +59,9 @@
 # And it may be BIGGER than the screen (M88): the field is the page, grown by
 # as far as the nodes reach past it, and the view draws it zoomed and scrolled
 # where the page was, under the headings and the panel, which stay put. The
-# wheel zooms about the mouse (over the panel it scrolls the panel), a right-
-# or middle-drag scrolls, Home fits the whole plant; every load opens fitted,
+# wheel zooms about the mouse (with Shift, or over the panel, it scrolls the
+# panel), a right- or middle-drag scrolls, Home fits the whole plant; the
+# mouse over the headings or the keys finds nothing; every load opens fitted,
 # so a screenshot repeats. A plant inside the page fits at 1 : 1 and is drawn
 # as before, to the pixel; the layout files keep their coordinates.
 #
@@ -76,7 +77,7 @@
 #               click a pump: on/off   P+click a pipe: hole/mend
 #               Tab loop   A auto/manual   Q/Z target   R reset tripped trips
 #               Ctrl+drag a node: move it   Ctrl+S keep the layout (demo/layout/)
-#               wheel: zoom (over the panel: scroll it)   right/middle-drag: scroll
+#               wheel: zoom (Shift+wheel, or over the panel: scroll it)   right/middle-drag: scroll
 #               Home: the whole plant   + / -: zoom about the middle (M88)
 #               Enter: the screen that draws this plant up close (M84)
 # Recorded:     godot --headless --path . res://demo/map.tscn -- --auto
@@ -447,7 +448,7 @@ func _load(index: int, fresh: bool = true) -> void:
 	_fit_view()
 	if zoom_asked != 1.0:
 		_zoom_at(PAGE.get_center(), zoom_asked)
-	if point_asked != Vector2.INF:
+	if point_asked != Vector2.INF and not _off_plant(point_asked):
 		hovered = _hit(_to_field(point_asked))
 		panel_scroll = hover_scroll
 	if hover_name != "":
@@ -582,7 +583,7 @@ func _input(event: InputEvent) -> void:
 		# `places` are. Over the panel itself the choice stays, so the wheel
 		# can scroll it.
 		var mouse := get_local_mouse_position()
-		if _panel_rect(get_viewport_rect().size).has_point(mouse):
+		if _off_plant(mouse):
 			return
 		var over := _hit(_to_field(mouse))
 		if over != hovered:
@@ -595,7 +596,7 @@ func _input(event: InputEvent) -> void:
 		# With Ctrl held it is a node picked up to move instead, and never a
 		# click: a click on a pump would start or stop it.
 		var mouse := get_local_mouse_position()
-		if places.is_empty() or _panel_rect(get_viewport_rect().size).has_point(mouse):
+		if places.is_empty() or _off_plant(mouse):
 			return
 		var at := _to_field(mouse)
 		if event.ctrl_pressed:
@@ -609,20 +610,22 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton and event.pressed:
 		var mouse := get_local_mouse_position()
-		var over_panel := _panel_rect(get_viewport_rect().size).has_point(mouse)
-		if event.button_index in [MOUSE_BUTTON_RIGHT, MOUSE_BUTTON_MIDDLE] and not over_panel:
+		if event.button_index in [MOUSE_BUTTON_RIGHT, MOUSE_BUTTON_MIDDLE] and not _off_plant(mouse):
 			pan_from = mouse
 			return
-		# The wheel over the panel scrolls it: a column reports more than
-		# fits, and so may a plant's loops and trips. Over the plant it zooms,
-		# about the point under the mouse (M88).
+		# The wheel with Shift held, or over the panel, scrolls the panel: a
+		# column reports more than fits, and so may a plant's loops and trips
+		# — Shift, so a column hovered can be read through without the mouse
+		# leaving it. Over the plant the plain wheel zooms, about the point
+		# under the mouse (M88).
+		var scrolls: bool = event.shift_pressed or _panel_rect(get_viewport_rect().size).has_point(mouse)
 		if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			if over_panel:
+			if scrolls:
 				panel_scroll += 3
 			else:
 				_zoom_at(mouse, 1.0 / ZOOM_STEP)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			if over_panel:
+			if scrolls:
 				panel_scroll = maxi(0, panel_scroll - 3)
 			else:
 				_zoom_at(mouse, ZOOM_STEP)
@@ -1197,6 +1200,14 @@ func _field_rect() -> Rect2:
 	return Rect2(PAGE.position, PAGE.size + grow)
 
 
+## A screen point where no part of the plant can be touched: the panel, or the
+## strips the headings and the message line and keys are drawn over (M88) — a
+## node zoomed in under them is hidden, so the mouse there finds nothing.
+func _off_plant(point: Vector2) -> bool:
+	var size := get_viewport_rect().size
+	return _panel_rect(size).has_point(point) or point.y < HEADINGS_BOTTOM or point.y > size.y - FOOTER
+
+
 ## The screen point a field point is drawn at, and back.
 func _to_screen(point: Vector2) -> Vector2:
 	return point * view_zoom + view_offset
@@ -1444,7 +1455,7 @@ func _draw_legend(size: Vector2) -> void:
 	# Two lines: the plant's controls, then the keys that move between plants
 	# and screens — what keeps the plant running and what starts one over.
 	var controls := "click a valve/furnace/cooler: Up/Down, M by hand   click a pump: on/off   P+click a pipe: hole/mend   Tab A Q Z loops   R reset trips   Ctrl+drag/Ctrl+S layout"
-	var moves := "Space pause   [ ] speed   wheel zoom, right-drag scroll, Home whole plant   Left/Right start another plant over"
+	var moves := "Space pause   [ ] speed   wheel zoom (Shift: the panel), right-drag scroll, Home whole plant   Left/Right start another plant over"
 	Screen.legend(self, Vector2(30, size.y - 30.0), [controls, moves], DIM, 13, 16.0, size.x - 60.0, "Enter closer look, same plant")
 
 
