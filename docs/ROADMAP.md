@@ -11956,3 +11956,52 @@ milestone, since each forces a look at every plant on the map. No Rust.
   were looked at in M85. **Verified**: `map --auto` 76 plants, 0 stopped;
   `--hands` and `--enter` byte-identical; `--hands` on
   crude_unit_holdup_pumps_grade runs clean. Close-out.
+
+## M89 — a column's pressure from physics: the controlled flooded condenser, levels switchable; plan `docs/plans/column-pressure-from-physics.md` Level 1b
+
+Asked by the user (2026-11-23): "simulate 1.8 bar from physics, not as a given
+number", with elements that can be switched to a simpler representation when
+a plant runs too heavy. Forks A–D answered 2026-11-23 (the plan's §5): the
+level a `[fidelity]` key with a CLI override; the pressure may fall below the
+setpoint; Level 1b first, then the light-ends probe; new plant files only.
+Taken 2026-11-24 ("what is next" — the recommendation, ahead of C30's base
+side and C37, neither of which this needs or blocks).
+
+The number stays in the file, as the pressure controller's setpoint. What
+changes is what the pressure IS: a state, the balance of the vapour the column
+sends up against what its condenser condenses, the condenser worked by a
+controller that can run out of reach either way.
+
+- [ ] **M89.0** — the switch, a pure refactor (fork A, which no slice of the
+  plan carried). `[fidelity] column_pressure = "held" | "limit"` (and
+  `"controlled"` from M89.1), a `ColumnPressureModel` trait in `core`, its
+  implementations in `solvers`, M75's within-tick pressure solve moved behind
+  it unchanged as `"limit"`; `"held"` pins the column at its set pressure
+  whatever its condenser declares. The key is a ceiling: absent, each column
+  runs at the highest level its own declarations support (so every plant is
+  byte-identical, `crude_unit_overfill` at `"limit"`); it may only lower a
+  level, and a level whose keys no column declares is refused at load, naming
+  the missing key. `--column-pressure <level>` on `run` and `corpus` caps
+  every plant the same way and is never refused. A column run below what it
+  declares says so on its condenser's faceplate (`level`, off the wire
+  otherwise); a control that no longer acts there (the cooling water cut on a
+  held column) is refused with a plain message.
+- [ ] **M89.1** — the controller (plan 1b.1): the condenser's free share the
+  output of a PI pressure loop on the existing control machinery, its
+  measurement the column's top pressure, its setpoint the file's
+  `pressure_bar`; read at the top of the tick, held through the pressure
+  solve; the pressure free to fall below the set (the solve's floor where the
+  condensate's bubble point meets the coolant); a column at rest within
+  tolerance in one step; manual mode and a held output, M80's take-by-hand.
+  The controller's flooding and the drum's back-up combined by one stated
+  rule. The least and most flooded shares cited from Kister §17.2.2. A
+  setpoint the cooling water cannot reach refused at load.
+- [ ] **M89.2** — the cooling water (plan 1b.2): the condenser's capacity
+  from the water's inlet temperature and flow on the water cooler's
+  condensing-side rating (§67.13); commands for the water's temperature and
+  flow; the duty checked by hand on the water side.
+- [ ] **M89.3** — the plant (plan 1b.3): a NEW `scenarios/crude_unit_pressure.toml`
+  copied from `crude_unit_overfill.toml` with the controller and the cooling
+  water declared; stories on both solvers (water lost and restored, winter
+  water, the feed halved, the controller in manual); a key on the column
+  screen and its measured table; close-out.

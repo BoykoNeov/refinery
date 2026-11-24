@@ -242,6 +242,9 @@ which CLAUDE.md requires anyway.
 ## Checklist
 
 - [x] Forks A–D answered by the user (2026-11-23, §5)
+- [ ] 1b.0 the switch: `[fidelity] column_pressure`, the trait, the CLI
+  override — a pure refactor, every plant byte-identical (M89.0; fork A
+  carried in no slice above)
 - [ ] 1b.1 the controller
 - [ ] 1b.2 the cooling water
 - [ ] 1b.3 the plant, the screen key, the measured table
