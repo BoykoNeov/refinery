@@ -206,8 +206,8 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M88 (opened 2026-11-24) — DEFERRED F11: the map's column pipes in tray order, and a bigger field with zoom and scroll (`docs/ROADMAP.md` M88). Next in the user's queue: the plan `docs/plans/column-pressure-from-physics.md` (forks answered 2026-11-23)** (C30's base side is still open; C37, the six older crude units' product pumps; `docs/plans/` lists the review's plans; the user's aim, 2026-11-19: one complex plant that shows a fault spreading — next would be a screen finding its unit inside a bigger plant, and a plant joining the units).
-**Latest closed: M87 (2026-11-24)**: each plant's file description shown in the game — the menu's chosen row, every screen's message line on load, I to bring it back. Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none open. Next in the user's queue: the plan `docs/plans/column-pressure-from-physics.md` (forks answered 2026-11-23)** (C30's base side is still open; C37, the six older crude units' product pumps; `docs/plans/` lists the review's plans; the user's aim, 2026-11-19: one complex plant that shows a fault spreading — next would be a screen finding its unit inside a bigger plant, and a plant joining the units).
+**Latest closed: M88 (2026-11-24)**: the map — a column's pipes join it in tray order (DEFERRED F11), and the field outgrows the screen (wheel zoom, right-drag scroll, Home fit; a plant inside the page drawn as before). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

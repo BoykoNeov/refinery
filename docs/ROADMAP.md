@@ -11892,7 +11892,7 @@ back. Ahead of F11 (queued 2026-11-20), being newer.
 - [x] **M87.2** — the menu, the five screens and the map show it; screenshots
   with the longest; close-out.
 
-## M88 — the map: a column's pipes in tray order, and a bigger field with zoom and scroll (DEFERRED F11)
+## M88 — the map: a column's pipes in tray order, and a bigger field with zoom and scroll (DEFERRED F11); CLOSED 2026-11-24
 
 Picked by the user (2026-11-20, taken 2026-11-24): both parts of F11 as one
 milestone, since each forces a look at every plant on the map. No Rust.
@@ -11937,6 +11937,16 @@ milestone, since each forces a look at every plant on the map. No Rust.
   `--zoom`/`--point` exercise. **Verified**: `map --auto` 76 plants, 0
   stopped; `--hands` and the `--enter` hand-over byte-identical; a tank
   dragged to (1500, 900) grows the field and the fitted view holds it all.
-- [ ] **M88.3** — the computed layout spaced by a least gap between nodes,
-  the field growing to hold it, rather than squeezed onto one screen; every
-  plant without a layout file looked at; close-out.
+- [x] **M88.3** — the computed layout spaced by a least gap between nodes
+  (`COLUMN_STEP_LEAST` 120 px, `ROW_STEP_LEAST` 64 px; both at or under what
+  the page gives a plant of six columns and five nodes in one, so those lay
+  out as before), every column spread over the same, taller ground; a
+  crowded column is one tall column instead of the old zig-zag. `--routes`:
+  5 of the 50 computer-laid plants moved (`crude_unit_pumps_grade`,
+  `_pumps_lifted`, `tank_level_fill_pump_hold`: now straight rows on a wider
+  field; `crude_unit_holdup_pumps_grade`, `_lifted`: still tangled, their
+  loops on the product side — given hand layouts in the loop plants' shape,
+  product rows pump, check, cooler, tank). The other 45 are unchanged, and
+  were looked at in M85. **Verified**: `map --auto` 76 plants, 0 stopped;
+  `--hands` and `--enter` byte-identical; `--hands` on
+  crude_unit_holdup_pumps_grade runs clean. Close-out.

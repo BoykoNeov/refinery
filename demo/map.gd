@@ -164,8 +164,13 @@ const TOWER_FLOOR := 532.0
 ## the one on top cuts a gap that wide in the one under it.
 const CASING := 2.5
 
-## More nodes than this in one column of the layout and it is drawn as two.
-const CROWDED := 5
+## The computed layout's least spacing (M88): between two columns of nodes,
+## and between two nodes one above the other [px]. A plant that would be laid
+## closer than this on the page is laid out this far apart instead, and the
+## field grows to hold it. Both are at or under what the page gives a plant of
+## up to six columns and five nodes in one, so those are laid out as before.
+const COLUMN_STEP_LEAST := 120.0
+const ROW_STEP_LEAST := 64.0
 
 ## The page the plant is laid out on, inside the headings and the legend, left
 ## of the panel: a node's name runs ~55 px either side of it, so the right-most
@@ -1131,6 +1136,14 @@ func _lay_out() -> void:
 			columns[d] = []
 		columns[d].append(id)
 
+	# The ground the layout spreads over: the page's AREA, or wider and taller
+	# where the plant needs COLUMN_STEP_LEAST and ROW_STEP_LEAST (M88). Every
+	# column spreads over the same height, so a short one sits in the middle
+	# of a tall one, as on the page.
+	var tallest := 0
+	for d in columns:
+		tallest = maxi(tallest, columns[d].size())
+	var ground := Rect2(AREA.position, Vector2(maxf(AREA.size.x, COLUMN_STEP_LEAST * deepest), maxf(AREA.size.y, ROW_STEP_LEAST * (tallest + 1))))
 	places = {}
 	var fractions := {}
 	for d in deepest + 1:
@@ -1146,25 +1159,18 @@ func _lay_out() -> void:
 					count += 1
 			keyed.append([total / count if count > 0 else 0.5, id])
 		keyed.sort()
-		# A crowded column (a crude unit's five product tanks beside its three
-		# pumps) is drawn as two, every other node a little to the right, so
-		# each has twice the height to itself.
-		var step := AREA.size.x / deepest if deepest > 0 else AREA.size.x
-		var crowded := keyed.size() > CROWDED
+		# A crowded column is one column, as tall as it needs (M88): it was
+		# drawn as two, every other node stepped right, to fit the page — a
+		# jog in every pipe through it.
 		for i in keyed.size():
 			var id: int = keyed[i][1]
 			var fraction := (i + 1.0) / (keyed.size() + 1.0)
 			fractions[id] = fraction
-			var x := AREA.position.x + (AREA.size.x * d / deepest if deepest > 0 else AREA.size.x * 0.5)
-			if crowded and i % 2 == 1:
-				# The right-most column steps left: right of it is the panel.
-				# (No shipped plant has a crowded right-most column, 2026-11-15:
-				# a guard for the plant files to come.)
-				x += minf(96.0, step * 0.45) * (-1.0 if d == deepest and deepest > 0 else 1.0)
+			var x := ground.position.x + (ground.size.x * d / deepest if deepest > 0 else ground.size.x * 0.5)
 			# Level with each other where they can be: a pipe between two
 			# nodes at one height runs straight (M85; the half-step stagger
 			# that kept a slanted line off the names would be a jog in it now).
-			places[id] = Vector2(x, AREA.position.y + AREA.size.y * fraction)
+			places[id] = Vector2(x, ground.position.y + ground.size.y * fraction)
 	# Last, so the computed order of the nodes it does not name is unchanged.
 	_apply_layout()
 	_route_pipes()

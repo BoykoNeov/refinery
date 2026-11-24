@@ -12,6 +12,37 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M88 is CLOSED (2026-11-24): the map — a column's pipes in tray order, and a
+field bigger than the screen (DEFERRED F11).** Picked by the user
+(2026-11-20), both parts as one milestone. No Rust; `demo/map.gd`,
+`demo/route.gd` and 13 layout files.
+- **Tray order** (M88.1): the map reads each column pipe's tray from the
+  snapshot — a draw's `stage`, a loop's draw and return, the stripping
+  steam, the feed — and the router puts those on the column's walls only,
+  top to bottom by tray. A pumparound's return now enters the tray above its
+  draw on every loop plant. A tie left over goes by the way each pipe turns,
+  not file order. The loop plants' layouts redone (the feed row under the
+  loops: it enters tray 11), the furnace-train plants' feed into the left
+  wall, the overfill's relief valve at the top.
+- **A bigger field** (M88.2): it grows right and down as far as the nodes
+  reach; wheel zooms at the mouse (over the panel it scrolls the panel),
+  right/middle-drag scrolls, Home fits, +/- zoom; headings, panel and keys
+  stay put. A plant inside the page fits at 1 : 1 and is drawn as before.
+- **Computed layout** (M88.3): a least gap between nodes (120 px across,
+  64 px down) and the field grows to hold it; a crowded column is one tall
+  column, not a zig-zag. Only 5 of the 50 computer-laid plants moved (the
+  rest already had the room); the two holding plants with product pumps got
+  hand layouts in the loop plants' shape.
+- **Checked**: `map --auto` 76 plants, 0 stopped; `--routes` fingerprints
+  before/after every step (the plants that moved are exactly the ones
+  looked at); `--hands` and the `--enter` hand-over byte-identical to before;
+  a zoomed screenshot finds the pump under a screen point.
+- **Not tried by hand**: the mouse wheel and right-drag themselves — the
+  scripted `--zoom`/`--point` run the same arithmetic. **Left**: on the six
+  furnace-train plants the feed line grazes the furnace's own reading.
+
+---
+
 **M87 is CLOSED (2026-11-24): each plant's description shown in the game.**
 Asked by the user (2026-11-24): "add description to every plant", answered
 as showing each file's existing one-line `[meta] description`, as written.
