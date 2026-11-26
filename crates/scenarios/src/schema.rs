@@ -287,9 +287,11 @@ pub struct Fidelity {
     /// reach.
     #[serde(default = "default_constant_heat_capacity")]
     pub heat_capacity: String,
-    /// "held" | "limit" (M89.0, docs/DESIGN.md §86): how much of a column's
-    /// pressure is physics — pinned at its set, or held by a condenser that
-    /// can run out (M75.1, `condenser_limit`).
+    /// "held" | "limit" | "controlled" (M89.0, M89.1; docs/DESIGN.md §86):
+    /// how much of a column's pressure is physics — pinned at its set, held
+    /// by a condenser that can run out (M75.1, `condenser_limit`), or a state
+    /// held by a pressure loop on that condenser (a `[[controls]]` loop whose
+    /// measurement and actuator are the column).
     ///
     /// **A ceiling, not a selection.** Absent, each column runs at the
     /// highest level its own declarations support — what every file written
@@ -962,7 +964,7 @@ fn default_ambient_c() -> f64 {
 /// be refused for the wrong reason or (once a default existed) accepted with an
 /// invented gain. The keys that belong to the OTHER algorithm are refused by name
 /// below; this catches the ones that belong to no algorithm at all.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlDef {
     /// Unique per plant. What the loop's faceplate is labelled with.
@@ -1239,7 +1241,7 @@ impl std::fmt::Display for ActuatorDef {
 /// (docs/DESIGN.md §24 fork 1). A flow asked of a `node`, and a level, pressure
 /// or temperature asked of a `pipe`, are each refused with a message naming the
 /// other key. `deny_unknown_fields` still refuses a key that is neither.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementDef {
     /// The measured node, for a level, pressure or temperature.

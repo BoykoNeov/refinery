@@ -245,7 +245,7 @@ which CLAUDE.md requires anyway.
 - [x] 1b.0 the switch: `[fidelity] column_pressure`, the trait, the CLI
   override — a pure refactor, every plant byte-identical (M89.0; fork A
   carried in no slice above)
-- [ ] 1b.1 the controller
+- [x] 1b.1 the controller (M89.1, 2026-11-26; the share over the whole [0, 1], Kister giving no figures)
 - [ ] 1b.2 the cooling water
 - [ ] 1b.3 the plant, the screen key, the measured table
 - [ ] 3 the overhead's own drops

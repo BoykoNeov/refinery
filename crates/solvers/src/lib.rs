@@ -51,7 +51,7 @@ pub mod trays;
 pub use boiloff::{FlashBoilOff, NoBoilOff};
 pub use bubble::bubble_temperature;
 pub use cascade::StageCascade;
-pub use column_pressure::{CondenserLimitPressure, HeldPressure};
+pub use column_pressure::{CondenserLimitPressure, ControlledPressure, HeldPressure};
 pub use control::{PiController, ProportionalController};
 pub use enthalpy::{ConstantEnthalpy, LinearCpEnthalpy};
 pub use flash::{flash_isothermal, FlashResult};

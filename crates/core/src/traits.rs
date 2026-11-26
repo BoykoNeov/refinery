@@ -956,18 +956,26 @@ pub enum ColumnPressureLevel {
     /// pressure held while the condenser condenses what arrives, past it
     /// the pressure rising, solved within the tick.
     Limit,
+    /// The condenser's free share the output of a pressure loop (M89.1,
+    /// docs/DESIGN.md §86.1): the pressure a state either side of the set,
+    /// held while the loop has reach.
+    Controlled,
 }
 
 impl ColumnPressureLevel {
     /// Every level, lowest first.
-    pub const ALL: [ColumnPressureLevel; 2] =
-        [ColumnPressureLevel::Held, ColumnPressureLevel::Limit];
+    pub const ALL: [ColumnPressureLevel; 3] = [
+        ColumnPressureLevel::Held,
+        ColumnPressureLevel::Limit,
+        ColumnPressureLevel::Controlled,
+    ];
 
     /// The level as `[fidelity] column_pressure` writes it.
     pub fn name(self) -> &'static str {
         match self {
             ColumnPressureLevel::Held => "held",
             ColumnPressureLevel::Limit => "limit",
+            ColumnPressureLevel::Controlled => "controlled",
         }
     }
 
@@ -1012,6 +1020,16 @@ pub trait PressureTrials {
     fn upper(&self) -> Pascal;
     /// The tick [s].
     fn tick(&self) -> Seconds;
+    /// The highest level the column's own declarations support (M89.1):
+    /// `Controlled` with a pressure loop on its condenser, else `Limit`.
+    fn declared(&self) -> ColumnPressureLevel;
+    /// The lowest its pressure can fall to [Pa] (M89.1, docs/DESIGN.md
+    /// §86.1): the condensate's bubble pressure at the coolant's
+    /// temperature, where the condenser condenses nothing.
+    ///
+    /// # Errors
+    /// The condensate has no bubble pressure there.
+    fn floor(&mut self) -> Result<Pascal, SimError>;
     /// The column's step at top pressure `pressure` [Pa], and its condenser's
     /// balance there.
     ///

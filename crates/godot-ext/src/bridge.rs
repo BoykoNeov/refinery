@@ -242,6 +242,7 @@ fn referent(cmd: &Command) -> Referent {
         Command::SetTotalReflux { node, .. } => Referent::Node(*node),
         Command::SetSlopDrain { node, .. } => Referent::Node(*node),
         Command::SetCondenserCooling { node, .. } => Referent::Node(*node),
+        Command::SetCondenserFreeShare { node, .. } => Referent::Node(*node),
     }
 }
 

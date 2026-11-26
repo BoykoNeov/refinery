@@ -907,6 +907,39 @@ impl Engine {
                 condenser.coolant_lost = !on;
                 Ok(())
             }
+            // A column's condenser's free share by hand (M89.1,
+            // docs/DESIGN.md §86.1): what its pressure loop moves in AUTO.
+            Command::SetCondenserFreeShare { node, share } => {
+                if !share.is_finite() || !(0.0..=1.0).contains(&share) {
+                    return Err(SimError::InvalidCommand(format!(
+                        "condenser free share {share} outside [0,1]"
+                    )));
+                }
+                let name = self.graph.node(node).name.clone();
+                let Some(owner) = self
+                    .graph
+                    .controls()
+                    .iter()
+                    .find(|c| c.actuator == Actuator::Node(node))
+                else {
+                    return Err(SimError::InvalidCommand(format!(
+                        "'{name}' has no pressure loop flooding its condenser: its tubes are \
+                         all free, held so by nothing a hand could move — a column's pressure \
+                         loop is declared in its file and built at column_pressure = \
+                         \"controlled\" (docs/DESIGN.md §86.1)"
+                    )));
+                };
+                if owner.mode == ControlMode::Auto {
+                    return Err(SimError::InvalidCommand(format!(
+                        "'{name}''s condenser is moved by control loop '{}', which is in AUTO: \
+                         its free share would be overwritten at the top of the next tick. Put \
+                         the loop in MANUAL first",
+                        owner.name
+                    )));
+                }
+                self.graph
+                    .set_actuator_position(Actuator::Node(node), None, None, share)
+            }
             // One pumparound's duty (M60, docs/DESIGN.md §65.4).
             Command::SetPumparoundDuty {
                 node,
@@ -4049,7 +4082,8 @@ impl Engine {
             | Command::SetReboilerDuty { node, .. }
             | Command::SetTotalReflux { node, .. }
             | Command::SetSlopDrain { node, .. }
-            | Command::SetCondenserCooling { node, .. } => {
+            | Command::SetCondenserCooling { node, .. }
+            | Command::SetCondenserFreeShare { node, .. } => {
                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
             }
             Command::PuncturePipe { edge, .. } => {

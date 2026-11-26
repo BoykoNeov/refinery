@@ -1051,6 +1051,39 @@ pub struct ColumnCondenser {
     /// command cuts it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub coolant_lost: bool,
+    /// The share of its tubes free to condense [-], 0 to 1 (M89.1,
+    /// docs/DESIGN.md §86.1): the position of the column's pressure loop,
+    /// which floods the rest by holding its condensate back (Kister,
+    /// *Distillation Operation*, §17.2.2). 1, and not serialized, on a column
+    /// whose loop is not built — every column before M89, and one run below
+    /// `"controlled"` — where the condenser's capacity is M75's exactly.
+    #[serde(default = "all_tubes", skip_serializing_if = "is_all_tubes")]
+    pub free_share: f64,
+    /// The highest level its declarations support (M89.1, docs/DESIGN.md
+    /// §86.1): `Limit`, or `Controlled` with a pressure loop declared on it.
+    /// What a faceplate compares the level it ran at against. Not serialized
+    /// at `Limit`.
+    #[serde(default = "limit_level", skip_serializing_if = "is_limit_level")]
+    pub declared: crate::traits::ColumnPressureLevel,
+}
+
+/// A condenser's tubes all free (M89.1): `ColumnCondenser::free_share`'s
+/// default.
+fn all_tubes() -> f64 {
+    1.0
+}
+
+fn is_all_tubes(share: &f64) -> bool {
+    *share == 1.0
+}
+
+/// `ColumnCondenser::declared`'s default: a condenser limit with no loop.
+fn limit_level() -> crate::traits::ColumnPressureLevel {
+    crate::traits::ColumnPressureLevel::Limit
+}
+
+fn is_limit_level(level: &crate::traits::ColumnPressureLevel) -> bool {
+    *level == crate::traits::ColumnPressureLevel::Limit
 }
 
 /// A relief valve on a column's top, upstream of its condenser (M75.3,
@@ -3557,6 +3590,27 @@ impl PlantGraph {
                 }
                 Ok(())
             }
+            // A column's top (M89.1, docs/DESIGN.md §86.1): above zero and
+            // below its design pressure, where its relief (or its hold at the
+            // design) takes over from the loop — a setpoint there is one the
+            // loop could only reach by lifting the relief.
+            (ControlledValue::Pressure { pa }, NodeKind::Column { cascade, .. })
+                if condenser_of(cascade.as_ref()).is_some() =>
+            {
+                let design = condenser_of(cascade.as_ref())
+                    .map_or(f64::INFINITY, |condenser| condenser.design_pressure.value());
+                if !pa.is_finite() || pa.value() <= 0.0 || pa.value() >= design {
+                    return Err(SimError::InvalidCommand(format!(
+                        "pressure setpoint {:.4} bar on column '{}' is outside (0, {:.4}) bar: \
+                         at its design pressure its relief lifts (or, without one, the column \
+                         is held there), so the loop could not hold it (docs/DESIGN.md §86.1)",
+                        pa.value() / 1e5,
+                        self.node(node).name,
+                        design / 1e5
+                    )));
+                }
+                Ok(())
+            }
             (ControlledValue::Pressure { .. }, _) => Err(SimError::InvalidCommand(format!(
                 "node '{}' is not a vessel, so it has no pressure setpoint range",
                 self.node(node).name
@@ -3856,6 +3910,28 @@ impl PlantGraph {
                  not built, as a scope decision (docs/DEFERRED.md E9)",
                 self.node(node).name
             ))),
+            // **A column's top pressure, where its condenser is declared** (M89.1,
+            // docs/DESIGN.md §86.1): a STATE, solved within each tick and
+            // present from load at the set, as a vessel's is. A column without
+            // one runs at its declared pressure — the scenario file's number.
+            (MeasuredVariable::Pressure, NodeKind::Column { pressure, cascade, .. }) => {
+                let condensing = cascade
+                    .as_ref()
+                    .and_then(|spec| spec.holdup.as_deref())
+                    .is_some_and(|holdup| holdup.condenser.is_some());
+                if condensing {
+                    Ok(Some(ControlledValue::Pressure {
+                        pa: running_column_pressure(*pressure, cascade.as_ref()),
+                    }))
+                } else {
+                    Err(SimError::Scenario(format!(
+                        "column '{}' runs at its declared pressure_bar, a number in the file: only \
+                         a column whose condenser is declared (condenser_limit, on a column that \
+                         holds liquid) has a pressure of its own to control (docs/DESIGN.md §86.1)",
+                        self.node(node).name
+                    )))
+                }
+            }
             // The catch-all, and its reason is a third distinct one: a source's
             // and a sink's pressures are pinned by declaration, which makes them
             // boundary conditions rather than states. Regulating one is regulating
@@ -4032,6 +4108,12 @@ impl PlantGraph {
             (NodeKind::Cooler { duty } | NodeKind::Furnace { duty, .. }, Some(max)) => {
                 Ok(duty.value() / max.value())
             }
+            // A column's condenser: the share of its tubes free (M89.1,
+            // docs/DESIGN.md §86.1).
+            (NodeKind::Column { cascade, .. }, None) => match condenser_of(cascade.as_ref()) {
+                Some(condenser) => Ok(condenser.free_share),
+                None => Err(unpaired_actuator(&self.node(actuator).name, max_duty)),
+            },
             _ => Err(unpaired_actuator(&self.node(actuator).name, max_duty)),
         }
     }
@@ -4070,6 +4152,19 @@ impl PlantGraph {
                 *duty = max * position;
                 Ok(())
             }
+            (NodeKind::Column { cascade, .. }, None) => {
+                match cascade
+                    .as_mut()
+                    .and_then(|spec| spec.holdup.as_deref_mut())
+                    .and_then(|holdup| holdup.condenser.as_mut())
+                {
+                    Some(condenser) => {
+                        condenser.free_share = position;
+                        Ok(())
+                    }
+                    None => Err(unpaired_actuator(&self.node(actuator).name, max_duty)),
+                }
+            }
             _ => Err(unpaired_actuator(&self.node(actuator).name, max_duty)),
         }
     }
@@ -4083,6 +4178,13 @@ impl PlantGraph {
             .iter()
             .find(|c| c.actuator == Actuator::Loop(secondary))
     }
+}
+
+/// A column's declared condenser (M75.1), if it holds liquid and declares one.
+fn condenser_of(cascade: Option<&CascadeSpec>) -> Option<&ColumnCondenser> {
+    cascade
+        .and_then(|spec| spec.holdup.as_deref())
+        .and_then(|holdup| holdup.condenser.as_ref())
 }
 
 /// The refusal both actuator accessors share for a cascade link to no loop.

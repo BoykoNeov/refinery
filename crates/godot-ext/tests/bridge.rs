@@ -37,6 +37,24 @@ const LEAKY: &str = "leaking_line.toml";
 /// against. The wired demo that regulates is M8.4's, and a bridge contract test
 /// should not be the thing that forces it early — so the two loop-addressed
 /// commands get the smallest plant that can carry a loop.
+/// The overfill plant with a pressure loop on its column's condenser, in
+/// MANUAL (M89.1, docs/DESIGN.md §86.1).
+const PRESSURE_LOOP: &str = concat!(
+    include_str!("../../../scenarios/crude_unit_overfill.toml"),
+    r#"
+[[controls]]
+name = "column_pressure"
+measurement = { node = "column", variable = "pressure" }
+actuator = "column"
+algorithm = "pi"
+mode = "manual"
+setpoint_bar = 1.8
+gain_per_bar = 1.0
+integral_time_s = 60.0
+initial_output = 0.95
+"#
+);
+
 const LEVEL: &str = r#"
 [meta]
 name = "bridge_level_control"
@@ -288,6 +306,9 @@ fn wire_text(cmd: &Command) -> &'static str {
         Command::SetCondenserCooling { .. } => {
             r#"{"cmd":"set_condenser_cooling","node":2,"on":false}"#
         }
+        Command::SetCondenserFreeShare { .. } => {
+            r#"{"cmd":"set_condenser_free_share","node":2,"share":0.75}"#
+        }
         Command::SetLoopFlow { .. } => {
             r#"{"cmd":"set_loop_flow","node":2,"pumparound_loop":1,"flow":110.0}"#
         }
@@ -383,6 +404,11 @@ fn every_variant() -> Vec<Command> {
             node: NodeId(2),
             on: false,
         },
+        // M89.1: a column's condenser's free share by hand.
+        Command::SetCondenserFreeShare {
+            node: NodeId(2),
+            share: 0.75,
+        },
         // M72.2: a pumparound loop's two handles.
         Command::SetLoopFlow {
             node: NodeId(2),
@@ -423,7 +449,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 25, "a Command variant was added");
+    assert_eq!(every_variant().len(), 26, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -491,6 +517,12 @@ fn fixture(cmd: &Command) -> Fixture {
         Command::SetCondenserCooling { .. } => {
             Fixture::shipped("crude_unit_overfill.toml", "column")
         }
+        // M89.1: the overfill plant with a pressure loop on its condenser, in
+        // MANUAL, so a hand may move it.
+        Command::SetCondenserFreeShare { .. } => Fixture::Source {
+            src: PRESSURE_LOOP,
+            target: "column",
+        },
         // M72.4: the crude unit whose pumparounds are loops on the map.
         Command::SetLoopFlow { .. } | Command::SetLoopReturnTemperature { .. } => {
             Fixture::shipped("crude_unit_loops.toml", "column")
@@ -559,6 +591,12 @@ enum Fixture {
         outlet: &'static str,
         feed: &'static str,
     },
+    /// A node-addressed command on an inline plant: as `Shipped`, the plant's
+    /// text given rather than its file's name.
+    Source {
+        src: &'static str,
+        target: &'static str,
+    },
     /// A pump that has gas-locked (M54, docs/DESIGN.md §59.2): the inline plant,
     /// whose supply boils, is run until the pump locks, and the pump is stopped
     /// through the bridge.
@@ -609,6 +647,13 @@ fn every_command_variant_is_accepted_by_a_real_engine() {
                 }
                 .unwrap_or_else(|e| panic!("{plant} has no '{target}': {e}"));
                 (sim, key, id, plant)
+            }
+            Fixture::Source { src, target } => {
+                let sim = Bridge::load(src).expect("inline plant loads");
+                let id = sim
+                    .node_id(target)
+                    .unwrap_or_else(|e| panic!("the inline plant has no '{target}': {e}"));
+                (sim, "node", id, "the inline plant")
             }
             // A loop's id is read off the snapshot beside its name, which is how a
             // frontend addresses one: there is no `loop_id(name)` on the bridge.

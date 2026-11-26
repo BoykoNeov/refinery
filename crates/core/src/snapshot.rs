@@ -310,6 +310,16 @@ pub enum Command {
         node: NodeId,
         on: bool,
     },
+    /// Put a column's condenser's free share by hand (M89.1, docs/DESIGN.md
+    /// §86.1): the share of its tubes free to condense, in [0, 1], the rest
+    /// flooded — what its pressure loop moves in AUTO. Refused while that
+    /// loop is in AUTO (the write would be overwritten at the top of the next
+    /// tick), and on a column with no pressure loop built: its condenser's
+    /// tubes are all free, held so by nothing a hand could move.
+    SetCondenserFreeShare {
+        node: NodeId,
+        share: f64,
+    },
 }
 
 /// A held reboiler duty a column declined (M66.2, docs/DESIGN.md §71.2).

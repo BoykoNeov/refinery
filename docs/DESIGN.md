@@ -33044,3 +33044,134 @@ the cooling lost and restored (`column_overfill`, 4 800 ticks, 1.8 → 3.65
 bar through the relief's band and back to the set) and the walk whose falsi
 and midpoint both stall (6 000 ticks, to 3.73 bar, both retreats taken).
 Every tick identical.
+
+### 86.1 M89.1 — the pressure loop on the flooded condenser (2026-11-26)
+
+The plan's 1b.1. A column's pressure becomes a state held by a controller:
+Kister, *Distillation Operation* §17.2.2 pp. 528–531 — the flooded
+condenser, the common pressure control on a total condenser. The condensate's
+outflow is throttled, which floods part of the tubes; a flooded tube
+transfers little heat (sensible only), so the condenser condenses less and
+the pressure rises. To lower the pressure, the condensate is let out, more
+tubes are freed and more is condensed.
+
+**The level.** `"controlled"`, the third and highest. A column declares it by
+a pressure loop on its condenser: a `[[controls]]` loop whose measurement is
+`{ node = "<column>", variable = "pressure" }` and whose actuator is the
+column. It needs the column's `condenser_limit` (holdup, M75.1). The plant's
+highest declared level is then `"controlled"`. The ceiling rule of §86.0 is
+unchanged: `[fidelity] column_pressure = "controlled"` on a plant with no such
+loop is refused, naming what it needs, and a file or cap at `"limit"` or below
+leaves the loop **unbuilt**. Its keys are unread, the condenser's tubes are
+all free, and the run is M75's to the bit (a test compares it with the same
+plant without the loop, snapshot by snapshot). The condenser's faceplate
+says `declared = "controlled"` and `level = "limit"`; both fields are off the
+wire at their defaults.
+
+**The loop's position.** `ColumnCondenser::free_share` [-], 0 to 1: the share
+of the tubes free to condense; the rest is flooded. It is the actuator
+position of a node actuator with no `max_duty_mw` (`actuator_position` /
+`set_actuator_position` on `NodeKind::Column`). The loop is an ordinary PI
+loop on the existing machinery (§10, §12). It is evaluated at the top of the
+tick, its output written to the share, and the share is held through the
+tick's pressure search, so the controller acts on the pressure a tick behind,
+as a real one does, while the pressure itself is solved within the tick (no
+lag). The measurement is the column's solved top pressure
+(`running_column_pressure`), present from load at the set. At load the share
+is the loop's `initial_output`, so a screen reads the plant as it will run.
+At rest it is `1/(1 + margin)`: the condenser was sized with `margin` to spare
+at the set, so its loop floods that spare (`margin = 0.25` → 0.8 free).
+
+**The range: the whole condenser (the user's decision, 2026-11-26).** The
+roadmap asked for the least and most flooded shares cited from Kister §17.2.2.
+The section gives no figures, only that "some of the condenser surface is
+flooded with liquid at all times". The output runs over the loop's own
+[0, 1]: 0 is every tube flooded, condensing nothing; 1 is every tube free. The
+"always partly flooded" of normal running comes from the margin (rest at
+`1/(1 + margin)` < 1), not from a key. No new key.
+
+**One shell, two levels.** The drum's back-up (M75.2, Kister §13.3) floods
+tubes from below, and the loop holds its condensate back to a level of its
+own. The tubes under the higher of the two are flooded, so the capacity is
+`C(P) = UA·(T_b(x_drum, P) − T_coolant)·min(u, 1 − f)`, with `u` the loop's
+free share and `f` the back-up's flooded share. Without a loop `u = 1` and
+this is M75's `·(1 − f)` exactly.
+
+**The search** (`solvers::column_pressure::ControlledPressure`). M75's search
+(§80.2), moved into one function `search(trials, lower, accept)` that both
+condensing levels share: the first trial at last tick's pressure clamped to
+`[lower, upper]`, the bracket grown toward the end the residual points at,
+Illinois to settle it, and the retreats (§80.7). `"limit"` passes `lower` =
+the set and accepts the set while the condenser has room, which is M75's
+search unchanged (hashed tick by tick before and after, see below).
+`"controlled"` passes `lower` = **the floor**, the condensate's bubble
+pressure at the coolant's temperature (`PressureTrials::floor`), where the
+condenser condenses nothing. The pressure can fall below the set (fork B) but
+not past that. It accepts a trial whose residual is within the store's worth
+of the 1 Pa tolerance, so a column at rest under its loop is answered in one
+step. A column on a `"controlled"` plant with no loop of its own runs exactly
+as `"limit"` runs it (`PressureTrials::declared`), and its floor is never
+read. The floor is a plain Raoult/Dalton sum over the components, with no
+iteration. The overfill plant at rest costs 0.75 ms a tick with the loop and
+without it alike (300 ticks each, the test profile).
+
+**The set against the water.** The plan's reference check: at 1.8 bar the
+overfill plant's condensate boils at 116.6 °C (a crude unit's top: about
+110–130 °C), far above the 35 °C water, so the set is far above its floor.
+The loop's setpoint must be the column's own `pressure_bar` (one number, so it
+is refused otherwise). A set the water cannot reach is a condensate bubble
+point at the set at or below the coolant's temperature, which is the floor at
+or above the set. It is refused **on the first tick**, not at load: that is
+when the condenser is sized, `UA = Q₀·(1 + margin)/(T_b − T_coolant)`, and
+the sizing refuses a difference at or below zero, naming both temperatures
+(§80.1, `condenser_ua`). Building the plant does not run the column's
+thermo, so this is the earliest point the check can be made. Water 6.6 K
+below the condensate still runs, held at the set. A set that later becomes
+unreachable (water warmed by a command, M89.2) is a story, not a refusal: the
+loop saturates and the pressure moves.
+
+**Refused at load.** A loop on a column without `condenser_limit` (no tubes
+to flood). `action = "reverse"`: freeing tubes lowers the pressure, so the
+loop is direct acting, as a vent valve opens on a rising pressure. A
+setpoint other than the column's `pressure_bar`. A setpoint outside
+(0, design pressure), where the relief would lift before the loop could hold
+it. `max_duty_mw` (the position is already a fraction). A measurement other
+than the column's own pressure. A cascade whose secondary is the column's
+pressure loop. A column's pressure, as a measurement, exists only where its
+condenser is declared; elsewhere it is the file's number, and a loop on it is
+refused.
+
+**By hand.** `Command::SetCondenserFreeShare { node, share }` (wire
+`set_condenser_free_share`): refused outside [0, 1], on a column with no loop
+built (naming `"controlled"`), and while the loop is in AUTO (the write
+would be overwritten at the top of the next tick). In MANUAL the share stays
+where the hand put it, and back in AUTO the loop takes over from it without a
+bump (M80's take-by-hand, §83).
+
+**The tuning the tests run**, measured on this plant. Open loop, a share 0.05
+off its rest moves the pressure about 30 Pa a tick at once (0.06 bar/s per
+unit share, close to an integrator) and keeps it going for minutes (11 kPa at
+three). Closed, against water 15 K warmer or colder: 2 per bar and 60 s
+leaves it 50–100 Pa off after five minutes; 4 per bar and 30 s within about
+15 Pa; 8 per bar and 30 s within 5 Pa in two minutes, with no overshoot past
+a few pascals. The loop's own gain a tick, 8 × 0.06 × 0.1 ≈ 0.05, is far below
+the 2 at which a discrete integrator rings. These are the tests' numbers, not
+a default: a plant file states its own (M89.3).
+
+**Checked.** Every plant byte-identical, 76 of 76 on both solvers. The two
+moving-pressure stories of §86.0 (the cooling lost and restored, and the
+stalling walk) were hashed every tick on `dd07411` and on this change:
+identical. Seven tests in `column_pressure_control.rs`: the refusals; below
+`"controlled"` the loop not built, to the bit; at rest within 10 Pa of the
+set every tick for a minute, the share at `1/(1 + margin)`, and that share at
+load; warmer and colder water ridden out (warmer rises and the loop frees
+tubes, colder falls below the set, which M75 could not do, and the loop
+floods them); one turn each way, back within 100 Pa in five minutes, the
+books closed every tick; manual and the bumpless return; the shell's two
+levels against `UA·(T_drum − T_coolant)·min(u, 1 − f)` by hand; the set
+against the water. Two unit tests in `column_pressure.rs` on a column whose
+balance is a straight line: under its loop the pressure is the root within
+1 Pa either side of the set, and no lower than the floor; with no loop of its
+own the column holds the set and its floor is never read. The bridge's
+wire-format and real-engine rows take the new command (26 variants). Nine
+mutations, all caught.

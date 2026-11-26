@@ -17,8 +17,8 @@ use refinery_core::graph::{
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
-    BoilOffModel, Controller, EnthalpyModel, FlowSolver, LineFlashModel, ReactionModel,
-    SeparationModel, ThermoModel,
+    BoilOffModel, ColumnPressureLevel, Controller, EnthalpyModel, FlowSolver, LineFlashModel,
+    ReactionModel, SeparationModel, ThermoModel,
 };
 use refinery_core::units::{
     CubicMeter, JPerK, JPerKg, JPerKgK, JPerMol, Kelvin, Kg, KgPerM3, KgPerMol, KgPerSec, Meter,
@@ -274,7 +274,12 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // actuator defined later in the file, exactly like an exchanger coupling or a
     // column draw. It runs after `plant_phases` because a loop's seeded
     // measurement is a real read of the finished plant, not a placeholder.
-    build_controls(&mut graph, &slate, &scenario.controls, &scenario.pipes)?;
+    // A column's pressure loop is built only where its column runs at
+    // "controlled": below it, the loop's keys are unread and its condenser's
+    // faceplate says so (M89.1, docs/DESIGN.md §86.1).
+    let column_level = column_pressure_level(scenario)?;
+    let controls = declare_column_loops(&mut graph, scenario, column_level)?;
+    build_controls(&mut graph, &slate, &controls, &scenario.pipes)?;
     // A loop's cooler is its column's to drive (M72.2, docs/DESIGN.md §77.2).
     for control in graph.controls() {
         if let Some(node) = control.actuator.node() {
@@ -330,7 +335,7 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // Read on every plant, so an unknown or unread level is refused whatever
     // the separation; only the heat-balance cascade holds liquid, so only it
     // carries the model (M89.0, docs/DESIGN.md §86).
-    let column_pressure = select_column_pressure(scenario)?;
+    let column_pressure = column_pressure_model(column_level);
     let separation: Box<dyn SeparationModel> = match scenario.fidelity.separation.as_str() {
         // M3.2's boiling-range splitter, and the default (see `Fidelity`).
         "cut_point" => Box::new(refinery_solvers::CutPointSplitter),
@@ -438,15 +443,14 @@ fn select_line_flash(name: &str) -> Result<Box<dyn LineFlashModel>, SimError> {
 /// nowhere to put its vapour (`Engine::tick` refuses exactly that). Returning
 /// the pair makes the agreement structural rather than a convention two call
 /// sites keep.
-/// The column-pressure model `[fidelity] column_pressure` and a frontend's
-/// cap select (M89.0, docs/DESIGN.md §86): the lowest of the two and the
-/// highest level any column on the plant declares. A file's level that no
-/// column declares the keys for is refused, naming the key; a cap is never
-/// refused for lowering nothing. An unknown level is refused either way.
-fn select_column_pressure(
-    scenario: &ScenarioFile,
-) -> Result<Box<dyn refinery_core::traits::ColumnPressureModel>, SimError> {
-    use refinery_core::traits::ColumnPressureLevel;
+/// The column-pressure level `[fidelity] column_pressure` and a frontend's
+/// cap select (M89.0, M89.1; docs/DESIGN.md §86): the lowest of the two and
+/// the highest level any column on the plant declares — `"controlled"`
+/// where a column's pressure loop is declared, `"limit"` where a
+/// `condenser_limit` is, else `"held"`. A file's level that no column
+/// declares the keys for is refused, naming the keys; a cap is never refused
+/// for lowering nothing. An unknown level is refused either way.
+fn column_pressure_level(scenario: &ScenarioFile) -> Result<ColumnPressureLevel, SimError> {
     let parse = |key: &str, name: &str| {
         ColumnPressureLevel::parse(name).ok_or_else(|| {
             let valid: Vec<&str> = ColumnPressureLevel::ALL.iter().map(|l| l.name()).collect();
@@ -457,7 +461,13 @@ fn select_column_pressure(
         })
     };
     // The highest level the plant's own columns declare the keys for.
-    let declared = if scenario.nodes.values().any(|node| {
+    let declared = if scenario
+        .controls
+        .iter()
+        .any(|def| column_loop_column(scenario, def).is_some())
+    {
+        ColumnPressureLevel::Controlled
+    } else if scenario.nodes.values().any(|node| {
         matches!(node, NodeDef::Column { cascade: Some(def), .. } if def.condenser_limit.is_some())
     }) {
         ColumnPressureLevel::Limit
@@ -468,8 +478,17 @@ fn select_column_pressure(
     if let Some(name) = &scenario.fidelity.column_pressure {
         let written = parse("column_pressure", name)?;
         if written > declared {
+            let needs = match written {
+                ColumnPressureLevel::Controlled => {
+                    "a pressure loop on a column's condenser (a [[controls]] loop whose \
+                     measurement and actuator are the column)"
+                }
+                _ => "condenser_limit",
+            };
             return Err(SimError::Scenario(format!(
-                "[fidelity] column_pressure = \"{name}\", but no column on this plant declares                  condenser_limit: the level reads a condenser that can run out, so nothing                  would read it (docs/DESIGN.md §86) — declare condenser_limit on a column that                  holds liquid, or drop the key"
+                "[fidelity] column_pressure = \"{name}\", but no column on this plant declares \
+                 {needs}: nothing would read the level (docs/DESIGN.md §86) — declare it on a \
+                 column that holds liquid, or drop the key"
             )));
         }
         level = written;
@@ -477,10 +496,93 @@ fn select_column_pressure(
     if let Some(name) = &scenario.fidelity.column_pressure_cap {
         level = level.min(parse("column pressure cap", name)?);
     }
-    Ok(match level {
+    Ok(level)
+}
+
+/// The model of a column-pressure level (M89.0, docs/DESIGN.md §86).
+fn column_pressure_model(
+    level: ColumnPressureLevel,
+) -> Box<dyn refinery_core::traits::ColumnPressureModel> {
+    match level {
         ColumnPressureLevel::Held => Box::new(refinery_solvers::HeldPressure),
         ColumnPressureLevel::Limit => Box::new(refinery_solvers::CondenserLimitPressure),
-    })
+        ColumnPressureLevel::Controlled => Box::new(refinery_solvers::ControlledPressure),
+    }
+}
+
+/// The column a control loop's actuator names, if it names one (M89.1,
+/// docs/DESIGN.md §86.1): a column's pressure loop, whose actuator is the
+/// column's condenser.
+fn column_loop_column(scenario: &ScenarioFile, def: &ControlDef) -> Option<String> {
+    match &def.actuator {
+        ActuatorDef::Node(name)
+            if matches!(scenario.nodes.get(name), Some(NodeDef::Column { .. })) =>
+        {
+            Some(name.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Each column's pressure loop declared on its condenser (M89.1,
+/// docs/DESIGN.md §86.1), and the loops to build. A loop on a column needs
+/// the column's `condenser_limit` and may not be a cascade's secondary; its
+/// condenser declares `"controlled"` whatever level it runs at. At
+/// `"controlled"` the loop is built, its condenser's free share starting at
+/// a PI loop's `initial_output`; below it the loop is left out — its keys
+/// unread, its condenser all free, M75's exactly — and the faceplate's
+/// `level` says so.
+fn declare_column_loops(
+    graph: &mut PlantGraph,
+    scenario: &ScenarioFile,
+    level: ColumnPressureLevel,
+) -> Result<Vec<ControlDef>, SimError> {
+    let mut kept = Vec::with_capacity(scenario.controls.len());
+    for def in &scenario.controls {
+        let Some(column) = column_loop_column(scenario, def) else {
+            kept.push(def.clone());
+            continue;
+        };
+        if let Some(primary) = scenario.controls.iter().find(
+            |other| matches!(&other.actuator, ActuatorDef::Loop(link) if link.name == def.name),
+        ) {
+            return Err(SimError::Scenario(format!(
+                "control loop '{}' drives column '{column}''s pressure loop '{}' as a cascade: a \
+                 column's pressure loop is no cascade's secondary (docs/DESIGN.md §86.1)",
+                primary.name, def.name
+            )));
+        }
+        let id = graph.find_node(&column).ok_or_else(|| {
+            SimError::Scenario(format!("internal: column '{column}' is not on the graph"))
+        })?;
+        let condenser = match &mut graph.node_mut(id).kind {
+            NodeKind::Column {
+                cascade: Some(spec),
+                ..
+            } => spec
+                .holdup
+                .as_deref_mut()
+                .and_then(|holdup| holdup.condenser.as_mut()),
+            _ => None,
+        };
+        let Some(condenser) = condenser else {
+            return Err(SimError::Scenario(format!(
+                "control loop '{}' moves column '{column}''s condenser, which is not declared: a \
+                 column's pressure loop floods its condenser's tubes, and only a condenser \
+                 declared as a limit has them (docs/DESIGN.md §86.1) — declare condenser_limit on \
+                 the column (it needs holdup)",
+                def.name
+            )));
+        };
+        condenser.declared = ColumnPressureLevel::Controlled;
+        if level >= ColumnPressureLevel::Controlled {
+            if let Some(start) = def.initial_output.filter(|u| (0.0..=1.0).contains(u)) {
+                condenser.free_share = start;
+            }
+            kept.push(def.clone());
+        }
+    }
+    Ok(kept)
 }
 
 fn select_boiloff(name: &str) -> Result<(Box<dyn BoilOffModel>, bool), SimError> {
@@ -1149,6 +1251,29 @@ fn build_controls(
                     def.name, def.actuator
                 )))
                     }
+                    // A column's pressure loop floods its own condenser's tubes
+                    // (M89.1, docs/DESIGN.md §86.1; Kister, *Distillation
+                    // Operation*, §17.2.2): its position the share free.
+                    (MeasuredVariable::Pressure, NodeKind::Column { .. }) => {
+                        if point != MeasurementPoint::Node(actuator) {
+                            return Err(SimError::Scenario(format!(
+                                "control loop '{}' measures '{point_name}' and moves column \
+                                 '{}''s condenser: a column's pressure loop holds the pressure \
+                                 of the column whose condenser it floods (docs/DESIGN.md §86.1)",
+                                def.name, def.actuator
+                            )));
+                        }
+                        if def.max_duty_mw.is_some() {
+                            return Err(SimError::Scenario(format!(
+                                "control loop '{}' declares `max_duty_mw` on column '{}''s \
+                                 condenser. Its position is the share of its tubes free, \
+                                 already a fraction, so the number would be read by nothing \
+                                 (docs/DESIGN.md §86.1)",
+                                def.name, def.actuator
+                            )));
+                        }
+                        None
+                    }
                     (MeasuredVariable::Level | MeasuredVariable::Pressure, _) => {
                         return Err(SimError::Scenario(format!(
                     "control loop '{}' actuates '{}', which is not a valve. A level or pressure \
@@ -1282,6 +1407,19 @@ fn build_controls(
                      firing raises a temperature: this loop would shut the furnace off the \
                      moment the tank ran cold. Declare `action = \"reverse\"` \
                      (docs/DESIGN.md §22 fork 2)",
+                            def.name, def.actuator
+                        )))
+                    }
+                    // More tubes free condense more and LOWER the pressure: a
+                    // rising pressure frees them, direct acting, as a vent valve
+                    // opens (M89.1, docs/DESIGN.md §86.1).
+                    (NodeKind::Column { .. }, ControlAction::Reverse, _) => {
+                        return Err(SimError::Scenario(format!(
+                            "control loop '{}' declares `action = \"reverse\"` on column '{}''s \
+                             condenser. More of its tubes free condense more and lower the \
+                             pressure, so a reverse loop would flood the condenser as the \
+                             pressure ran away. A column's pressure loop is direct acting \
+                             (docs/DESIGN.md §86.1)",
                             def.name, def.actuator
                         )))
                     }
@@ -1481,6 +1619,23 @@ fn build_controls(
         graph
             .check_setpoint(point, setpoint)
             .map_err(|e| SimError::Scenario(format!("control loop '{}': {e}", def.name)))?;
+        // A column's pressure loop holds the column's own declared pressure
+        // (M89.1, docs/DESIGN.md §86.1): the file's one number for it.
+        if let Some(column) = actuator.node() {
+            if let NodeKind::Column { pressure, .. } = &graph.node(column).kind {
+                if setpoint.magnitude() != pressure.value() {
+                    return Err(SimError::Scenario(format!(
+                        "control loop '{}' holds column '{}' at {} bar, and the column declares \
+                         pressure_bar = {}: the loop's setpoint is the column's pressure, one \
+                         number — write the same in both (docs/DESIGN.md §86.1)",
+                        def.name,
+                        def.actuator,
+                        setpoint.magnitude() / 1e5,
+                        pressure.value() / 1e5
+                    )));
+                }
+            }
+        }
 
         let mode = match def.mode.as_str() {
             "auto" => ControlMode::Auto,
@@ -4805,6 +4960,10 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                             relief: None,
                             // Running; only a command cuts it (M75.4).
                             coolant_lost: false,
+                            // All free, no loop yet: `build_controls` builds
+                            // one on it, and declares it (M89.1).
+                            free_share: 1.0,
+                            declared: refinery_core::traits::ColumnPressureLevel::Limit,
                         })
                     }
                 };

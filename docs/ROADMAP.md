@@ -11989,7 +11989,7 @@ controller that can run out of reach either way.
   (DESIGN §86.0): the model carried by `HeatBalanceCascade`, so `Engine::new`
   is unchanged; 76 of 76 plants byte-identical on both solvers; five tests
   and a `fidelity_selection` row; seven mutations, all caught.
-- [ ] **M89.1** — the controller (plan 1b.1): the condenser's free share the
+- [x] **M89.1** — the controller (plan 1b.1): the condenser's free share the
   output of a PI pressure loop on the existing control machinery, its
   measurement the column's top pressure, its setpoint the file's
   `pressure_bar`; read at the top of the tick, held through the pressure
@@ -11998,7 +11998,17 @@ controller that can run out of reach either way.
   tolerance in one step; manual mode and a held output, M80's take-by-hand.
   The controller's flooding and the drum's back-up combined by one stated
   rule. The least and most flooded shares cited from Kister §17.2.2. A
-  setpoint the cooling water cannot reach refused at load.
+  setpoint the cooling water cannot reach refused at load. **Landed
+  2026-11-26** (DESIGN §86.1): `"controlled"` declared by a `[[controls]]`
+  loop whose measurement and actuator are the column, unbuilt below that
+  level (M75's run to the bit); the two floodings combined as `min(u, 1 − f)`,
+  the tubes under the higher liquid level; `SetCondenserFreeShare` by hand in
+  MANUAL. Kister §17.2.2 gives no figures, so the share runs over the whole
+  [0, 1] with no new key (the user's decision, 2026-11-26). The unreachable
+  set is refused on the first tick, where the condenser is sized (building the
+  plant runs no thermo). 76 of 76 plants byte-identical on both solvers, the
+  two moving-pressure stories identical tick by tick; seven tests and two
+  unit tests; nine mutations, all caught.
 - [ ] **M89.2** — the cooling water (plan 1b.2): the condenser's capacity
   from the water's inlet temperature and flow on the water cooler's
   condensing-side rating (§67.13); commands for the water's temperature and

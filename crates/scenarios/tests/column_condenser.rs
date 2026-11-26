@@ -75,6 +75,8 @@ fn the_condenser_limit_is_read_as_written() {
             design_pressure: Pascal(1.8e5 + 1.72e5),
             relief: None,
             coolant_lost: false,
+            free_share: 1.0,
+            declared: refinery_core::traits::ColumnPressureLevel::Limit,
         })
     );
     // Absent, nothing.

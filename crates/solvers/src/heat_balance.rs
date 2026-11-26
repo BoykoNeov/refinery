@@ -1152,7 +1152,7 @@ impl HeatBalanceCascade {
                         at_design: false,
                         flooded_share: 0.0,
                         at_ceiling: false,
-                        level: below_declared(self.column_pressure.level()),
+                        level: below_declared(self.column_pressure.level(), condenser.declared),
                     })
                 }
                 None => None,
@@ -1417,7 +1417,15 @@ fn condenser_balance(
         // Kister, *Distillation Operation*, §9.3).
         capacity = 0.0;
     }
-    if flooded > 0.0 {
+    if condenser.free_share < 1.0 {
+        // The tubes its pressure loop keeps flooded condense nothing either
+        // (M89.1, docs/DESIGN.md §86.1; Kister, *Distillation Operation*,
+        // §17.2.2). One liquid level in one shell: the loop holds its
+        // condensate back to a level, the drum's back-up rises from below to
+        // another, and the tubes under the higher of the two are flooded —
+        // the free share is the lesser of the loop's and the back-up's.
+        capacity *= condenser.free_share.min(1.0 - flooded);
+    } else if flooded > 0.0 {
         // The tubes the drum's back-up floods condense nothing (Kister,
         // *Distillation Operation*, §13.3).
         capacity *= 1.0 - flooded;
@@ -1584,7 +1592,7 @@ fn stepped_pass(
         flooded_share: separation
             .holdup_reading
             .map_or(0.0, |reading| reading.condenser_flooded),
-        level: below_declared(pressure.level()),
+        level: below_declared(pressure.level(), condenser.declared),
     };
     separation.holdup_reading = separation.holdup_reading.map(|before| HoldupReading {
         condenser: Some(reading),
@@ -1593,11 +1601,15 @@ fn stepped_pass(
     Ok(separation)
 }
 
-/// The level a column that declares its condenser limit ran at, where it is
-/// below that one (M89.0, docs/DESIGN.md §86) — the faceplate's
-/// `level`; `None` at its own.
-fn below_declared(level: ColumnPressureLevel) -> Option<ColumnPressureLevel> {
-    (level < ColumnPressureLevel::Limit).then_some(level)
+/// The level a column ran at under a model of `level`, where it is below the
+/// one its own declarations support, `declared` (M89.0, M89.1;
+/// docs/DESIGN.md §86) — the faceplate's `level`; `None` at its own. A
+/// model above what the column declares runs it at its own.
+fn below_declared(
+    level: ColumnPressureLevel,
+    declared: ColumnPressureLevel,
+) -> Option<ColumnPressureLevel> {
+    (level < declared).then_some(level)
 }
 
 /// One column's tick at trial top pressures (M89.0, docs/DESIGN.md §86):
@@ -1636,6 +1648,18 @@ impl PressureTrials for ColumnTrials<'_, '_> {
 
     fn tick(&self) -> Seconds {
         self.holdup.tick
+    }
+
+    fn declared(&self) -> ColumnPressureLevel {
+        self.condenser.declared
+    }
+
+    fn floor(&mut self) -> Result<Pascal, SimError> {
+        self.setup.thermo.bubble_pressure(
+            self.setup.pass.slate,
+            &self.state.drum_composition,
+            self.condenser.coolant,
+        )
     }
 
     fn trial(&mut self, pressure: Pascal) -> Result<PressureBalance, SimError> {
