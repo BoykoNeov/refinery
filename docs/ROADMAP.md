@@ -12008,7 +12008,8 @@ controller that can run out of reach either way.
   set is refused on the first tick, where the condenser is sized (building the
   plant runs no thermo). 76 of 76 plants byte-identical on both solvers, the
   two moving-pressure stories identical tick by tick; seven tests and two
-  unit tests; nine mutations, all caught.
+  unit tests; thirteen mutations, all caught. Off the set about five trials a
+  tick (3.5–4.1 ms, against M75's 22 ms with the cooling lost).
 - [ ] **M89.2** — the cooling water (plan 1b.2): the condenser's capacity
   from the water's inlet temperature and flow on the water cooler's
   condensing-side rating (§67.13); commands for the water's temperature and
@@ -12017,4 +12018,11 @@ controller that can run out of reach either way.
   copied from `crude_unit_overfill.toml` with the controller and the cooling
   water declared; stories on both solvers (water lost and restored, winter
   water, the feed halved, the controller in manual); a key on the column
-  screen and its measured table; close-out.
+  screen and its measured table; close-out. **Choose its condenser's
+  `margin` on purpose** (DESIGN §86.1): the copied file's 0.05 leaves the
+  loop almost no reach (warmer water by 15 K cuts ~18 % of capacity), and the
+  margin decides whether the loop is seen holding or giving up.
+  **Test the cold end of the water** (M89.2's winter story): `"controlled"`
+  reads the floor every tick, so a coolant where the vapour-pressure
+  correlation refuses would refuse every tick; if it does, read the floor
+  only when the search heads down.

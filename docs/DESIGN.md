@@ -33112,8 +33112,25 @@ of the 1 Pa tolerance, so a column at rest under its loop is answered in one
 step. A column on a `"controlled"` plant with no loop of its own runs exactly
 as `"limit"` runs it (`PressureTrials::declared`), and its floor is never
 read. The floor is a plain Raoult/Dalton sum over the components, with no
-iteration. The overfill plant at rest costs 0.75 ms a tick with the loop and
-without it alike (300 ticks each, the test profile).
+iteration.
+
+**Cost** (the plan's gate: no more than M75's few steps a tick while off the
+set; the test profile, the overfill plant with the tests' loop, 600 ticks
+each, two rounds). At rest about 0.8 ms a tick, with or without the loop.
+Off the set, the first 600 ticks after the water is put 15 K colder or
+warmer: 3.5–4.1 ms a tick, about five trials a tick while the loop trims.
+M75's own off-set case, the first 600 ticks of the cooling lost at
+`"limit"`: 22 ms a tick. `tools/steptime` waits for M89.3's plant: no
+shipped plant has the loop yet.
+
+**The margin is the loop's reach (for M89.3).** The loop can only free the
+spare its condenser was sized with: at rest it sits at `1/(1 + margin)` free,
+and fully free it gains a factor `1 + margin`. Water 15 K warmer cuts the
+capacity by `15/81.6` ≈ 18 % on this plant (the condensate at 116.6 °C
+against 35 °C water). The tests' `margin = 0.25` covers that. The overfill
+plant's own `0.05` does not: the loop would saturate almost at once and the
+pressure climb anyway. M89.3's plant chooses its margin on purpose. It
+decides whether a player sees the loop holding or giving up.
 
 **The set against the water.** The plan's reference check: at 1.8 bar the
 overfill plant's condensate boils at 116.6 °C (a crude unit's top: about
@@ -33162,7 +33179,9 @@ a default: a plant file states its own (M89.3).
 moving-pressure stories of §86.0 (the cooling lost and restored, and the
 stalling walk) were hashed every tick on `dd07411` and on this change:
 identical. Seven tests in `column_pressure_control.rs`: the refusals; below
-`"controlled"` the loop not built, to the bit; at rest within 10 Pa of the
+`"controlled"` the loop not built, to the bit (the refusals listed above
+each pinned, the other node's pressure on a gas vessel added to the plant
+since a tank's pressure is refused first); at rest within 10 Pa of the
 set every tick for a minute, the share at `1/(1 + margin)`, and that share at
 load; warmer and colder water ridden out (warmer rises and the loop frees
 tubes, colder falls below the set, which M75 could not do, and the loop
@@ -33173,5 +33192,8 @@ against the water. Two unit tests in `column_pressure.rs` on a column whose
 balance is a straight line: under its loop the pressure is the root within
 1 Pa either side of the set, and no lower than the floor; with no loop of its
 own the column holds the set and its floor is never read. The bridge's
-wire-format and real-engine rows take the new command (26 variants). Nine
-mutations, all caught.
+wire-format and real-engine rows take the new command (26 variants).
+Thirteen mutations, all caught. Three survived at first and each became a
+test: the share at load, the search's 1 Pa tolerance, and the column with no
+loop of its own (the two unit tests). The four refusals' branches were each
+turned off once.

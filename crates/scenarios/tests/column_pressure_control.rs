@@ -134,6 +134,59 @@ fn a_pressure_loop_is_refused_where_it_cannot_act() {
         &at_level(OVERFILL_PLANT, "controlled"),
         &["column_pressure", "pressure loop"],
     );
+    // Above the design pressure (3.52 bar), where the relief lifts first:
+    // refused for that, before the setpoint is compared with `pressure_bar`.
+    says(
+        &src.replace("setpoint_bar = 1.8", "setpoint_bar = 4.0"),
+        &["outside", "3.5200", "relief"],
+    );
+    // Another node's pressure, with the column's condenser moved: a vessel's,
+    // a pressure a loop may hold (a tank's is refused before this, as its
+    // level in a worse unit).
+    says(
+        &format!(
+            "{}
+[[components]]
+name = \"fuel_gas\"
+phase = \"gas\"
+tb_c = -161.5
+molar_mass_kg_per_mol = 0.016043
+cp_j_per_kg_k = 2220.0
+
+[nodes.spare_drum]
+type = \"vessel\"
+volume_m3 = 2.0
+pressure_bar = 2.0
+temperature_c = 40.0
+composition = {{ fuel_gas = 1.0 }}
+",
+            src.replace(
+                "measurement = { node = \"column\", variable = \"pressure\" }",
+                "measurement = { node = \"spare_drum\", variable = \"pressure\" }",
+            )
+        ),
+        &["spare_drum", "whose condenser it floods"],
+    );
+    // A cascade's secondary.
+    says(
+        &format!(
+            "{src}
+[[controls]]
+name = \"outer\"
+measurement = {{ node = \"naphtha_tank\", variable = \"temperature\" }}
+actuator = {{ loop = \"column_pressure\" }}
+algorithm = \"pi\"
+mode = \"auto\"
+setpoint_c = 60.0
+gain_per_k = 0.1
+integral_time_s = 600.0
+initial_output = 0.5
+range_min_c = 40.0
+range_max_c = 65.0
+"
+        ),
+        &["outer", "no cascade's secondary"],
+    );
     engine_of(&src.replace(
         "algorithm = \"pi\"",
         "algorithm = \"pi\"\naction = \"direct\"",
@@ -266,7 +319,7 @@ fn slow_the_loop_rides_out_warmer_and_colder_water() {
 }
 
 /// **In MANUAL the share is the hand's**: refused by hand while the loop is
-/// in AUTO; in MANUAL put at 0.75 it stays there, the pressure leaving its
+/// in AUTO, and outside [0, 1] in MANUAL; put at 0.75 it stays there, the pressure leaving its
 /// set; back in AUTO the loop takes over from 0.75 without a bump and brings
 /// the pressure back.
 #[test]
@@ -284,6 +337,10 @@ fn in_manual_the_share_is_the_hands() {
             .unwrap()
     };
     mode(&mut engine, ControlMode::Manual);
+    for wrong in [1.5, -0.1, f64::NAN] {
+        let e = free_share(&mut engine, wrong).unwrap_err();
+        assert!(e.contains("outside [0,1]"), "{wrong}: {e}");
+    }
     free_share(&mut engine, 0.75).unwrap();
     for tick in 1..=300 {
         run(&mut engine, 1);
